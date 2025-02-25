@@ -4,11 +4,11 @@ This document contains a list of maintainers in this repo. See [opensearch-proje
 
 ## Current Maintainers
 
-| Maintainer               | GitHub ID                                               | Affiliation |
-|--------------------------|---------------------------------------------------------|-------------|
-| Gulshan Kumar            | [kumargu](https://github.com/kumargu)                   | Amazon      |
-| Soji Denloye             | [asonje](https://github.com/asonje)                     | Intel       |
-| Shubham Kumar            | [shubhmkr-amazon](https://github.com/shubhmkr-amazon)   | Amazon      |
-| Uday Bhaskar             | [udabhas](https://github.com/udabhas)                | Amazon      |
+| Maintainer               | GitHub ID                                              | Affiliation |
+|--------------------------|--------------------------------------------------------|-------------|
+| Gulshan Kumar            | [kumargu](https://github.com/kumargu)                  | Amazon      |
+| Soji Denloye             | [asonje](https://github.com/asonje)                    | Intel       |
+| Shubham Kumar            | [shubhmkr-amazon](https://github.com/shubhmkr-amazon)  | Amazon      |
+| Uday Bhaskar             | [udabhas](https://github.com/udabhas)                  | Amazon      |
 
 
