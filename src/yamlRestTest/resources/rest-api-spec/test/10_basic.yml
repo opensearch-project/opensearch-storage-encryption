@@ -5,4 +5,4 @@
         h: component
 
   - match:
-      $body: /^cryptodirectory\n$/
+      $body: /^storage-encryption\n$/

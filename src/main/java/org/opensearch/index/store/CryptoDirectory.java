@@ -30,6 +30,8 @@
 
 package org.opensearch.index.store;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
@@ -59,9 +61,7 @@ import java.security.Provider;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Base64;
-import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -71,9 +71,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * @opensearch.internal
  */
 public final class CryptoDirectory extends NIOFSDirectory {
+
     private Path location;
     private Key dataKey;
-    private ConcurrentSkipListMap<String, String> ivMap;
+    private String iv;
     private final Provider provider;
 
     private final AtomicLong nextTempFileCounter = new AtomicLong();
@@ -81,24 +82,40 @@ public final class CryptoDirectory extends NIOFSDirectory {
     CryptoDirectory(LockFactory lockFactory, Path location, Provider provider, MasterKeyProvider keyProvider) throws IOException {
         super(location, lockFactory);
         this.location = location;
-        ivMap = new ConcurrentSkipListMap<>();
-        IndexInput in;
         this.provider = provider;
 
         try {
-            in = super.openInput("ivMap", new IOContext());
-        } catch (java.nio.file.NoSuchFileException nsfe) {
-            in = null;
-        }
-        if (in != null) {
-            Map<String, String> tmp = in.readMapOfStrings();
-            ivMap.putAll(tmp);
-            in.close();
+            // Load existing IV and key
+            try (IndexInput in = super.openInput("ivFile", new IOContext())) {
+                iv = in.readString();
+            }
             dataKey = new SecretKeySpec(keyProvider.decryptKey(getWrappedKey()), "AES");
-        } else {
-            DataKeyPair dataKeyPair = keyProvider.generateDataPair();
-            dataKey = new SecretKeySpec(dataKeyPair.getRawKey(), "AES");
-            storeWrappedKey(dataKeyPair.getEncryptedKey());
+        } catch (java.nio.file.NoSuchFileException nsfe) {
+            // Initialize new IV and key
+            initializeNewIvAndKey(keyProvider);
+        } catch (Exception e) {
+            throw new RuntimeException("Unexpected error initializing CryptoDirectory", e);
+        }
+    }
+
+    private void initializeNewIvAndKey(MasterKeyProvider keyProvider) throws IOException {
+        DataKeyPair dataKeyPair = keyProvider.generateDataPair();
+        dataKey = new SecretKeySpec(dataKeyPair.getRawKey(), "AES");
+        storeWrappedKey(dataKeyPair.getEncryptedKey());
+
+        // Generate new IV
+        SecureRandom random = Randomness.createSecure();
+        byte[] ivBytes = new byte[CipherFactory.IV_ARRAY_LENGTH];
+        random.nextBytes(ivBytes);
+        iv = Base64.getEncoder().encodeToString(ivBytes);
+        storeIV();
+    }
+
+    private void storeIV() throws IOException {
+        try (IndexOutput out = super.createOutput("ivFile", new IOContext())) {
+            out.writeString(iv);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
     }
 
@@ -122,122 +139,92 @@ public final class CryptoDirectory extends NIOFSDirectory {
         }
     }
 
-    /**
-     * {@inheritDoc}
-     * @param source the file to be renamed
-     * @param dest the new file name
-     */
     @Override
     public void rename(String source, String dest) throws IOException {
         super.rename(source, dest);
-        if (!(source.contains("segments_") || source.endsWith(".si"))) ivMap.put(
-            getDirectory() + "/" + dest,
-            ivMap.remove(getDirectory() + "/" + source)
-        );
     }
 
-    /**
-     * {@inheritDoc}
-     * @param name the name of the file to be opened for reading
-     * @param context the IO context
-     */
     @Override
     public IndexInput openInput(String name, IOContext context) throws IOException {
-        if (name.contains("segments_") || name.endsWith(".si")) return super.openInput(name, context);
+        if (name.contains("segments_") || name.endsWith(".si")) {
+            return super.openInput(name, context);
+        }
+
         ensureOpen();
         ensureCanRead(name);
         Path path = getDirectory().resolve(name);
         FileChannel fc = FileChannel.open(path, StandardOpenOption.READ);
         boolean success = false;
+
         try {
             Cipher cipher = CipherFactory.getCipher(provider);
-            String ivEntry = ivMap.get(getDirectory() + "/" + name);
-            if (ivEntry == null) throw new IOException("failed to open file. " + name);
-            byte[] iv = Base64.getDecoder().decode(ivEntry);
-            CipherFactory.initCipher(cipher, this, Optional.of(iv), Cipher.DECRYPT_MODE, 0);
-            final IndexInput indexInput;
-            indexInput = new CryptoBufferedIndexInput("CryptoBufferedIndexInput(path=\"" + path + "\")", fc, context, cipher, this);
+            byte[] ivBytes = Base64.getDecoder().decode(iv);
+            CipherFactory.initCipher(cipher, this, Optional.of(ivBytes), Cipher.DECRYPT_MODE, 0);
+
+            final IndexInput indexInput = new CryptoBufferedIndexInput(
+                    "CryptoBufferedIndexInput(path=\"" + path + "\")",
+                    fc,
+                    context,
+                    cipher,
+                    this
+            );
             success = true;
             return indexInput;
         } finally {
-            if (success == false) {
+            if (!success) {
                 IOUtils.closeWhileHandlingException(fc);
             }
         }
     }
 
-    /**
-     * {@inheritDoc}
-     * @param name the name of the file to be opened for writing
-     * @param context the IO context
-     */
     @Override
     public IndexOutput createOutput(String name, IOContext context) throws IOException {
-        if (name.contains("segments_") || name.endsWith(".si")) return super.createOutput(name, context);
-        ensureOpen();
-        Path path = directory.resolve(name);
-        OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
-        Cipher cipher = CipherFactory.getCipher(provider);
-        SecureRandom random = Randomness.createSecure();
-        byte[] iv = new byte[CipherFactory.IV_ARRAY_LENGTH];
-        random.nextBytes(iv);
-        if (dataKey == null) throw new RuntimeException("dataKey is null!");
-        CipherFactory.initCipher(cipher, this, Optional.of(iv), Cipher.ENCRYPT_MODE, 0);
-        ivMap.put(getDirectory() + "/" + name, Base64.getEncoder().encodeToString(iv));
-        return new CryptoIndexOutput(name, path, fos, cipher);
-    }
+        try {
+            if (name.contains("segments_") || name.endsWith(".si")) return super.createOutput(name, context);
 
-    /**
-     * {@inheritDoc}
-     * @param prefix the desired temporary file prefix
-     * @param suffix the desired temporary file suffix
-     * @param context the IO context
-     */
-    @Override
-    public IndexOutput createTempOutput(String prefix, String suffix, IOContext context) throws IOException {
-        if (prefix.contains("segments_") || prefix.endsWith(".si")) return super.createTempOutput(prefix, suffix, context);
-        ensureOpen();
-        String name;
-        while (true) {
-            name = getTempFileName(prefix, suffix, nextTempFileCounter.getAndIncrement());
+            ensureOpen();
             Path path = directory.resolve(name);
             OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
+
             Cipher cipher = CipherFactory.getCipher(provider);
-            SecureRandom random = Randomness.createSecure();
-            byte[] iv = new byte[CipherFactory.IV_ARRAY_LENGTH];
-            random.nextBytes(iv);
-            CipherFactory.initCipher(cipher, this, Optional.of(iv), Cipher.ENCRYPT_MODE, 0);
-            ivMap.put(getDirectory() + "/" + name, Base64.getEncoder().encodeToString(iv));
+            if (dataKey == null) {
+                throw new RuntimeException("dataKey is null!");
+            }
+
+            byte[] ivBytes = Base64.getDecoder().decode(iv);
+            CipherFactory.initCipher(cipher, this, Optional.of(ivBytes), Cipher.ENCRYPT_MODE, 0);
+
             return new CryptoIndexOutput(name, path, fos, cipher);
+        } catch (Exception e) {
+            throw e;
         }
     }
 
-    /**
-     * {@inheritDoc}
-     */
+    @Override
+    public IndexOutput createTempOutput(String prefix, String suffix, IOContext context) throws IOException {
+        if (prefix.contains("segments_") || prefix.endsWith(".si")) {
+            return super.createTempOutput(prefix, suffix, context);
+        }
+        ensureOpen();
+        String name = getTempFileName(prefix, suffix, nextTempFileCounter.getAndIncrement());
+        Path path = directory.resolve(name);
+        OutputStream fos = Files.newOutputStream(directory.resolve(name), StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
+        Cipher cipher = CipherFactory.getCipher(provider);
+        byte[] ivBytes = Base64.getDecoder().decode(iv);
+        CipherFactory.initCipher(cipher, this, Optional.of(ivBytes), Cipher.ENCRYPT_MODE, 0);
+
+        return new CryptoIndexOutput(name, path,  fos, cipher);
+    }
+
     @Override
     public synchronized void close() throws IOException {
         try {
-            deleteFile("ivMap");
+            isOpen = false;
+            deletePendingFiles();
+            dataKey = null;
         } catch (java.nio.file.NoSuchFileException fnfe) {
-
+            // Handle exception if needed
         }
-        IndexOutput out = super.createOutput("ivMap", new IOContext());
-        out.writeMapOfStrings(ivMap);
-        out.close();
-        isOpen = false;
-        deletePendingFiles();
-        dataKey = null;
-    }
-
-    /**
-     * {@inheritDoc}
-     * @param name the name of the file to be deleted
-     */
-    @Override
-    public void deleteFile(String name) throws IOException {
-        ivMap.remove(getDirectory() + "/" + name);
-        super.deleteFile(name);
     }
 
     static class CipherFactory {
@@ -249,7 +236,7 @@ public final class CryptoDirectory extends NIOFSDirectory {
             try {
                 return Cipher.getInstance("AES/CTR/NoPadding", provider);
             } catch (NoSuchPaddingException | NoSuchAlgorithmException e) {
-                throw new RuntimeException();
+                throw new RuntimeException(e);
             }
         }
 

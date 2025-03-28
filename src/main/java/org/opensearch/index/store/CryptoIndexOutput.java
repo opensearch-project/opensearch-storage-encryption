@@ -53,6 +53,15 @@ public final class CryptoIndexOutput extends OutputStreamIndexOutput {
      */
     static final int CHUNK_SIZE = 8192;
 
+    /**
+     * Creates a new CryptoIndexOutput
+     *
+     * @param name The name of the output
+     * @param path The path to write to
+     * @param os The output stream
+     * @param cipher The cipher to use for encryption
+     * @throws IOException If there is an I/O error
+     */
     public CryptoIndexOutput(String name, Path path, OutputStream os, Cipher cipher) throws IOException {
         super("FSIndexOutput(path=\"" + path + "\")", name, new FilterOutputStream(os) {
 

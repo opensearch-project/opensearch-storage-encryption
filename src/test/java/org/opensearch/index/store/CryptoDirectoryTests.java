@@ -71,6 +71,7 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
             Set<String> files = Arrays.stream(dir.listAll())
                 .filter(file -> !ExtrasFS.isExtra(file)) // remove any ExtrasFS stuff.
                 .filter(file -> !file.equals(KEY_FILE_NAME)) // remove keyfile.
+                .filter(file -> !file.equals("ivFile")) // remove ivFile.
                 .collect(Collectors.toSet());
 
             assertEquals(new HashSet<String>(names), files);
