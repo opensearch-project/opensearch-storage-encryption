@@ -30,23 +30,6 @@
 
 package org.opensearch.index.store;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-import org.apache.lucene.store.IOContext;
-import org.apache.lucene.store.IndexInput;
-import org.apache.lucene.store.IndexOutput;
-import org.apache.lucene.store.LockFactory;
-import org.apache.lucene.store.NIOFSDirectory;
-import org.opensearch.common.Randomness;
-import org.opensearch.common.crypto.DataKeyPair;
-import org.opensearch.common.crypto.MasterKeyProvider;
-import org.opensearch.common.util.io.IOUtils;
-
-import javax.crypto.Cipher;
-import javax.crypto.NoSuchPaddingException;
-import javax.crypto.spec.IvParameterSpec;
-import javax.crypto.spec.SecretKeySpec;
-
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.FileChannel;
@@ -63,6 +46,21 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
+
+import javax.crypto.Cipher;
+import javax.crypto.NoSuchPaddingException;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
+
+import org.apache.lucene.store.IOContext;
+import org.apache.lucene.store.IndexInput;
+import org.apache.lucene.store.IndexOutput;
+import org.apache.lucene.store.LockFactory;
+import org.apache.lucene.store.NIOFSDirectory;
+import org.opensearch.common.Randomness;
+import org.opensearch.common.crypto.DataKeyPair;
+import org.opensearch.common.crypto.MasterKeyProvider;
+import org.opensearch.common.util.io.IOUtils;
 
 /**
  * A hybrid directory implementation that encrypts files
@@ -86,7 +84,7 @@ public final class CryptoDirectory extends NIOFSDirectory {
 
         try {
             // Load existing IV and key
-            try (IndexInput in = super.openInput("ivFile", new IOContext())) {
+            try (IndexInput in = super.openInput("ivFile", IOContext.READONCE)) {
                 iv = in.readString();
             }
             dataKey = new SecretKeySpec(keyProvider.decryptKey(getWrappedKey()), "AES");
@@ -112,7 +110,7 @@ public final class CryptoDirectory extends NIOFSDirectory {
     }
 
     private void storeIV() throws IOException {
-        try (IndexOutput out = super.createOutput("ivFile", new IOContext())) {
+        try (IndexOutput out = super.createOutput("ivFile", IOContext.DEFAULT)) {
             out.writeString(iv);
         } catch (IOException e) {
             throw new RuntimeException(e);
@@ -120,7 +118,7 @@ public final class CryptoDirectory extends NIOFSDirectory {
     }
 
     private void storeWrappedKey(byte[] wrappedKey) {
-        try (IndexOutput out = super.createOutput("keyfile", new IOContext())) {
+        try (IndexOutput out = super.createOutput("keyfile", IOContext.DEFAULT)) {
             out.writeInt(wrappedKey.length);
             out.writeBytes(wrappedKey, 0, wrappedKey.length);
         } catch (IOException e) {
@@ -129,7 +127,7 @@ public final class CryptoDirectory extends NIOFSDirectory {
     }
 
     private byte[] getWrappedKey() {
-        try (IndexInput in = super.openInput("keyfile", new IOContext())) {
+        try (IndexInput in = super.openInput("keyfile", IOContext.DEFAULT)) {
             int size = in.readInt();
             byte[] ret = new byte[size];
             in.readBytes(ret, 0, ret.length);

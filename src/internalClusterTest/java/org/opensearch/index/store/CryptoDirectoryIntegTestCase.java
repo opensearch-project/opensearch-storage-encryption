@@ -93,12 +93,12 @@ public class CryptoDirectoryIntegTestCase extends OpenSearchIntegTestCase {
         }
         refresh();
         SearchResponse response = client().prepareSearch("test").get();
-        assertThat(response.getHits().getTotalHits().value, is(nbDocs));
+        assertThat(response.getHits().getTotalHits().value(), is(nbDocs));
 
         // Reindex
         reindex().source("test").destination("test_copy").refresh(true).get();
         SearchResponse copy_response = client().prepareSearch("test_copy").get();
-        assertThat(copy_response.getHits().getTotalHits().value, is(nbDocs));
+        assertThat(copy_response.getHits().getTotalHits().value(), is(nbDocs));
 
     }
 
@@ -111,7 +111,7 @@ public class CryptoDirectoryIntegTestCase extends OpenSearchIntegTestCase {
         }
         refresh();
         SearchResponse response = client().prepareSearch("todelete").get();
-        assertThat(response.getHits().getTotalHits().value, is(nbDocs));
+        assertThat(response.getHits().getTotalHits().value(), is(nbDocs));
 
         // Deleteindex
         DeleteIndexRequest deleteIndexRequest = new DeleteIndexRequest("todelete");

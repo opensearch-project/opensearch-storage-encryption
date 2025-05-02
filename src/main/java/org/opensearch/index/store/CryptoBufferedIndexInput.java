@@ -30,16 +30,6 @@
 
 package org.opensearch.index.store;
 
-import org.apache.lucene.store.BufferedIndexInput;
-import org.apache.lucene.store.IOContext;
-import org.apache.lucene.store.IndexInput;
-import org.opensearch.common.SuppressForbidden;
-
-import javax.crypto.BadPaddingException;
-import javax.crypto.Cipher;
-import javax.crypto.IllegalBlockSizeException;
-import javax.crypto.ShortBufferException;
-
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -48,7 +38,16 @@ import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.util.Optional;
 
-import static org.opensearch.index.store.CryptoDirectory.CipherFactory;
+import javax.crypto.BadPaddingException;
+import javax.crypto.Cipher;
+import javax.crypto.IllegalBlockSizeException;
+import javax.crypto.ShortBufferException;
+
+import org.apache.lucene.store.BufferedIndexInput;
+import org.apache.lucene.store.IOContext;
+import org.apache.lucene.store.IndexInput;
+import org.opensearch.common.SuppressForbidden;
+import org.opensearch.index.store.CryptoDirectory.CipherFactory;
 
 /**
  * An IndexInput implementation that decrypts data for reading
@@ -197,7 +196,7 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
 
         if (pos + b.remaining() > end) {
             throw new EOFException(
-                Thread.currentThread().getId()
+                Thread.currentThread().getName()
                     + " read past EOF: "
                     + this
                     + " isClone? "
@@ -238,7 +237,7 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
     @Override
     protected void seekInternal(long pos) throws IOException {
         if (pos > length()) {
-            throw new EOFException(Thread.currentThread().getId() + " read past EOF: pos=" + pos + " vs length=" + length() + ": " + this);
+            throw new EOFException(Thread.currentThread().getName() + " read past EOF: pos=" + pos + " vs length=" + length() + ": " + this);
         }
         CipherFactory.initCipher(cipher, directory, Optional.empty(), Cipher.DECRYPT_MODE, pos + off);
     }
