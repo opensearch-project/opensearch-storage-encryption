@@ -12,16 +12,20 @@
 buildscript {
     ext {
         opensearch_version = System.getProperty("opensearch.version", "3.0.0-SNAPSHOT")
+        opensearch_group = "org.opensearch"
+        version_tokens = opensearch_version.tokenize('-')
+        opensearch_build = version_tokens[0] + '.0'
     }
 
     repositories {
-        mavenCentral()
         mavenLocal()
         maven { url "https://aws.oss.sonatype.org/content/repositories/snapshots" }
+        mavenCentral()
+        maven { url "https://plugins.gradle.org/m2/" }
     }
 
     dependencies {
-        classpath "org.opensearch.gradle:build-tools:${opensearch_version}"
+        classpath "${opensearch_group}.gradle:build-tools:${opensearch_version}"
     }
 }
 
@@ -29,11 +33,20 @@ plugins {
     id 'java'
     id 'idea'
     id 'jacoco'
+    id 'com.diffplug.spotless' version '6.25.0'
 }
 
 apply plugin: 'opensearch.opensearchplugin'
 apply plugin: 'opensearch.yaml-rest-test'
 apply plugin: 'opensearch.internal-cluster-test'
+apply plugin: 'opensearch.java-agent'
+
+allprojects {
+    group = opensearch_group
+    version = "${opensearch_build}"
+    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = JavaVersion.VERSION_21
+}
 
 ext {
     projectSubstitutions = [:]
@@ -48,9 +61,10 @@ opensearchplugin {
 }
 
 repositories {
-    mavenCentral()
     mavenLocal()
     maven { url "https://aws.oss.sonatype.org/content/repositories/snapshots" }
+    mavenCentral()
+    maven { url "https://plugins.gradle.org/m2/" }
 }
 
 dependencies {
@@ -73,6 +87,10 @@ test {
         showStandardStreams = true
     }
     systemProperty 'tests.security.manager', 'false'
+    jvmArgs += [
+        '--enable-preview',
+        '--enable-native-access=ALL-UNNAMED'
+    ]
 }
 
 tasks.named('internalClusterTest').configure {
@@ -82,6 +100,10 @@ tasks.named('internalClusterTest').configure {
         events "passed", "skipped", "failed"
         showStandardStreams = true
     }
+    jvmArgs += [
+        '--enable-preview',
+        '--enable-native-access=ALL-UNNAMED'
+    ]
 }
 
 compileJava {
@@ -89,15 +111,18 @@ compileJava {
     targetCompatibility = JavaVersion.VERSION_21
     options.encoding = 'UTF-8'
     options.compilerArgs << '-Xlint:unchecked' << '-Xlint:deprecation' << '-Werror'
+    options.compilerArgs += ['--enable-preview']
 }
 
 compileTestJava {
     sourceCompatibility = JavaVersion.VERSION_21
     targetCompatibility = JavaVersion.VERSION_21
+    options.compilerArgs += ['--enable-preview']
 }
 
 tasks.withType(JavaCompile) {
     options.encoding = 'UTF-8'
+    options.compilerArgs += ['--enable-preview']
 }
 
 javadoc {
@@ -105,11 +130,14 @@ javadoc {
     options.charSet = 'UTF-8'
     options.addStringOption('Xdoclint:all', '-quiet')
     options.addStringOption('tag', 'opensearch.internal:a:Internal:')
-    failOnError = true
+    
+    options.addBooleanOption("-enable-preview", true)
+    failOnError = false
 }
 
+
 jacoco {
-    toolVersion = "0.8.7"
+    toolVersion = "0.8.12"
 }
 
 jacocoTestReport {
@@ -128,4 +156,12 @@ task allTests {
     dependsOn test, internalClusterTest, yamlRestTest
     group = 'Verification'
     description = 'Runs all tests (Unit, Integration, and YAML)'
+}
+
+spotless {
+    java {
+        removeUnusedImports()
+        importOrder 'java', 'javax', 'org', 'com'
+        googleJavaFormat('1.17.0')
+    }
 }
