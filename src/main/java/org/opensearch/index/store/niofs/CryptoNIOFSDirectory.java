@@ -11,21 +11,28 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.Provider;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 import javax.crypto.Cipher;
 
 import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.FileSwitchDirectory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
+import org.apache.lucene.store.MMapDirectory;
 import org.apache.lucene.store.NIOFSDirectory;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.index.store.cipher.CipherFactory;
 import org.opensearch.index.store.iv.DefaultKeyIvResolver;
 import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.mmapfs.MMapCryptoIndexInput;
 
 /**
  * A NioFS directory implementation that encrypts files to be stored based on a
@@ -37,14 +44,48 @@ public final class CryptoNIOFSDirectory extends NIOFSDirectory {
     private final Provider provider;
     private final KeyIvResolver keyResolver;
     private final AtomicLong nextTempFileCounter = new AtomicLong();
+    private Set<String> extensions;
+    private final Path location;
 
     public CryptoNIOFSDirectory(LockFactory lockFactory, Path location, Provider provider, MasterKeyProvider keyProvider)
         throws IOException {
         super(location, lockFactory);
+        this.location = location;
         this.provider = provider;
 
         Directory baseDir = new NIOFSDirectory(location, lockFactory);
         this.keyResolver = new DefaultKeyIvResolver(baseDir, provider, keyProvider);
+
+        // list of file extensions to use with CrytoBufferedIndexInput. other will use MMapCryptoIndexInput
+        List<String> list = new ArrayList<>();
+        list.add("segments_N");
+        list.add("write.lock");
+        list.add("si");
+        list.add("cfe");
+        list.add("fnm");
+        list.add("fdx");
+        list.add("fdt");
+        list.add("pos");
+        list.add("pay");
+        list.add("nvm");
+        list.add("dvm");
+        list.add("tvx");
+        list.add("tvd");
+        list.add("liv");
+        list.add("dii");
+        list.add("vem");
+        list.add("cfs"); // temporary
+        /*list.add("tim");
+        list.add("tip");
+        list.add("fdt");
+        list.add("fdx");
+        list.add("nvd");
+        list.add("nvm");
+        list.add("dvd");
+        list.add("dvm");
+        list.add("dii");
+        list.add("dim");*/
+        extensions = new HashSet<>(list);
     }
 
     @Override
@@ -58,18 +99,33 @@ public final class CryptoNIOFSDirectory extends NIOFSDirectory {
         Path path = getDirectory().resolve(name);
         FileChannel fc = FileChannel.open(path, StandardOpenOption.READ);
         boolean success = false;
+        final String extension = FileSwitchDirectory.getExtension(name);
 
         try {
             Cipher cipher = CipherFactory.getCipher(provider);
             CipherFactory.initCipher(cipher, keyResolver.getDataKey(), keyResolver.getIvBytes(), Cipher.DECRYPT_MODE, 0);
-
-            final IndexInput indexInput = new CryptoBufferedIndexInput(
-                "CryptoBufferedIndexInput(path=\"" + path + "\")",
-                fc,
-                context,
-                cipher,
-                this.keyResolver
-            );
+            final IndexInput indexInput;
+            // Use MMapCryptoIndexInput based on file extension
+            if (!extensions.contains(extension)) {
+                // System.out.println("OpenInput:: FileName: "+name+" length "+fc.size()+ " "+context+" MMapCryptoIndexInput(path=\"" + path
+                // + "\")");
+                MMapDirectory mmapDirectory = new MMapDirectory(location, lockFactory);
+                indexInput = new MMapCryptoIndexInput(
+                    "MMapCryptoIndexInput(path=\"" + path + "\")",
+                    mmapDirectory.openInput(name, context),
+                    cipher,
+                    keyResolver
+                );
+                fc.close();
+            } else {
+                indexInput = new CryptoBufferedIndexInput(
+                    "CryptoBufferedIndexInput(path=\"" + path + "\")",
+                    fc,
+                    context,
+                    cipher,
+                    this.keyResolver
+                );
+            }
             success = true;
             return indexInput;
         } finally {
