@@ -83,10 +83,16 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-        Cipher cipher = CipherFactory.getCipher(provider);
-        CipherFactory.initCipher(cipher, this.keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), Cipher.ENCRYPT_MODE, 0);
+        // Cipher cipher = CipherFactory.getCipher(provider);
+        // CipherFactory.initCipher(cipher, this.keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), Cipher.ENCRYPT_MODE, 0);
 
-        return new CryptoOutputStreamIndexOutput(name, path, fos, cipher);
+        return new CryptoOutputStreamIndexOutputNative(
+            name,
+            path,
+            fos,
+            this.keyIvResolver.getDataKey().getEncoded(),
+            keyIvResolver.getIvBytes()
+        );
     }
 
     @Override
@@ -100,10 +106,19 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-        Cipher cipher = CipherFactory.getCipher(provider);
-        CipherFactory.initCipher(cipher, keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), Cipher.ENCRYPT_MODE, 0);
+        // Cipher cipher = CipherFactory.getCipher(provider);
 
-        return new CryptoOutputStreamIndexOutput(name, path, fos, cipher);
+        // CipherFactory.initCipher(cipher, keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), Cipher.ENCRYPT_MODE, 0);
+
+        return new CryptoOutputStreamIndexOutputNative(
+            name,
+            path,
+            fos,
+            this.keyIvResolver.getDataKey().getEncoded(),
+            keyIvResolver.getIvBytes()
+        );
+
+        // return new CryptoOutputStreamIndexOutput(name, path, fos, cipher);
     }
 
     @Override
