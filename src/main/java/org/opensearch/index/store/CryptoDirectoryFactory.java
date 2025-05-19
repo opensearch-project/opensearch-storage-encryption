@@ -1,7 +1,15 @@
 /*
- * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * The OpenSearch Contributors require contributions made to
+ * this file be licensed under the Apache-2.0 license or a
+ * compatible open source license.
  */
+
+/*
+* Modifications Copyright OpenSearch Contributors. See
+* GitHub history for details.
+*/
 package org.opensearch.index.store;
 
 import java.io.IOException;
@@ -32,11 +40,12 @@ import org.opensearch.index.shard.ShardPath;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
 import org.opensearch.index.store.iv.DefaultKeyIvResolver;
 import org.opensearch.index.store.iv.KeyIvResolver;
-import org.opensearch.index.store.mmap.CryptoMMapDirectory;
+import org.opensearch.index.store.mmap.EagerDecryptedCryptoMMapDirectory;
+import org.opensearch.index.store.mmap.LazyDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 import org.opensearch.plugins.IndexStorePlugin;
 
-@SuppressForbidden(reason = "temprary")
+@SuppressForbidden(reason = "temporary")
 /**
  * Factory for an encrypted filesystem directory
  */
@@ -121,13 +130,30 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         switch (type) {
             case HYBRIDFS -> {
                 LOGGER.debug("Using HYBRIDFS directory");
-                CryptoMMapDirectory mmapDir = new CryptoMMapDirectory(location, provider, keyIvResolver);
-                mmapDir.setPreloadExtensions(preLoadExtensions);
-                return new HybridCryptoDirectory(lockFactory, mmapDir, provider, keyIvResolver, nioExtensions);
+                LazyDecryptedCryptoMMapDirectory lazyDecryptedCryptoMMapDirectory = new LazyDecryptedCryptoMMapDirectory(
+                    location,
+                    provider,
+                    keyIvResolver
+                );
+                EagerDecryptedCryptoMMapDirectory egarDecryptedCryptoMMapDirectory = new EagerDecryptedCryptoMMapDirectory(
+                    location,
+                    provider,
+                    keyIvResolver
+                );
+                lazyDecryptedCryptoMMapDirectory.setPreloadExtensions(preLoadExtensions);
+
+                return new HybridCryptoDirectory(
+                    lockFactory,
+                    lazyDecryptedCryptoMMapDirectory,
+                    egarDecryptedCryptoMMapDirectory,
+                    provider,
+                    keyIvResolver,
+                    nioExtensions
+                );
             }
             case MMAPFS -> {
                 LOGGER.debug("Using MMAPFS directory");
-                CryptoMMapDirectory cryptoMMapDir = new CryptoMMapDirectory(location, provider, keyIvResolver);
+                LazyDecryptedCryptoMMapDirectory cryptoMMapDir = new LazyDecryptedCryptoMMapDirectory(location, provider, keyIvResolver);
                 cryptoMMapDir.setPreloadExtensions(preLoadExtensions);
                 return cryptoMMapDir;
             }

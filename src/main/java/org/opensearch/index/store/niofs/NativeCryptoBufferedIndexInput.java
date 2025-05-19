@@ -1,3 +1,4 @@
+
 /*
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -10,6 +11,7 @@
 * Modifications Copyright OpenSearch Contributors. See
 * GitHub history for details.
 */
+
 package org.opensearch.index.store.niofs;
 
 import java.io.EOFException;
@@ -17,24 +19,14 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 
-import javax.crypto.BadPaddingException;
-import javax.crypto.Cipher;
-import javax.crypto.IllegalBlockSizeException;
-import javax.crypto.ShortBufferException;
-
 import org.apache.lucene.store.BufferedIndexInput;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.opensearch.common.SuppressForbidden;
-import org.opensearch.index.store.cipher.AesCipherFactory;
-import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.cipher.OpenSslNativeCipher;
 
-/**
- * An IndexInput implementation that decrypts data for reading
- *
- * @opensearch.internal
- */
-final class CryptoBufferedIndexInput extends BufferedIndexInput {
+@SuppressForbidden(reason = "temporary bypass")
+final class NativeCryptoBufferedIndexInput extends BufferedIndexInput {
 
     private static final int CHUNK_SIZE = 16_384;
 
@@ -42,41 +34,39 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
     private final boolean isClone;
     private final long off;
     private final long end;
-    private Cipher cipher;
-    private final KeyIvResolver keyResolver;
+    private final byte[] key;
+    private final byte[] iv;
 
-    private ByteBuffer tmpBuffer = ByteBuffer.allocate(CHUNK_SIZE);
+    private final ByteBuffer tmpBuffer = ByteBuffer.allocate(CHUNK_SIZE);
 
-    public CryptoBufferedIndexInput(String resourceDesc, FileChannel fc, IOContext context, Cipher cipher, KeyIvResolver keyResolver)
+    public NativeCryptoBufferedIndexInput(String resourceDesc, FileChannel fc, IOContext context, byte[] key, byte[] iv)
         throws IOException {
         super(resourceDesc, context);
         this.channel = fc;
         this.off = 0L;
         this.end = fc.size();
-        this.cipher = cipher;
-        this.keyResolver = keyResolver;
+        this.key = key;
+        this.iv = iv;
         this.isClone = false;
     }
 
-    public CryptoBufferedIndexInput(
+    private NativeCryptoBufferedIndexInput(
         String resourceDesc,
         FileChannel fc,
         long off,
         long length,
         int bufferSize,
-        Cipher originalCipher,
-        KeyIvResolver keyResolver
+        byte[] key,
+        byte[] iv
     )
         throws IOException {
         super(resourceDesc, bufferSize);
         this.channel = fc;
         this.off = off;
         this.end = off + length;
+        this.key = key;
+        this.iv = iv;
         this.isClone = true;
-        this.keyResolver = keyResolver;
-
-        this.cipher = AesCipherFactory.getCipher(originalCipher.getProvider());
-        AesCipherFactory.initCipher(cipher, keyResolver.getDataKey(), keyResolver.getIvBytes(), Cipher.DECRYPT_MODE, off);
     }
 
     @Override
@@ -87,13 +77,20 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
     }
 
     @Override
-    public CryptoBufferedIndexInput clone() {
-        CryptoBufferedIndexInput clone = (CryptoBufferedIndexInput) super.clone();
-        clone.tmpBuffer = ByteBuffer.allocate(CHUNK_SIZE);
-        clone.cipher = AesCipherFactory.getCipher(cipher.getProvider());
-        AesCipherFactory
-            .initCipher(clone.cipher, keyResolver.getDataKey(), keyResolver.getIvBytes(), Cipher.DECRYPT_MODE, getFilePointer() + off);
-        return clone;
+    public NativeCryptoBufferedIndexInput clone() {
+        try {
+            return new NativeCryptoBufferedIndexInput(
+                this.toString(),
+                channel,
+                off + getFilePointer(),
+                length() - getFilePointer(),
+                getBufferSize(),
+                key,
+                iv
+            );
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to clone CryptoBufferedIndexInput", e);
+        }
     }
 
     @Override
@@ -103,14 +100,14 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
                 "slice() " + sliceDescription + " out of bounds: offset=" + offset + ", length=" + length + ", fileLength=" + this.length()
             );
         }
-        return new CryptoBufferedIndexInput(
+        return new NativeCryptoBufferedIndexInput(
             getFullSliceDescription(sliceDescription),
             channel,
             off + offset,
             length,
             getBufferSize(),
-            cipher,
-            keyResolver
+            key,
+            iv
         );
     }
 
@@ -128,11 +125,15 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         }
 
         tmpBuffer.flip();
+        byte[] encrypted = new byte[bytesRead];
+        tmpBuffer.get(encrypted, 0, bytesRead);
 
         try {
-            return (end - position > bytesRead) ? cipher.update(tmpBuffer, dst) : cipher.doFinal(tmpBuffer, dst);
-        } catch (ShortBufferException | IllegalBlockSizeException | BadPaddingException ex) {
-            throw new IOException("Failed to decrypt block at position " + position, ex);
+            byte[] decrypted = OpenSslNativeCipher.decrypt(key, iv, encrypted, position);
+            dst.put(decrypted);
+            return decrypted.length;
+        } catch (Throwable t) {
+            throw new IOException("Failed to decrypt block at position " + position, t);
         }
     }
 
@@ -163,6 +164,6 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         if (pos > length()) {
             throw new EOFException("seek past EOF: pos=" + pos + ", length=" + length());
         }
-        AesCipherFactory.initCipher(cipher, keyResolver.getDataKey(), keyResolver.getIvBytes(), Cipher.DECRYPT_MODE, pos + off);
+        // No need to reinitialize a cipher context — decryption is stateless per call via Panama
     }
 }

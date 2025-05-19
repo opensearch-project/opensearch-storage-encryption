@@ -1,7 +1,15 @@
 /*
- * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * The OpenSearch Contributors require contributions made to
+ * this file be licensed under the Apache-2.0 license or a
+ * compatible open source license.
  */
+
+/*
+* Modifications Copyright OpenSearch Contributors. See
+* GitHub history for details.
+*/
 package org.opensearch.index.store.niofs;
 
 import java.io.IOException;
@@ -21,7 +29,7 @@ import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.apache.lucene.store.NIOFSDirectory;
 import org.opensearch.common.util.io.IOUtils;
-import org.opensearch.index.store.cipher.CipherFactory;
+import org.opensearch.index.store.cipher.AesCipherFactory;
 import org.opensearch.index.store.iv.KeyIvResolver;
 
 /**
@@ -32,7 +40,7 @@ import org.opensearch.index.store.iv.KeyIvResolver;
  */
 public class CryptoNIOFSDirectory extends NIOFSDirectory {
     private final Provider provider;
-    private final KeyIvResolver keyIvResolver;
+    public final KeyIvResolver keyIvResolver;
     private final AtomicLong nextTempFileCounter = new AtomicLong();
 
     public CryptoNIOFSDirectory(LockFactory lockFactory, Path location, Provider provider, KeyIvResolver keyIvResolver) throws IOException {
@@ -54,8 +62,8 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         boolean success = false;
 
         try {
-            Cipher cipher = CipherFactory.getCipher(provider);
-            CipherFactory.initCipher(cipher, keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), Cipher.DECRYPT_MODE, 0);
+            Cipher cipher = AesCipherFactory.getCipher(provider);
+            AesCipherFactory.initCipher(cipher, keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), Cipher.DECRYPT_MODE, 0);
 
             final IndexInput indexInput = new CryptoBufferedIndexInput(
                 "CryptoBufferedIndexInput(path=\"" + path + "\")",
@@ -86,13 +94,12 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         // Cipher cipher = CipherFactory.getCipher(provider);
         // CipherFactory.initCipher(cipher, this.keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), Cipher.ENCRYPT_MODE, 0);
 
-        return new CryptoOutputStreamIndexOutput(
+        return new NativeCryptoOutputStreamIndexOutput(
             name,
             path,
             fos,
-            this.keyIvResolver.getDataKey(),
-            keyIvResolver.getIvBytes(),
-            this.provider
+            this.keyIvResolver.getDataKey().getEncoded(),
+            keyIvResolver.getIvBytes()
         );
     }
 
@@ -107,18 +114,19 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-        Cipher cipher = CipherFactory.getCipher(provider);
-        CipherFactory.initCipher(cipher, keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), Cipher.ENCRYPT_MODE, 0);
+        // Cipher cipher = CipherFactory.getCipher(provider);
 
-        return new CryptoOutputStreamIndexOutput(
+        // CipherFactory.initCipher(cipher, keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), Cipher.ENCRYPT_MODE, 0);
+
+        return new NativeCryptoOutputStreamIndexOutput(
             name,
             path,
             fos,
-            this.keyIvResolver.getDataKey(),
-            keyIvResolver.getIvBytes(),
-            this.provider
+            this.keyIvResolver.getDataKey().getEncoded(),
+            keyIvResolver.getIvBytes()
         );
 
+        // return new CryptoOutputStreamIndexOutput(name, path, fos, cipher);
     }
 
     @Override

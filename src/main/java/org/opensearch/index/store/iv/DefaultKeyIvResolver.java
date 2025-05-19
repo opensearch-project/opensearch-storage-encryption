@@ -19,7 +19,7 @@ import org.apache.lucene.store.IndexOutput;
 import org.opensearch.common.Randomness;
 import org.opensearch.common.crypto.DataKeyPair;
 import org.opensearch.common.crypto.MasterKeyProvider;
-import org.opensearch.index.store.cipher.CipherFactory;
+import org.opensearch.index.store.cipher.AesCipherFactory;
 
 /**
  * Default implementation of {@link KeyIvResolver} responsible for managing
@@ -35,7 +35,6 @@ import org.opensearch.index.store.cipher.CipherFactory;
 public class DefaultKeyIvResolver implements KeyIvResolver {
 
     private final Directory directory;
-    private final Provider provider;
     private final MasterKeyProvider keyProvider;
 
     private Key dataKey;
@@ -54,7 +53,6 @@ public class DefaultKeyIvResolver implements KeyIvResolver {
      */
     public DefaultKeyIvResolver(Directory directory, Provider provider, MasterKeyProvider keyProvider) throws IOException {
         this.directory = directory;
-        this.provider = provider;
         this.keyProvider = keyProvider;
         initialize();
     }
@@ -80,7 +78,7 @@ public class DefaultKeyIvResolver implements KeyIvResolver {
         dataKey = new SecretKeySpec(pair.getRawKey(), "AES");
         writeByteArrayFile(KEY_FILE, pair.getEncryptedKey());
 
-        byte[] ivBytes = new byte[CipherFactory.IV_ARRAY_LENGTH];
+        byte[] ivBytes = new byte[AesCipherFactory.IV_ARRAY_LENGTH];
         SecureRandom random = Randomness.createSecure();
         random.nextBytes(ivBytes);
         iv = Base64.getEncoder().encodeToString(ivBytes);

@@ -22,7 +22,7 @@ import javax.crypto.spec.IvParameterSpec;
  *
  * @opensearch.internal
  */
-public class CipherFactory {
+public class AesCipherFactory {
 
     /** AES block size in bytes. Required for counter calculations. */
     public static final int AES_BLOCK_SIZE_BYTES = 16;
