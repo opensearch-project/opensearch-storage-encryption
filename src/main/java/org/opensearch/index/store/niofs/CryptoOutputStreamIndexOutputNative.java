@@ -7,16 +7,11 @@ package org.opensearch.index.store.niofs;
 import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.lang.foreign.Arena;
-import java.lang.foreign.MemorySegment;
-import java.lang.foreign.ValueLayout;
-import java.nio.ByteBuffer;
 import java.nio.file.Path;
 
 import org.apache.lucene.store.OutputStreamIndexOutput;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.cipher.OpenSslPanamaCipher;
-import org.opensearch.index.store.cipher.OpenSslPanamaCipher.OpenSslException;
 
 /**
  * An IndexOutput implementation that encrypts data before writing using native OpenSSL AES-CTR.
@@ -48,40 +43,19 @@ public final class CryptoOutputStreamIndexOutputNative extends OutputStreamIndex
     @SuppressForbidden(reason = "temporary bypass")
     private static class EncryptedOutputStream extends FilterOutputStream {
         private static final int BUFFER_SIZE = 65536;
-        private static final int AES_BLOCK_SIZE = 16;
 
-        private final Arena arena;
-        private final MemorySegment ctx;
+        private final byte[] key;
+        private final byte[] iv;
         private final byte[] buffer;
         private int bufferPosition = 0;
+        private long streamOffset = 0;
         private boolean isClosed = false;
 
-        EncryptedOutputStream(OutputStream os, byte[] key, byte[] iv) throws IOException {
+        EncryptedOutputStream(OutputStream os, byte[] key, byte[] iv) {
             super(os);
-            try {
-                this.arena = Arena.ofConfined();
-                this.ctx = (MemorySegment) OpenSslPanamaCipher.EVP_CIPHER_CTX_new.invoke();
-                if (ctx.address() == 0) {
-                    throw new OpenSslException("Failed to create cipher context");
-                }
-
-                MemorySegment cipher = (MemorySegment) OpenSslPanamaCipher.EVP_aes_256_ctr.invoke();
-                if (cipher.address() == 0) {
-                    throw new OpenSslException("Failed to create cipher");
-                }
-
-                MemorySegment keySeg = arena.allocateArray(ValueLayout.JAVA_BYTE, key);
-                MemorySegment ivSeg = arena.allocateArray(ValueLayout.JAVA_BYTE, iv);
-
-                int rc = (int) OpenSslPanamaCipher.EVP_EncryptInit_ex.invoke(ctx, cipher, MemorySegment.NULL, keySeg, ivSeg);
-                if (rc != 1) {
-                    throw new OpenSslException("EVP_EncryptInit_ex failed");
-                }
-
-                this.buffer = new byte[BUFFER_SIZE];
-            } catch (Throwable t) {
-                throw new IOException("Failed to initialize encryption", t);
-            }
+            this.key = key;
+            this.iv = iv;
+            this.buffer = new byte[BUFFER_SIZE];
         }
 
         @Override
@@ -93,9 +67,8 @@ public final class CryptoOutputStreamIndexOutputNative extends OutputStreamIndex
             if (offset < 0 || length < 0 || offset + length > b.length) {
                 throw new IndexOutOfBoundsException("Invalid offset or length");
             }
-            if (length == 0) {
+            if (length == 0)
                 return;
-            }
 
             if (length >= BUFFER_SIZE) {
                 flushBuffer();
@@ -110,36 +83,6 @@ public final class CryptoOutputStreamIndexOutputNative extends OutputStreamIndex
             }
         }
 
-        private void processAndWrite(byte[] data, int offset, int length) throws IOException {
-            try {
-                // Create ByteBuffer from the input data
-                ByteBuffer input = ByteBuffer.wrap(data, offset, length);
-                ByteBuffer output = ByteBuffer.allocate(length + AES_BLOCK_SIZE);
-
-                // Convert ByteBuffers to MemorySegments
-                MemorySegment inSeg = MemorySegment.ofBuffer(input);
-                MemorySegment outSeg = MemorySegment.ofBuffer(output);
-                MemorySegment outLen = arena.allocate(ValueLayout.JAVA_INT);
-
-                int rc = (int) OpenSslPanamaCipher.EVP_EncryptUpdate.invoke(ctx, outSeg, outLen, inSeg, length);
-                if (rc != 1) {
-                    throw new OpenSslException("EVP_EncryptUpdate failed");
-                }
-
-                int written = outLen.get(ValueLayout.JAVA_INT, 0);
-                out.write(output.array(), 0, written);
-            } catch (Throwable t) {
-                throw new IOException("Encryption failed", t);
-            }
-        }
-
-        private void flushBuffer() throws IOException {
-            if (bufferPosition > 0) {
-                processAndWrite(buffer, 0, bufferPosition);
-                bufferPosition = 0;
-            }
-        }
-
         @Override
         public void write(int b) throws IOException {
             checkClosed();
@@ -149,17 +92,43 @@ public final class CryptoOutputStreamIndexOutputNative extends OutputStreamIndex
             buffer[bufferPosition++] = (byte) b;
         }
 
-        private void checkClosed() throws IOException {
-            if (isClosed) {
-                throw new IOException("Stream is closed");
+        private void flushBuffer() throws IOException {
+            if (bufferPosition > 0) {
+                processAndWrite(buffer, 0, bufferPosition);
+                bufferPosition = 0;
             }
+        }
+
+        private void processAndWrite(byte[] data, int offset, int length) throws IOException {
+            try {
+                byte[] encrypted = OpenSslPanamaCipher.encrypt(key, iv, slice(data, offset, length), streamOffset);
+                out.write(encrypted);
+                streamOffset += length;
+            } catch (Throwable t) {
+                throw new IOException("Encryption failed at offset " + streamOffset, t);
+            }
+        }
+
+        private byte[] slice(byte[] data, int offset, int length) {
+            if (offset == 0 && length == data.length) {
+                return data;
+            }
+            byte[] sliced = new byte[length];
+            System.arraycopy(data, offset, sliced, 0, length);
+            return sliced;
+        }
+
+        @Override
+        public void flush() throws IOException {
+            checkClosed();
+            flushBuffer();
+            out.flush();
         }
 
         @Override
         public void close() throws IOException {
-            if (isClosed) {
+            if (isClosed)
                 return;
-            }
 
             IOException exception = null;
             try {
@@ -169,40 +138,21 @@ public final class CryptoOutputStreamIndexOutputNative extends OutputStreamIndex
             }
 
             try {
-                OpenSslPanamaCipher.EVP_CIPHER_CTX_free.invoke(ctx);
-            } catch (Throwable t) {
-                if (exception == null) {
-                    exception = new IOException("Failed to free OpenSSL context", t);
-                }
-            }
-
-            try {
-                arena.close();
-            } catch (Exception e) {
-                if (exception == null) {
-                    exception = new IOException("Failed to close arena", e);
-                }
-            }
-
-            try {
                 super.close();
             } catch (IOException e) {
-                if (exception == null) {
+                if (exception == null)
                     exception = e;
-                }
             }
 
             isClosed = true;
-            if (exception != null) {
+            if (exception != null)
                 throw exception;
-            }
         }
 
-        @Override
-        public void flush() throws IOException {
-            checkClosed();
-            flushBuffer();
-            out.flush();
+        private void checkClosed() throws IOException {
+            if (isClosed) {
+                throw new IOException("Stream is closed");
+            }
         }
     }
 }
