@@ -1,0 +1,171 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The OpenSearch Contributors require contributions made to
+ * this file be licensed under the Apache-2.0 license or a
+ * compatible open source license.
+ *
+ * Modifications Copyright OpenSearch Contributors. See
+ * GitHub history for details.
+ */
+
+buildscript {
+    ext {
+        opensearch_version = System.getProperty("opensearch.version", "3.1.0-SNAPSHOT")
+    }
+
+    repositories {
+        mavenCentral()
+        mavenLocal()
+        maven { url "https://aws.oss.sonatype.org/content/repositories/snapshots" }
+    }
+
+    dependencies {
+        classpath "org.opensearch.gradle:build-tools:${opensearch_version}"
+    }
+}
+
+plugins {
+    id 'java'
+    id 'idea'
+    id 'jacoco'
+    id 'com.diffplug.spotless' version '6.25.0'
+}
+
+apply plugin: 'opensearch.opensearchplugin'
+apply plugin: 'opensearch.yaml-rest-test'
+apply plugin: 'opensearch.internal-cluster-test'
+apply plugin: 'opensearch.java-agent'
+
+ext {
+    projectSubstitutions = [:]
+    licenseFile = rootProject.file('LICENSE.txt')
+    noticeFile = rootProject.file('NOTICE.txt')
+}
+
+opensearchplugin {
+    name 'storage-encryption'
+    description 'Encrypts and decrypts index data at rest.'
+    classname 'org.opensearch.index.store.CryptoDirectoryPlugin'
+}
+
+repositories {
+    mavenCentral()
+    mavenLocal()
+    maven { url "https://aws.oss.sonatype.org/content/repositories/snapshots" }
+}
+
+dependencies {
+    compileOnly "org.opensearch:opensearch:${opensearch_version}"
+    
+    runtimeOnly "org.apache.logging.log4j:log4j-slf4j-impl:${versions.log4j}"
+    
+    testImplementation "org.opensearch.test:framework:${opensearch_version}"
+    testImplementation "commons-io:commons-io:2.13.0"
+
+    // Integration test dependencies
+    testImplementation "org.opensearch.plugin:reindex-client:${opensearch_version}"
+    internalClusterTestImplementation "org.opensearch.plugin:reindex-client:${opensearch_version}"
+    internalClusterTestImplementation "org.opensearch.plugin:lang-mustache-client:${opensearch_version}"
+    internalClusterTestImplementation "org.opensearch.plugin:parent-join-client:${opensearch_version}"
+    internalClusterTestImplementation "org.opensearch.plugin:crypto-kms:${opensearch_version}"
+    internalClusterTestImplementation "org.opensearch.plugin:aggs-matrix-stats-client:${opensearch_version}"
+}
+
+test {
+    useJUnit()
+    testLogging {
+        events "passed", "skipped", "failed"
+        showStandardStreams = true
+    }
+    systemProperty 'tests.security.manager', 'false'
+    jvmArgs += [
+        '--enable-preview',
+        '--enable-native-access=ALL-UNNAMED'
+    ]
+}
+
+tasks.named('internalClusterTest').configure {
+    systemProperty 'tests.security.manager', 'false'
+    systemProperty 'java.security.policy', 'test.policy'
+    testLogging {
+        events "passed", "skipped", "failed"
+        showStandardStreams = true
+    }
+    jvmArgs += [
+        '--enable-preview',
+        '--enable-native-access=ALL-UNNAMED'
+    ]
+}
+
+tasks.named("yamlRestTest").configure {
+    jvmArgs += "--enable-preview"
+    jvmArgs += "--enable-native-access=ALL-UNNAMED"
+}
+
+compileJava {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:unchecked' << '-Xlint:deprecation' << '-Werror'
+    options.compilerArgs += ['--enable-preview']
+}
+
+compileTestJava {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+    options.compilerArgs += ['--enable-preview']
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs += "--enable-preview"
+    options.release = 21
+}
+
+tasks.withType(Test).configureEach {
+    jvmArgs += "--enable-preview"
+}
+
+javadoc {
+    options.encoding = 'UTF-8'
+    options.charSet = 'UTF-8'
+    options.addStringOption('Xdoclint:all', '-quiet')
+    options.addStringOption('tag', 'opensearch.internal:a:Internal:')
+    options.addStringOption("source", "21")
+    options.addBooleanOption("-enable-preview", true)
+    failOnError = true
+}
+
+jacoco {
+    toolVersion = "0.8.12"
+}
+
+jacocoTestReport {
+    reports {
+        xml.required = true
+        html.required = true
+    }
+}
+
+check.dependsOn jacocoTestReport
+
+dependencyLicenses.enabled = false
+thirdPartyAudit.enabled = false
+loggerUsageCheck.enabled = false
+validateNebulaPom.enabled = false
+
+task allTests {
+    dependsOn test, internalClusterTest, yamlRestTest
+    group = 'Verification'
+    description = 'Runs all tests (Unit, Integration, and YAML)'
+}
+
+spotless {
+    java {
+        removeUnusedImports()
+        importOrder 'java', 'javax', 'org', 'com'
+        licenseHeaderFile 'spotless.license.java'
+        eclipse().configFile rootProject.file('.eclipseformat.xml')
+    }
+}

@@ -1,0 +1,5 @@
+
+grant {
+    // kms client opens socket connections for to kms
+    permission java.net.SocketPermission "*", "connect,resolve";
+};
