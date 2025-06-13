@@ -1,22 +1,17 @@
 /*
+ * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
- *
- * The OpenSearch Contributors require contributions made to
- * this file be licensed under the Apache-2.0 license or a
- * compatible open source license.
  */
-
-/*
-* Modifications Copyright OpenSearch Contributors. See
-* GitHub history for details.
-*/
 package org.opensearch.index.store.mmap;
 
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileChannel.MapMode;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.Provider;
 import java.util.Set;
 import java.util.function.BiPredicate;
@@ -28,15 +23,13 @@ import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.MMapDirectory;
 import org.opensearch.common.SuppressForbidden;
-import org.opensearch.index.store.cipher.MemorySegmentDecryptor;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
 import org.opensearch.index.store.iv.KeyIvResolver;
 
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "temporary bypass")
 public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
-
-    private static final Logger LOGGER = LogManager.getLogger(LazyDecryptedCryptoMMapDirectory.class);
+    private static final Logger LOGGER = LogManager.getLogger(EagerDecryptedCryptoMMapDirectory.class);
 
     private final KeyIvResolver keyIvResolver;
 
@@ -79,56 +72,44 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
 
         Path file = getDirectory().resolve(name);
         long size = Files.size(file);
-
         boolean confined = context == IOContext.READONCE;
         Arena arena = confined ? Arena.ofConfined() : Arena.ofShared();
 
+        // TODO: Make it a constant.
         int chunkSizePower = 34;
+        boolean success = false;
 
-        try {
-            // Open the file using native open() call
-            int fd = PanamaNativeAccess.openFile(file.toString());
-            if (fd == -1) {
-                throw new IOException("Failed to open file: " + file);
+        try (var fc = FileChannel.open(file, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+            final long fileSize = fc.size();
+            MemorySegment[] segments = mmapAndDecrypt(fc, fileSize, arena, chunkSizePower, name, context);
+
+            final IndexInput in = MemorySegmentIndexInput
+                .newInstance("CryptoMemorySegmentIndexInput(path=\"" + file + "\")", arena, segments, size, chunkSizePower);
+            success = true;
+            return in;
+        } catch (Throwable ex) {
+            throw new IOException("Failed to mmap/decrypt " + file, ex);
+        } finally {
+            if (success == false) {
+                arena.close();
             }
-
-            try {
-                MemorySegment[] segments = mmapAndDecrypt(fd, size, arena, chunkSizePower, name, context);
-                return MemorySegmentIndexInput
-                    .newInstance("CryptoMemorySegmentIndexInput(path=\"" + file + "\")", arena, segments, size, chunkSizePower);
-            } finally {
-                PanamaNativeAccess.closeFile(fd);
-            }
-
-        } catch (Throwable t) {
-            arena.close();
-            throw new IOException("Failed to mmap/decrypt " + file, t);
         }
     }
 
-    private MemorySegment[] mmapAndDecrypt(int fd, long size, Arena arena, int chunkSizePower, String name, IOContext context)
+    private MemorySegment[] mmapAndDecrypt(FileChannel fc, long size, Arena arena, int chunkSizePower, String name, IOContext context)
         throws Throwable {
         final long chunkSize = 1L << chunkSizePower;
         final int numSegments = (int) ((size + chunkSize - 1) >>> chunkSizePower);
-        MemorySegment[] segments = new MemorySegment[numSegments];
 
-        // Get madvise flags once - they don't change per segment
-        int madviseFlags = LuceneIOContextMAdvise.getMAdviseFlags(context, name);
+        final MemorySegment[] segments = new MemorySegment[numSegments];
 
         long offset = 0;
         for (int i = 0; i < numSegments; i++) {
             long remaining = size - offset;
             long segmentSize = Math.min(chunkSize, remaining);
 
-            MemorySegment mmapSegment = (MemorySegment) PanamaNativeAccess.MMAP
-                .invoke(
-                    MemorySegment.NULL,
-                    segmentSize,
-                    PanamaNativeAccess.PROT_READ | PanamaNativeAccess.PROT_WRITE,
-                    PanamaNativeAccess.MAP_PRIVATE,
-                    fd,
-                    offset
-                );
+            MemorySegment mmapSegment = fc.map(MapMode.PRIVATE, offset, segmentSize, arena);
+
             if (mmapSegment.address() == 0 || mmapSegment.address() == -1) {
                 throw new IOException("mmap failed at offset: " + offset);
             }
@@ -138,14 +119,12 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
                     PanamaNativeAccess.madvise(mmapSegment.address(), segmentSize, PanamaNativeAccess.MADV_WILLNEED);
                 }
             } catch (Throwable t) {
-                LOGGER.warn("madvise failed for {} at context {} advise: {}", name, context, madviseFlags, t);
+                LOGGER.warn("madvise MADV_WILLNEED failed for file {} with IOcontext {}", name, context, t);
             }
 
-            MemorySegment segment = MemorySegment.ofAddress(mmapSegment.address()).reinterpret(segmentSize, arena, null);
+            decryptSegmentInPlaceParallel(arena, mmapSegment, offset);
 
-            decryptSegmentInPlaceParallel(arena, segment, offset);
-
-            segments[i] = segment;
+            segments[i] = mmapSegment;
             offset += segmentSize;
         }
 
@@ -163,9 +142,15 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
         final byte[] key = this.keyIvResolver.getDataKey().getEncoded();
         final byte[] iv = this.keyIvResolver.getIvBytes();
 
-        // Fast-path: no parallelism for ≤ 2 MiB
+        // Fast-path: no parallelism for ≤ 4 MiB
         if (size <= (4L << 20)) {
-            MemorySegmentDecryptor.decryptSegment(segment, segmentOffsetInFile, key, iv, (int) size); // downcast is safe.
+            long start = System.nanoTime();
+
+            OpenSslNativeCipher.decryptInPlaceV2(arena, segment.address(), size, key, iv, segmentOffsetInFile);
+
+            long end = System.nanoTime();
+            long durationMs = (end - start) / 1_000_000;
+            LOGGER.debug("Egar decryption of {} MiB at offset {} took {} ms", size / 1048576.0, segmentOffsetInFile, durationMs);
             return;
         }
 

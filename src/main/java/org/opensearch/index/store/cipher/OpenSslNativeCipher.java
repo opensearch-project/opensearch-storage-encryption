@@ -453,13 +453,13 @@ public final class OpenSslNativeCipher {
                 EVP_EncryptUpdate.invoke(ctx, dummyOut, dummyLen, dummyIn, partialBlockOffset);
             }
 
-            MemorySegment inOut = MemorySegment.ofAddress(addr).reinterpret(length);
+            MemorySegment inOut = MemorySegment.ofAddress(addr).reinterpret(length, arena, null);
             MemorySegment outLen = arena.allocate(ValueLayout.JAVA_INT);
 
             rc = (int) EVP_EncryptUpdate.invoke(ctx, inOut, outLen, inOut, (int) length);
+
             if (rc != 1)
                 throw new OpenSslException("EVP_EncryptUpdate failed");
-
         } finally {
             EVP_CIPHER_CTX_free.invoke(ctx);
         }

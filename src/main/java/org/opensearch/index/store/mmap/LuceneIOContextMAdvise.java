@@ -1,16 +1,7 @@
 /*
+ * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
- *
- * The OpenSearch Contributors require contributions made to
- * this file be licensed under the Apache-2.0 license or a
- * compatible open source license.
  */
-
-/*
-* Modifications Copyright OpenSearch Contributors. See
-* GitHub history for details.
-*/
-
 package org.opensearch.index.store.mmap;
 
 import org.apache.lucene.store.IOContext;
@@ -21,7 +12,6 @@ public class LuceneIOContextMAdvise {
 
     // madvise flags
     private static final int MADV_NORMAL = 0;
-    private static final int MADV_RANDOM = 1;
     private static final int MADV_SEQUENTIAL = 2;
     private static final int MADV_WILLNEED = 3;
     private static final int MADV_DONTNEED = 4;
@@ -59,12 +49,13 @@ public class LuceneIOContextMAdvise {
                 // Check the actual readAdvice for DEFAULT context
                 return switch (readAdvice) {
                     case SEQUENTIAL -> MADV_SEQUENTIAL;
-                    case RANDOM -> MADV_RANDOM;
+                    case RANDOM -> MADV_NORMAL; // random in lucene seems to behaving problem.
                     case NORMAL -> MADV_NORMAL;
                     default -> MADV_NORMAL;
                 };
             }
 
+            // safest.
             default -> {
                 return MADV_WILLNEED;
             }

@@ -1,23 +1,16 @@
 /*
+ * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
- *
- * The OpenSearch Contributors require contributions made to
- * this file be licensed under the Apache-2.0 license or a
- * compatible open source license.
  */
-
-/*
-* Modifications Copyright OpenSearch Contributors. See
-* GitHub history for details.
-*/
 package org.opensearch.index.store.mmap;
-
 
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
-import java.nio.file.Files;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileChannel.MapMode;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.Provider;
 import java.util.Optional;
 import java.util.Set;
@@ -163,80 +156,70 @@ public final class LazyDecryptedCryptoMMapDirectory extends MMapDirectory {
         ensureCanRead(name);
 
         Path file = getDirectory().resolve(name);
-        long size = Files.size(file);
 
         boolean confined = context == IOContext.READONCE;
         Arena arena = confined ? Arena.ofConfined() : Arena.ofShared();
-
         // TODO: evaluate the effect if this change on number of segments to be opened.
         // final Arena arena = confined ? Arena.ofConfined() : getSharedArena(name, arenas);
 
+        boolean success = false;
+
         int chunkSizePower = 34;
 
-        try {
-            // Open the file using native open() call
-            int fd = PanamaNativeAccess.openFile(file.toString());
-            if (fd == -1) {
-                throw new IOException("Failed to open file: " + file);
-            }
+        try (var fc = FileChannel.open(file, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+            final long fileSize = fc.size();
+            MemorySegment[] segments = mmap(fc, fileSize, arena, chunkSizePower, name, context);
 
-            try {
-                MemorySegment[] segments = mmapAndDecrypt(file, fd, size, arena, chunkSizePower, name, context);
-                return LazyDecryptedMemorySegmentIndexInput
-                    .newInstance(
-                        "CryptoMemorySegmentIndexInput(path=\"" + file + "\")",
-                        arena,
-                        segments,
-                        size,
-                        chunkSizePower,
-                        keyIvResolver.getDataKey().getEncoded(),
-                        keyIvResolver.getIvBytes()
-                    );
-            } finally {
-                PanamaNativeAccess.closeFile(fd);
+            final IndexInput in = LazyDecryptedMemorySegmentIndexInput
+                .newInstance(
+                    "CryptoMemorySegmentIndexInput(path=\"" + file + "\")",
+                    arena,
+                    segments,
+                    fileSize,
+                    chunkSizePower,
+                    keyIvResolver.getDataKey().getEncoded(),
+                    keyIvResolver.getIvBytes()
+                );
+            success = true;
+            return in;
+        } catch (Throwable ex) {
+            throw new IOException("Failed to mmap " + file, ex);
+        } finally {
+            if (success == false) {
+                arena.close();
             }
-
-        } catch (Throwable t) {
-            arena.close();
-            throw new IOException("Failed to mmap/decrypt " + file, t);
         }
     }
 
-    private MemorySegment[] mmapAndDecrypt(Path path, int fd, long size, Arena arena, int chunkSizePower, String name, IOContext context)
+    private MemorySegment[] mmap(FileChannel fc, long size, Arena arena, int chunkSizePower, String name, IOContext context)
         throws Throwable {
         final long chunkSize = 1L << chunkSizePower;
         final int numSegments = (int) ((size + chunkSize - 1) >>> chunkSizePower);
-        MemorySegment[] segments = new MemorySegment[numSegments];
 
         int madviseFlags = LuceneIOContextMAdvise.getMAdviseFlags(context, name);
+
+        final MemorySegment[] segments = new MemorySegment[numSegments];
 
         long offset = 0;
         for (int i = 0; i < numSegments; i++) {
             long remaining = size - offset;
             long segmentSize = Math.min(chunkSize, remaining);
 
-            MemorySegment mmapSegment = (MemorySegment) PanamaNativeAccess.MMAP
-                .invoke(
-                    MemorySegment.NULL,
-                    segmentSize,
-                    PanamaNativeAccess.PROT_READ | PanamaNativeAccess.PROT_WRITE,
-                    PanamaNativeAccess.MAP_PRIVATE,
-                    fd,
-                    offset
-                );
+            MemorySegment mmapSegment = fc.map(MapMode.PRIVATE, offset, segmentSize, arena);
+
             if (mmapSegment.address() == 0 || mmapSegment.address() == -1) {
                 throw new IOException("mmap failed at offset: " + offset);
             }
 
             try {
-                PanamaNativeAccess.madvise(mmapSegment.address(), segmentSize, madviseFlags);
+                if (mmapSegment.address() % PanamaNativeAccess.getPageSize() == 0) {
+                    PanamaNativeAccess.madvise(mmapSegment.address(), segmentSize, madviseFlags);
+                }
             } catch (Throwable t) {
-                LOGGER.warn("madvise failed for {} at context {} advise: {}", name, context, madviseFlags, t);
+                LOGGER.warn("madvise {} failed for file {} with IOcontext {}", madviseFlags, name, context, t);
             }
 
-            MemorySegment segment = MemorySegment.ofAddress(mmapSegment.address()).reinterpret(segmentSize, arena, null);
-
-            segments[i] = segment;
+            segments[i] = mmapSegment;
             offset += segmentSize;
         }
 
