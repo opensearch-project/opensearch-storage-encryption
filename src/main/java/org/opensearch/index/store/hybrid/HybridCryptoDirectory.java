@@ -49,8 +49,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         this.lazyDecryptedCryptoMMapDirectoryDelegate = delegate;
         this.eagerDecryptedCryptoMMapDirectory = eagerDecryptedCryptoMMapDirectory1;
         this.nioExtensions = nioExtensions;
-        // Only these files get special treatment
-        this.specialExtensions = Set.of("kdd", "kdi", "kdm", "tip", "tim", "tmd", "cfs");
+        this.specialExtensions = Set.of("kdd", "kdi", "kdm", "tip", "tim", "tmd", "cfs", "doc", "dvd", "nvd", "psm", "fdm");
     }
 
     @Override
@@ -68,6 +67,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         // Special routing for key file types
         return routeSpecialFile(name, extension, context);
     }
+
 
     private IndexInput routeSpecialFile(String name, String extension, IOContext context) throws IOException {
         Path file = getDirectory().resolve(name);
@@ -103,57 +103,32 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
             return lazyDecryptedCryptoMMapDirectoryDelegate.openInput(name, context);
         }
 
-        if ((fileSize >= (2L << 20)) && (fileSize <= (8L << 20))) {
-            return eagerDecryptedCryptoMMapDirectory.openInput(name, context);
-        }
-
         // Route based on file type and access patterns
         switch (extension) {
-            case "tip", "tmd" -> {
-                // Term dictionary files: Random access to small blocks (~2KB)
-                // Always use MMap for optimal performance regardless of size
-                LOGGER.debug("Routing term file {} to MMap for random small block access", name);
-                return lazyDecryptedCryptoMMapDirectoryDelegate.openInput(name, context);
-            }
-            case "kdm", "kdi" -> {
-                // BKD tree metadata: Small file, infrequent access
-                // Use MMap for simplicity
-                LOGGER.debug("Routing KDM {} to MMap", name);
-                return lazyDecryptedCryptoMMapDirectoryDelegate.openInput(name, context);
+            case "tip", "tmd", "kdm", "kdi", "nvd", "psm" -> {
+                return eagerDecryptedCryptoMMapDirectory.openInput(name, context);
             }
 
-            case "tim" -> {
-                if (fileSize >= (32L << 20)) {
-                    LOGGER.debug("Routing LARGE files {} for egar {}", name, fileSize / 1048576.0);
+            case "tim", "doc", "fdm" -> {
+                if ((fileSize >= (2L << 20)) && (fileSize <= (8L << 20))) {
                     return eagerDecryptedCryptoMMapDirectory.openInput(name, context);
                 }
-
-                return lazyDecryptedCryptoMMapDirectoryDelegate.openInput(name, context);
-            }
-
-            case "kdd" -> {
-                if (fileSize >= (32L << 20)) {
-                    LOGGER.debug("Routing LARGE files {} for eagar {}", name, fileSize / 1048576.0);
-                    return eagerDecryptedCryptoMMapDirectory.openInput(name, context);
-                }
-
                 return lazyDecryptedCryptoMMapDirectoryDelegate.openInput(name, context);
             }
 
             case "cfs" -> {
-                if ((fileSize >= (2L << 20)) && (fileSize <= (16L << 20))) {
+                if (fileSize <= (16L << 20)) {
                     return eagerDecryptedCryptoMMapDirectory.openInput(name, context);
                 }
+                return lazyDecryptedCryptoMMapDirectoryDelegate.openInput(name, context);
+            }
 
+            case "dvd", "kdd" -> {
                 return lazyDecryptedCryptoMMapDirectoryDelegate.openInput(name, context);
             }
 
             default -> {
-                if (useDelegate(name)) {
-                    return lazyDecryptedCryptoMMapDirectoryDelegate.openInput(name, context);
-                } else {
-                    return super.openInput(name, context);
-                }
+                return super.openInput(name, context);
             }
         }
     }
