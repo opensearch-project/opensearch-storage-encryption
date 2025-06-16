@@ -97,6 +97,7 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
         }
 
         @Override
+        @SuppressWarnings("ConvertToTryWithResources")
         public void close() throws IOException {
             try {
                 flushBuffer();

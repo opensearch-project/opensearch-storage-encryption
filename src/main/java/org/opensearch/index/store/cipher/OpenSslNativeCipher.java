@@ -460,6 +460,7 @@ public final class OpenSslNativeCipher {
 
             if (rc != 1)
                 throw new OpenSslException("EVP_EncryptUpdate failed");
+
         } finally {
             EVP_CIPHER_CTX_free.invoke(ctx);
         }

@@ -2,7 +2,7 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.mmap;
+package org.opensearch.index.store.concurrency;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class RefCountedSharedArena implements Arena {
 
     // default maximum permits
-    static final int DEFAULT_MAX_PERMITS = 1024;
+    public static final int DEFAULT_MAX_PERMITS = 1024;
 
     private static final int CLOSED = 0;
     // minimum value, beyond which permits are exhausted
@@ -47,11 +47,11 @@ public final class RefCountedSharedArena implements Arena {
     // low 16 bit contain the current ref count
     private final AtomicInteger state;
 
-    RefCountedSharedArena(String segmentName, Runnable onClose) {
+    public RefCountedSharedArena(String segmentName, Runnable onClose) {
         this(segmentName, onClose, DEFAULT_MAX_PERMITS);
     }
 
-    RefCountedSharedArena(String segmentName, Runnable onClose, int maxPermits) {
+    public RefCountedSharedArena(String segmentName, Runnable onClose, int maxPermits) {
         if (validMaxPermits(maxPermits) == false) {
             throw new IllegalArgumentException("invalid max permits: " + maxPermits);
         }
@@ -61,12 +61,12 @@ public final class RefCountedSharedArena implements Arena {
         this.state = new AtomicInteger(maxPermits << 16);
     }
 
-    static boolean validMaxPermits(int v) {
+    public static boolean validMaxPermits(int v) {
         return v > 0 && v <= 0x7FFF;
     }
 
     // for debugging
-    String getSegmentName() {
+    public String getSegmentName() {
         return segmentName;
     }
 
@@ -74,7 +74,7 @@ public final class RefCountedSharedArena implements Arena {
      * Returns true if the ref count has been increased. Otherwise, false if there are no remaining
      * acquires.
      */
-    boolean acquire() {
+    public boolean acquire() {
         int value;
         while (true) {
             value = state.get();
@@ -88,7 +88,8 @@ public final class RefCountedSharedArena implements Arena {
     }
 
     /** Decrements the ref count. */
-    void release() {
+    @SuppressWarnings("ConvertToTryWithResources")
+    public void release() {
         int value;
         while (true) {
             value = state.get();

@@ -83,9 +83,6 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-        // Cipher cipher = CipherFactory.getCipher(provider);
-        // CipherFactory.initCipher(cipher, this.keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), Cipher.ENCRYPT_MODE, 0);
-
         return new NativeCryptoOutputStreamIndexOutput(
             name,
             path,
@@ -106,10 +103,6 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-        // Cipher cipher = CipherFactory.getCipher(provider);
-
-        // CipherFactory.initCipher(cipher, keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), Cipher.ENCRYPT_MODE, 0);
-
         return new NativeCryptoOutputStreamIndexOutput(
             name,
             path,
@@ -117,8 +110,6 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
             this.keyIvResolver.getDataKey().getEncoded(),
             keyIvResolver.getIvBytes()
         );
-
-        // return new CryptoOutputStreamIndexOutput(name, path, fos, cipher);
     }
 
     @Override

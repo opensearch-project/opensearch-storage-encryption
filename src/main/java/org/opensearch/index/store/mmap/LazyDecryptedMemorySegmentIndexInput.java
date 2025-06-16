@@ -291,7 +291,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             long batchSize = batchPageNumbers.size() * osPageSize;
 
             try {
-                
+
                 MemorySegmentDecryptor.decryptInPlace(batchStartAddr, batchSize, key, iv, batchStartFileOffset);
             }
             // Very important....

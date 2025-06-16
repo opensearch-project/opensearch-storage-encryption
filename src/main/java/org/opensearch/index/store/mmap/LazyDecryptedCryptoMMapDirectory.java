@@ -24,6 +24,7 @@ import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.MMapDirectory;
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.index.store.concurrency.RefCountedSharedArena;
 import org.opensearch.index.store.iv.KeyIvResolver;
 
 @SuppressWarnings("preview")

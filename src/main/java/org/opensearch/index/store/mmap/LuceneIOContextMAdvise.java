@@ -55,7 +55,7 @@ public class LuceneIOContextMAdvise {
                 };
             }
 
-            // safest.
+            // most optimal.
             default -> {
                 return MADV_WILLNEED;
             }

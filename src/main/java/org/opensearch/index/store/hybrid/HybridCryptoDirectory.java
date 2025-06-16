@@ -56,7 +56,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
     public IndexInput openInput(String name, IOContext context) throws IOException {
         String extension = FileSwitchDirectory.getExtension(name);
 
-        // If not a special extension, always use NIOFS
+        // TODO use the use-delegate method.
         if (!specialExtensions.contains(extension)) {
             return super.openInput(name, context);
         }
@@ -68,11 +68,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         return routeSpecialFile(name, extension, context);
     }
 
-
     private IndexInput routeSpecialFile(String name, String extension, IOContext context) throws IOException {
-        Path file = getDirectory().resolve(name);
-        long fileSize = Files.size(file);
-
         // MERGE context: Always use NIOFS for sequential, one-time access
         if (context.context() == Context.MERGE) {
             LOGGER.info("Routing {} to NIOFS for merge operation", name);
@@ -82,6 +78,9 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         // FLUSH context: New segment creation - consider future access patterns
         if (context.context() == Context.FLUSH) {
             LOGGER.info("Routing for flush operation", name);
+
+            Path file = getDirectory().resolve(name);
+            long fileSize = Files.size(file);
 
             // For files that will be accessed randomly after flush, prepare them for MMap
             // Exception: large files should avoid memory pressure during flush
@@ -110,6 +109,9 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
             }
 
             case "tim", "doc", "fdm" -> {
+                Path file = getDirectory().resolve(name);
+                long fileSize = Files.size(file);
+
                 if ((fileSize >= (2L << 20)) && (fileSize <= (8L << 20))) {
                     return eagerDecryptedCryptoMMapDirectory.openInput(name, context);
                 }
@@ -117,6 +119,9 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
             }
 
             case "cfs" -> {
+                Path file = getDirectory().resolve(name);
+                long fileSize = Files.size(file);
+
                 if (fileSize <= (16L << 20)) {
                     return eagerDecryptedCryptoMMapDirectory.openInput(name, context);
                 }

@@ -9,6 +9,7 @@ import java.security.InvalidKeyException;
 import java.security.Key;
 import java.security.NoSuchAlgorithmException;
 import java.security.Provider;
+import java.util.Arrays;
 
 import javax.crypto.Cipher;
 import javax.crypto.NoSuchPaddingException;
@@ -33,14 +34,12 @@ public class AesCipherFactory {
     /** Total IV array length (typically 16 bytes for AES). */
     public static final int IV_ARRAY_LENGTH = 16;
 
-    /** Static buffer to avoid allocating dummy padding buffer on every call. */
-    private static final byte[] SKIP_BUFFER = new byte[AES_BLOCK_SIZE_BYTES];
-
     /**
      * Returns a new Cipher instance configured for AES/CTR/NoPadding using the given provider.
      *
      * @param provider The JCE provider to use (e.g., SunJCE, BouncyCastle)
      * @return A configured {@link Cipher} instance
+     * @throws RuntimeException If the algorithm or padding is not supported
      */
     public static Cipher getCipher(Provider provider) {
         try {
@@ -60,27 +59,30 @@ public class AesCipherFactory {
      * @param iv The base IV, typically 16 bytes long
      * @param opmode Cipher.ENCRYPT_MODE or Cipher.DECRYPT_MODE
      * @param newPosition The position in the stream to begin processing from
+     * @throws RuntimeException If cipher initialization fails
      */
     public static void initCipher(Cipher cipher, Key key, byte[] iv, int opmode, long newPosition) {
         try {
-            // Fast-copy IV (faster than Arrays.copyOf)
-            byte[] ivCopy = new byte[IV_ARRAY_LENGTH];
-            System.arraycopy(iv, 0, ivCopy, 0, IV_ARRAY_LENGTH);
+            byte[] ivCopy = Arrays.copyOf(iv, iv.length);
 
-            // Compute block-aligned counter
-            int counter = (int) (newPosition / AES_BLOCK_SIZE_BYTES);
-            int pos = IV_ARRAY_LENGTH - COUNTER_SIZE_BYTES;
-            ivCopy[pos] = (byte) (counter >>> 24);
-            ivCopy[pos + 1] = (byte) (counter >>> 16);
-            ivCopy[pos + 2] = (byte) (counter >>> 8);
-            ivCopy[pos + 3] = (byte) counter;
+            // Set the counter (last 4 bytes) based on block offset
+            if (newPosition == 0) {
+                Arrays.fill(ivCopy, IV_ARRAY_LENGTH - COUNTER_SIZE_BYTES, IV_ARRAY_LENGTH, (byte) 0);
+            } else {
+                int counter = (int) (newPosition / AES_BLOCK_SIZE_BYTES);
+                for (int i = IV_ARRAY_LENGTH - 1; i >= IV_ARRAY_LENGTH - COUNTER_SIZE_BYTES; i--) {
+                    ivCopy[i] = (byte) counter;
+                    counter >>>= Byte.SIZE;
+                }
+            }
 
-            cipher.init(opmode, key, new IvParameterSpec(ivCopy));
+            IvParameterSpec spec = new IvParameterSpec(ivCopy);
+            cipher.init(opmode, key, spec);
 
-            // Skip partial block if needed
+            // Skip over any partial block offset using dummy update
             int bytesToSkip = (int) (newPosition % AES_BLOCK_SIZE_BYTES);
             if (bytesToSkip > 0) {
-                cipher.update(SKIP_BUFFER, 0, bytesToSkip);
+                cipher.update(new byte[bytesToSkip]);
             }
         } catch (InvalidAlgorithmParameterException | InvalidKeyException e) {
             throw new RuntimeException("Failed to initialize cipher", e);
