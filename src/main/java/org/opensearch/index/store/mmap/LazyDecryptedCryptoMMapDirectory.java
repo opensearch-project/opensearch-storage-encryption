@@ -24,8 +24,9 @@ import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.MMapDirectory;
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.index.store.cipher.EncryptionMetadataTrailer;
 import org.opensearch.index.store.concurrency.RefCountedSharedArena;
-import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.key.KeyResolver;
 
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "temporary bypass")
@@ -33,16 +34,16 @@ public final class LazyDecryptedCryptoMMapDirectory extends MMapDirectory {
 
     private static final Logger LOGGER = LogManager.getLogger(LazyDecryptedCryptoMMapDirectory.class);
 
-    private final KeyIvResolver keyIvResolver;
+    private final KeyResolver keyResolver;
 
     private Function<String, Optional<String>> groupingFunction = GROUP_BY_SEGMENT;
     private final ConcurrentHashMap<String, RefCountedSharedArena> arenas = new ConcurrentHashMap<>();
 
     private static final int SHARED_ARENA_PERMITS = checkMaxPermits(getSharedArenaMaxPermitsSysprop());
 
-    public LazyDecryptedCryptoMMapDirectory(Path path, Provider provider, KeyIvResolver keyIvResolver) throws IOException {
+    public LazyDecryptedCryptoMMapDirectory(Path path, Provider provider, KeyResolver keyResolver) throws IOException {
         super(path);
-        this.keyIvResolver = keyIvResolver;
+        this.keyResolver = keyResolver;
     }
 
     /**
@@ -169,17 +170,18 @@ public final class LazyDecryptedCryptoMMapDirectory extends MMapDirectory {
 
         try (var fc = FileChannel.open(file, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
             final long fileSize = fc.size();
-            MemorySegment[] segments = mmap(fc, fileSize, arena, chunkSizePower, name, context);
+            long lenghtWithoutEncMetadataTrailer = fileSize - EncryptionMetadataTrailer.ENCRYPTION_METADATA_TRAILER_SIZE;
+
+            MemorySegment[] segments = mmap(fc, lenghtWithoutEncMetadataTrailer, arena, chunkSizePower, name, context);
 
             final IndexInput in = LazyDecryptedMemorySegmentIndexInput
                 .newInstance(
                     "CryptoMemorySegmentIndexInput(path=\"" + file + "\")",
                     arena,
                     segments,
-                    fileSize,
+                    lenghtWithoutEncMetadataTrailer,
                     chunkSizePower,
-                    keyIvResolver.getDataKey().getEncoded(),
-                    keyIvResolver.getIvBytes()
+                    keyResolver.getFileEncryptionKey(file, name).getEncoded()
                 );
             success = true;
             return in;
