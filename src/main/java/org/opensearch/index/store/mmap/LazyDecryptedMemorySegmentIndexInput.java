@@ -43,7 +43,6 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
     final Arena arena;
     final MemorySegment[] segments;
     final byte[] key;
-    final byte[] iv;
     final AtomicBitSet decryptedPages;
     final String resourceDescription;
     final long decryptionBaseOffset;
@@ -58,8 +57,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
         MemorySegment[] segments,
         long resourceLength,
         int chunkSizePower,
-        byte[] key,
-        byte[] iv
+        byte[] key
     ) {
 
         long totalPages = (resourceLength + PanamaNativeAccess.getPageSize() - 1) / PanamaNativeAccess.getPageSize();
@@ -68,30 +66,9 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
         assert Arrays.stream(segments).map(MemorySegment::scope).allMatch(arena.scope()::equals);
 
         if (segments.length == 1) {
-            return new SingleSegmentImpl(
-                resourceDescription,
-                arena,
-                segments[0],
-                resourceLength,
-                chunkSizePower,
-                key,
-                iv,
-                decryptedPages,
-                0L
-            );
+            return new SingleSegmentImpl(resourceDescription, arena, segments[0], resourceLength, chunkSizePower, key, decryptedPages, 0L);
         } else {
-            return new MultiSegmentImpl(
-                resourceDescription,
-                arena,
-                segments,
-                0,
-                resourceLength,
-                chunkSizePower,
-                key,
-                iv,
-                decryptedPages,
-                0L
-            );
+            return new MultiSegmentImpl(resourceDescription, arena, segments, 0, resourceLength, chunkSizePower, key, decryptedPages, 0L);
         }
 
     }
@@ -103,7 +80,6 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
         long resourceLength,
         int chunkSizePower,
         byte[] key,
-        byte[] iv,
         AtomicBitSet decryptedPages,
         long decryptionBaseOffset
     ) {
@@ -115,7 +91,6 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
         this.chunkSizeMask = (1L << chunkSizePower) - 1L;
         this.curSegment = segments[0];
         this.key = key;
-        this.iv = iv;
         this.decryptedPages = decryptedPages;
         this.resourceDescription = resourceDescription;
         this.decryptionBaseOffset = decryptionBaseOffset;
@@ -145,8 +120,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
         long addr,
         long length,
         long fileOffset,
-        byte[] key,
-        byte[] iv
+        byte[] key
     ) throws IOException {
         // lucene may open zero data files.
         // very important.
@@ -186,7 +160,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             }
 
             try {
-                MemorySegmentDecryptor.decryptInPlace(pageAddr, osPageSize, key, iv, pageFileOffset);
+                MemorySegmentDecryptor.decryptInPlace(pageAddr, osPageSize, key, pageFileOffset);
                 pageCount++;
 
                 LOGGER
@@ -235,8 +209,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
         long addr,
         long length,
         long fileOffset,
-        byte[] key,
-        byte[] iv
+        byte[] key
     ) throws IOException {
 
         if (length == 0) {
@@ -292,7 +265,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
 
             try {
 
-                MemorySegmentDecryptor.decryptInPlace(batchStartAddr, batchSize, key, iv, batchStartFileOffset);
+                MemorySegmentDecryptor.decryptInPlace(batchStartAddr, batchSize, key, batchStartFileOffset);
             }
             // Very important....
             // TODO Handle failures for each failed page.
@@ -349,7 +322,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             long addr = curSegment.address() + curPosition;
             long fileOffset = getDecryptionOffset();
 
-            decryptAndProtect(this.resourceDescription, this.resourceLength, this.decryptedPages, addr, 1, fileOffset, this.key, this.iv);
+            decryptAndProtect(this.resourceDescription, this.resourceLength, this.decryptedPages, addr, 1, fileOffset, this.key);
 
             final byte v = curSegment.get(LAYOUT_BYTE, curPosition);
             curPosition++;
@@ -369,16 +342,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
                 long addr = curSegment.address() + curPosition;
                 long fileOffset = getDecryptionOffset();
 
-                decryptAndProtect(
-                    this.resourceDescription,
-                    this.resourceLength,
-                    this.decryptedPages,
-                    addr,
-                    1,
-                    fileOffset,
-                    this.key,
-                    this.iv
-                );
+                decryptAndProtect(this.resourceDescription, this.resourceLength, this.decryptedPages, addr, 1, fileOffset, this.key);
 
                 final byte v = curSegment.get(LAYOUT_BYTE, curPosition);
                 curPosition++;
@@ -402,17 +366,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             long fileOffset = getDecryptionOffset();
 
             // Decrypt the entire region we're about to read
-            decryptAndProtect(
-                this.resourceDescription,
-                this.resourceLength,
-                this.decryptedPages,
-                addr,
-                len,
-                fileOffset,
-                this.key,
-                this.iv
-
-            );
+            decryptAndProtect(this.resourceDescription, this.resourceLength, this.decryptedPages, addr, len, fileOffset, this.key);
 
             MemorySegment.copy(curSegment, LAYOUT_BYTE, curPosition, b, offset, len);
             curPosition += len;
@@ -433,17 +387,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             while (len > curAvail) {
                 long addr = curSegment.address() + curPosition;
                 long fileOffset = startFileOffset + (originalLen - len); // Calculate relative offset
-                decryptAndProtect(
-                    this.resourceDescription,
-                    this.resourceLength,
-                    this.decryptedPages,
-                    addr,
-                    curAvail,
-                    fileOffset,
-                    this.key,
-                    this.iv
-
-                );
+                decryptAndProtect(this.resourceDescription, this.resourceLength, this.decryptedPages, addr, curAvail, fileOffset, this.key);
                 MemorySegment.copy(curSegment, LAYOUT_BYTE, curPosition, b, offset, (int) curAvail);
                 len -= curAvail;
                 offset += curAvail;
@@ -458,17 +402,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
 
             long addr = curSegment.address() + curPosition;
             long fileOffset = startFileOffset + (originalLen - len);
-            decryptAndProtect(
-                this.resourceDescription,
-                this.resourceLength,
-                this.decryptedPages,
-                addr,
-                len,
-                fileOffset,
-                this.key,
-                this.iv
-
-            );
+            decryptAndProtect(this.resourceDescription, this.resourceLength, this.decryptedPages, addr, len, fileOffset, this.key);
             MemorySegment.copy(curSegment, LAYOUT_BYTE, curPosition, b, offset, len);
             curPosition += len;
         } catch (NullPointerException | IllegalStateException e) {
@@ -496,8 +430,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
                 addr,
                 currentSegmentRemaining,
                 fileOffset,
-                this.key,
-                this.iv
+                this.key
             );
         }
 
@@ -514,8 +447,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
                 addr,
                 nextSegment.byteSize(),
                 fileOffset,
-                this.key,
-                this.iv
+                this.key
             );
         }
     }
@@ -528,17 +460,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             long addr = curSegment.address() + curPosition;
             long fileOffset = getDecryptionOffset();
 
-            decryptAndProtect(
-                this.resourceDescription,
-                this.resourceLength,
-                this.decryptedPages,
-                addr,
-                totalBytes,
-                fileOffset,
-                this.key,
-                this.iv
-
-            );
+            decryptAndProtect(this.resourceDescription, this.resourceLength, this.decryptedPages, addr, totalBytes, fileOffset, this.key);
 
             MemorySegment.copy(curSegment, LAYOUT_LE_INT, curPosition, dst, offset, length);
             curPosition += totalBytes;
@@ -560,17 +482,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             long addr = curSegment.address() + curPosition;
             long fileOffset = getDecryptionOffset();
 
-            decryptAndProtect(
-                this.resourceDescription,
-                this.resourceLength,
-                this.decryptedPages,
-                addr,
-                totalBytes,
-                fileOffset,
-                this.key,
-                this.iv
-
-            );
+            decryptAndProtect(this.resourceDescription, this.resourceLength, this.decryptedPages, addr, totalBytes, fileOffset, this.key);
 
             MemorySegment.copy(curSegment, LAYOUT_LE_LONG, curPosition, dst, offset, length);
             curPosition += totalBytes;
@@ -591,17 +503,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             long addr = curSegment.address() + curPosition;
             long fileOffset = getDecryptionOffset();
 
-            decryptAndProtect(
-                this.resourceDescription,
-                this.resourceLength,
-                this.decryptedPages,
-                addr,
-                totalBytes,
-                fileOffset,
-                this.key,
-                this.iv
-
-            );
+            decryptAndProtect(this.resourceDescription, this.resourceLength, this.decryptedPages, addr, totalBytes, fileOffset, this.key);
 
             MemorySegment.copy(curSegment, LAYOUT_LE_FLOAT, curPosition, dst, offset, length);
             curPosition += totalBytes;
@@ -621,17 +523,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             long addr = curSegment.address() + curPosition;
             long fileOffset = getDecryptionOffset();
 
-            decryptAndProtect(
-                this.resourceDescription,
-                this.resourceLength,
-                this.decryptedPages,
-                addr,
-                Short.BYTES,
-                fileOffset,
-                this.key,
-                this.iv
-
-            );
+            decryptAndProtect(this.resourceDescription, this.resourceLength, this.decryptedPages, addr, Short.BYTES, fileOffset, this.key);
 
             final short v = curSegment.get(LAYOUT_LE_SHORT, curPosition);
             curPosition += Short.BYTES;
@@ -657,9 +549,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
                 addr,
                 Integer.BYTES,
                 fileOffset,
-                this.key,
-                this.iv
-
+                this.key
             );
 
             final int v = curSegment.get(LAYOUT_LE_INT, curPosition);
@@ -687,9 +577,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
                 addr,
                 Long.BYTES,
                 fileOffset,
-                this.key,
-                this.iv
-
+                this.key
             );
 
             final long v = curSegment.get(LAYOUT_LE_LONG, curPosition);
@@ -736,18 +624,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             // Calculate address and decrypt the single byte
             long addr = segments[si].address() + segmentOffset;
             long fileOffset = getDecryptionOffset(pos);
-            decryptAndProtect(
-                this.resourceDescription,
-                this.resourceLength,
-
-                this.decryptedPages,
-                addr,
-                1,
-                fileOffset,
-                this.key,
-                this.iv
-
-            );
+            decryptAndProtect(this.resourceDescription, this.resourceLength, this.decryptedPages, addr, 1, fileOffset, this.key);
 
             return segments[si].get(LAYOUT_BYTE, segmentOffset);
         } catch (IndexOutOfBoundsException ioobe) {
@@ -782,7 +659,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             // Calculate address and decrypt the 2 bytes for short
             long addr = segments[si].address() + segmentOffset;
             long fileOffset = getDecryptionOffset(pos);
-            decryptAndProtect(this.resourceDescription, this.resourceLength, this.decryptedPages, addr, 2, fileOffset, this.key, this.iv);
+            decryptAndProtect(this.resourceDescription, this.resourceLength, this.decryptedPages, addr, 2, fileOffset, this.key);
 
             return segments[si].get(LAYOUT_LE_SHORT, segmentOffset);
         } catch (@SuppressWarnings("unused") IndexOutOfBoundsException ioobe) {
@@ -812,8 +689,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
                 addr,
                 Integer.BYTES,
                 fileOffset,
-                this.key,
-                this.iv
+                this.key
             );
 
             return segments[si].get(LAYOUT_LE_INT, segmentOffset);
@@ -838,16 +714,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             long addr = segments[si].address() + segmentOffset;
             long fileOffset = getDecryptionOffset(pos);
 
-            decryptAndProtect(
-                this.resourceDescription,
-                this.resourceLength,
-                this.decryptedPages,
-                addr,
-                Long.BYTES,
-                fileOffset,
-                this.key,
-                this.iv
-            );
+            decryptAndProtect(this.resourceDescription, this.resourceLength, this.decryptedPages, addr, Long.BYTES, fileOffset, this.key);
 
             return segments[si].get(LAYOUT_LE_LONG, segmentOffset);
         } catch (@SuppressWarnings("unused") IndexOutOfBoundsException ioobe) {
@@ -947,7 +814,6 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
                 length,
                 chunkSizePower,
                 key,
-                iv,
                 this.decryptedPages,
                 sliceAbsoluteOffset  // must pass the absolute file offset
             );
@@ -960,7 +826,6 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
                 length,
                 chunkSizePower,
                 key,
-                iv,
                 this.decryptedPages,
                 sliceAbsoluteOffset  // Pass the absolute file offset
             );
@@ -1006,7 +871,6 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             long length,
             int chunkSizePower,
             byte[] key,
-            byte[] iv,
             AtomicBitSet decryptedPages,
             long decryptionBaseOffset
         ) {
@@ -1017,7 +881,6 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
                 length,
                 chunkSizePower,
                 key,
-                iv,
                 decryptedPages,
                 decryptionBaseOffset
             );
@@ -1045,7 +908,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             try {
                 // For single segment, pos is the absolute file position
                 long addr = curSegment.address() + pos;
-                decryptAndProtect(resourceDescription, resourceLength, decryptedPages, addr, 1, getDecryptionOffset(pos), key, iv);
+                decryptAndProtect(resourceDescription, resourceLength, decryptedPages, addr, 1, getDecryptionOffset(pos), key);
 
                 return curSegment.get(LAYOUT_BYTE, pos);
             } catch (IndexOutOfBoundsException e) {
@@ -1060,7 +923,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             try {
                 // Decrypt 2 bytes for short
                 long addr = curSegment.address() + pos;
-                decryptAndProtect(resourceDescription, resourceLength, decryptedPages, addr, 2, getDecryptionOffset(pos), key, iv);
+                decryptAndProtect(resourceDescription, resourceLength, decryptedPages, addr, 2, getDecryptionOffset(pos), key);
 
                 return curSegment.get(LAYOUT_LE_SHORT, pos);
             } catch (IndexOutOfBoundsException e) {
@@ -1075,7 +938,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             try {
                 // Decrypt 4 bytes for int
                 long addr = curSegment.address() + pos;
-                decryptAndProtect(resourceDescription, resourceLength, decryptedPages, addr, 4, getDecryptionOffset(pos), key, iv);
+                decryptAndProtect(resourceDescription, resourceLength, decryptedPages, addr, 4, getDecryptionOffset(pos), key);
 
                 return curSegment.get(LAYOUT_LE_INT, pos);
             } catch (IndexOutOfBoundsException e) {
@@ -1092,7 +955,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             try {
                 // Decrypt 8 bytes for long
                 long addr = curSegment.address() + pos;
-                decryptAndProtect(resourceDescription, resourceLength, decryptedPages, addr, 8, getDecryptionOffset(pos), key, iv);
+                decryptAndProtect(resourceDescription, resourceLength, decryptedPages, addr, 8, getDecryptionOffset(pos), key);
 
                 return curSegment.get(LAYOUT_LE_LONG, pos);
             } catch (IndexOutOfBoundsException e) {
@@ -1121,11 +984,10 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             long length,
             int chunkSizePower,
             byte[] key,
-            byte[] iv,
             AtomicBitSet decryptedPages,
             long decryptionBaseOffset
         ) {
-            super(resourceDescription, arena, segments, length, chunkSizePower, key, iv, decryptedPages, decryptionBaseOffset);
+            super(resourceDescription, arena, segments, length, chunkSizePower, key, decryptedPages, decryptionBaseOffset);
             this.offset = offset;
             try {
                 seek(0L);

@@ -10,19 +10,19 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.security.Key;
 import java.security.Provider;
 import java.util.concurrent.atomic.AtomicLong;
 
-import javax.crypto.Cipher;
-
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.apache.lucene.store.NIOFSDirectory;
 import org.opensearch.common.util.io.IOUtils;
-import org.opensearch.index.store.cipher.AesCipherFactory;
-import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.key.KeyResolver;
 
 /**
  * A NioFS directory implementation that encrypts files to be stored based on a
@@ -31,14 +31,14 @@ import org.opensearch.index.store.iv.KeyIvResolver;
  * @opensearch.internal
  */
 public class CryptoNIOFSDirectory extends NIOFSDirectory {
-    private final Provider provider;
-    public final KeyIvResolver keyIvResolver;
+    private static final Logger LOGGER = LogManager.getLogger(CryptoNIOFSDirectory.class);
+
+    public final KeyResolver keyResolver;
     private final AtomicLong nextTempFileCounter = new AtomicLong();
 
-    public CryptoNIOFSDirectory(LockFactory lockFactory, Path location, Provider provider, KeyIvResolver keyIvResolver) throws IOException {
+    public CryptoNIOFSDirectory(LockFactory lockFactory, Path location, Provider provider, KeyResolver keyIvResolver) throws IOException {
         super(location, lockFactory);
-        this.provider = provider;
-        this.keyIvResolver = keyIvResolver;
+        this.keyResolver = keyIvResolver;
     }
 
     @Override
@@ -49,21 +49,14 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
 
         ensureOpen();
         ensureCanRead(name);
+
         Path path = getDirectory().resolve(name);
         FileChannel fc = FileChannel.open(path, StandardOpenOption.READ);
         boolean success = false;
 
         try {
-            Cipher cipher = AesCipherFactory.getCipher(provider);
-            AesCipherFactory.initCipher(cipher, keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), Cipher.DECRYPT_MODE, 0);
-
-            final IndexInput indexInput = new CryptoBufferedIndexInput(
-                "CryptoBufferedIndexInput(path=\"" + path + "\")",
-                fc,
-                context,
-                cipher,
-                this.keyIvResolver
-            );
+            Key key = keyResolver.getFileEncryptionKey(path, name);
+            final IndexInput indexInput = new CryptoBufferedIndexInput("CryptoBufferedIndexInput(path=\"" + path + "\")", fc, context, key);
             success = true;
             return indexInput;
         } finally {
@@ -80,10 +73,11 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         }
 
         ensureOpen();
+
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-        return new CryptoOutputStreamIndexOutput(name, path, fos, this.keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
+        return new CryptoOutputStreamIndexOutput(name, path, fos, keyResolver);
     }
 
     @Override
@@ -93,16 +87,23 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         }
 
         ensureOpen();
+
         String name = getTempFileName(prefix, suffix, nextTempFileCounter.getAndIncrement());
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-        return new CryptoOutputStreamIndexOutput(name, path, fos, this.keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
+        return new CryptoOutputStreamIndexOutput(name, path, fos, keyResolver);
     }
 
     @Override
     public synchronized void close() throws IOException {
         isOpen = false;
         deletePendingFiles();
+    }
+
+    @Override
+    public void deleteFile(String name) throws IOException {
+        this.keyResolver.invalidateFileEncrytionKeyStore(name);
+        super.deleteFile(name);
     }
 }
