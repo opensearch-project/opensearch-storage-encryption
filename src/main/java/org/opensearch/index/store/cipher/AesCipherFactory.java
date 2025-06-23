@@ -34,6 +34,8 @@ public class AesCipherFactory {
     /** Total IV array length (typically 16 bytes for AES). */
     public static final int IV_ARRAY_LENGTH = 16;
 
+    private static final byte[] ZERO_SKIP = new byte[AesCipherFactory.AES_BLOCK_SIZE_BYTES];
+
     /**
      * Returns a new Cipher instance configured for AES/CTR/NoPadding using the given provider.
      *
@@ -64,25 +66,19 @@ public class AesCipherFactory {
     public static void initCipher(Cipher cipher, Key key, byte[] iv, int opmode, long newPosition) {
         try {
             byte[] ivCopy = Arrays.copyOf(iv, iv.length);
+            int blockOffset = (int) (newPosition / AesCipherFactory.AES_BLOCK_SIZE_BYTES);
 
-            // Set the counter (last 4 bytes) based on block offset
-            if (newPosition == 0) {
-                Arrays.fill(ivCopy, IV_ARRAY_LENGTH - COUNTER_SIZE_BYTES, IV_ARRAY_LENGTH, (byte) 0);
-            } else {
-                int counter = (int) (newPosition / AES_BLOCK_SIZE_BYTES);
-                for (int i = IV_ARRAY_LENGTH - 1; i >= IV_ARRAY_LENGTH - COUNTER_SIZE_BYTES; i--) {
-                    ivCopy[i] = (byte) counter;
-                    counter >>>= Byte.SIZE;
-                }
-            }
+            ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 1] = (byte) blockOffset;
+            ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 2] = (byte) (blockOffset >>> 8);
+            ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 3] = (byte) (blockOffset >>> 16);
+            ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 4] = (byte) (blockOffset >>> 24);
 
             IvParameterSpec spec = new IvParameterSpec(ivCopy);
             cipher.init(opmode, key, spec);
 
             // Skip over any partial block offset using dummy update
-            int bytesToSkip = (int) (newPosition % AES_BLOCK_SIZE_BYTES);
-            if (bytesToSkip > 0) {
-                cipher.update(new byte[bytesToSkip]);
+            if (newPosition % AesCipherFactory.AES_BLOCK_SIZE_BYTES > 0) {
+                cipher.update(ZERO_SKIP, 0, (int) (newPosition % AesCipherFactory.AES_BLOCK_SIZE_BYTES));
             }
         } catch (InvalidAlgorithmParameterException | InvalidKeyException e) {
             throw new RuntimeException("Failed to initialize cipher", e);

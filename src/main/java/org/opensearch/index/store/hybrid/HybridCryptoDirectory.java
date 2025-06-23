@@ -28,7 +28,6 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
 
     private final LazyDecryptedCryptoMMapDirectory lazyDecryptedCryptoMMapDirectoryDelegate;
     private final EagerDecryptedCryptoMMapDirectory eagerDecryptedCryptoMMapDirectory;
-    private final Set<String> nioExtensions;
 
     // File size thresholds for special files only
     private static final long MEDIUM_FILE_THRESHOLD = 10 * 1024 * 1024; // 10MB
@@ -48,7 +47,6 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         super(lockFactory, delegate.getDirectory(), provider, keyIvResolver);
         this.lazyDecryptedCryptoMMapDirectoryDelegate = delegate;
         this.eagerDecryptedCryptoMMapDirectory = eagerDecryptedCryptoMMapDirectory1;
-        this.nioExtensions = nioExtensions;
         this.specialExtensions = Set.of("kdd", "kdi", "kdm", "tip", "tim", "tmd", "cfs", "doc", "dvd", "nvd", "psm", "fdm");
     }
 
@@ -136,18 +134,6 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
                 return super.openInput(name, context);
             }
         }
-    }
-
-    private boolean useDelegate(String name) {
-        String extension = FileSwitchDirectory.getExtension(name);
-
-        if (name.endsWith(".tmp") || name.contains("segments_")) {
-            return false;
-        }
-
-        // [cfe, tvd, fnm, nvm, write.lock, dii, pay, segments_N, pos, si, fdt, tvx, liv, dvm, fdx, vem]
-        boolean result = extension == null || !nioExtensions.contains(extension);
-        return result;
     }
 
     @Override

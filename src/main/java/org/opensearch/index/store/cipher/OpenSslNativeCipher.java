@@ -147,14 +147,14 @@ public final class OpenSslNativeCipher {
         }
     }
 
-    public static byte[] computeOffsetIV(byte[] baseIV, long filePosition) {
-        byte[] ivCopy = Arrays.copyOf(baseIV, AES_BLOCK_SIZE);
+    public static byte[] computeOffsetIV(byte[] baseIV, long offset) {
+        byte[] ivCopy = Arrays.copyOf(baseIV, baseIV.length);
+        int blockOffset = (int) (offset / AesCipherFactory.AES_BLOCK_SIZE_BYTES);
 
-        int counter = (int) (filePosition / AES_BLOCK_SIZE);
-        for (int i = AES_BLOCK_SIZE - 1; i >= AES_BLOCK_SIZE - COUNTER_SIZE; i--) {
-            ivCopy[i] = (byte) counter;
-            counter >>>= 8;
-        }
+        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 1] = (byte) blockOffset;
+        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 2] = (byte) (blockOffset >>> 8);
+        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 3] = (byte) (blockOffset >>> 16);
+        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 4] = (byte) (blockOffset >>> 24);
 
         return ivCopy;
     }
@@ -422,7 +422,7 @@ public final class OpenSslNativeCipher {
         }
     }
 
-    public static void decryptInPlaceV2(Arena arena, long addr, long length, byte[] key, byte[] iv, long fileOffset) throws Throwable {
+    public static void decryptInPlace(Arena arena, long addr, long length, byte[] key, byte[] iv, long fileOffset) throws Throwable {
         if (key == null || key.length != AES_256_KEY_SIZE)
             throw new IllegalArgumentException("Key must be 32 bytes for AES-256-CTR");
         if (iv == null || iv.length != AES_BLOCK_SIZE)

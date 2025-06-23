@@ -122,7 +122,7 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
                 LOGGER.warn("madvise MADV_WILLNEED failed for file {} with IOcontext {}", name, context, t);
             }
 
-            decryptSegmentInPlaceParallel(arena, mmapSegment, offset);
+            decryptSegment(arena, mmapSegment, offset);
 
             segments[i] = mmapSegment;
             offset += segmentSize;
@@ -131,7 +131,7 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
         return segments;
     }
 
-    public void decryptSegmentInPlaceParallel(Arena arena, MemorySegment segment, long segmentOffsetInFile) throws Throwable {
+    public void decryptSegment(Arena arena, MemorySegment segment, long segmentOffsetInFile) throws Throwable {
         final long size = segment.byteSize();
 
         final int twoMB = 1 << 21; // 2 MiB
@@ -146,7 +146,7 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
         if (size <= (4L << 20)) {
             long start = System.nanoTime();
 
-            OpenSslNativeCipher.decryptInPlaceV2(arena, segment.address(), size, key, iv, segmentOffsetInFile);
+            OpenSslNativeCipher.decryptInPlace(arena, segment.address(), size, key, iv, segmentOffsetInFile);
 
             long end = System.nanoTime();
             long durationMs = (end - start) / 1_000_000;
@@ -158,8 +158,6 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
         final int chunkSize;
         if (size <= (8L << 20)) {
             chunkSize = twoMB;
-        } else if (size <= (16L << 20)) {
-            chunkSize = fourMB;
         } else if (size <= (32L << 20)) {
             chunkSize = fourMB;
         } else if (size <= (64L << 20)) {
@@ -170,6 +168,7 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
 
         final int numChunks = (int) ((size + chunkSize - 1) / chunkSize);
 
+        // parallel decryptions.
         IntStream.range(0, numChunks).parallel().forEach(i -> {
             long offset = (long) i * chunkSize;
             long length = Math.min(chunkSize, size - offset);
