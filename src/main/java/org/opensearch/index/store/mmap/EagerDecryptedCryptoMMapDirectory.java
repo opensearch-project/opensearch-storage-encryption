@@ -12,6 +12,7 @@ import java.nio.channels.FileChannel.MapMode;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.security.Key;
 import java.security.Provider;
 import java.util.Set;
 import java.util.function.BiPredicate;
@@ -23,19 +24,20 @@ import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.MMapDirectory;
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.index.store.cipher.EncryptionMetadataTrailer;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
-import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.key.KeyResolver;
 
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "temporary bypass")
 public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
     private static final Logger LOGGER = LogManager.getLogger(EagerDecryptedCryptoMMapDirectory.class);
 
-    private final KeyIvResolver keyIvResolver;
+    private final KeyResolver keyResolver;
 
-    public EagerDecryptedCryptoMMapDirectory(Path path, Provider provider, KeyIvResolver keyIvResolver) throws IOException {
+    public EagerDecryptedCryptoMMapDirectory(Path path, Provider provider, KeyResolver keyResolver) throws IOException {
         super(path);
-        this.keyIvResolver = keyIvResolver;
+        this.keyResolver = keyResolver;
     }
 
     /**
@@ -71,7 +73,9 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
         ensureCanRead(name);
 
         Path file = getDirectory().resolve(name);
-        long size = Files.size(file);
+        long fileSize = Files.size(file);
+        long lenghtWithoutEncMetadataTrailer = fileSize - EncryptionMetadataTrailer.ENCRYPTION_METADATA_TRAILER_SIZE;
+
         boolean confined = context == IOContext.READONCE;
         Arena arena = confined ? Arena.ofConfined() : Arena.ofShared();
 
@@ -80,11 +84,24 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
         boolean success = false;
 
         try (var fc = FileChannel.open(file, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
-            final long fileSize = fc.size();
-            MemorySegment[] segments = mmapAndDecrypt(fc, fileSize, arena, chunkSizePower, name, context);
-
+            final Key decryptionKey = keyResolver.getFileEncryptionKey(file, name);
+            MemorySegment[] segments = mmapAndDecrypt(
+                fc,
+                lenghtWithoutEncMetadataTrailer,
+                decryptionKey,
+                arena,
+                chunkSizePower,
+                name,
+                context
+            );
             final IndexInput in = MemorySegmentIndexInput
-                .newInstance("CryptoMemorySegmentIndexInput(path=\"" + file + "\")", arena, segments, size, chunkSizePower);
+                .newInstance(
+                    "CryptoMemorySegmentIndexInput(path=\"" + file + "\")",
+                    arena,
+                    segments,
+                    lenghtWithoutEncMetadataTrailer,
+                    chunkSizePower
+                );
             success = true;
             return in;
         } catch (Throwable ex) {
@@ -96,8 +113,15 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
         }
     }
 
-    private MemorySegment[] mmapAndDecrypt(FileChannel fc, long size, Arena arena, int chunkSizePower, String name, IOContext context)
-        throws Throwable {
+    private MemorySegment[] mmapAndDecrypt(
+        FileChannel fc,
+        long size,
+        Key decryptionKey,
+        Arena arena,
+        int chunkSizePower,
+        String name,
+        IOContext context
+    ) throws Throwable {
         final long chunkSize = 1L << chunkSizePower;
         final int numSegments = (int) ((size + chunkSize - 1) >>> chunkSizePower);
 
@@ -122,7 +146,7 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
                 LOGGER.warn("madvise MADV_WILLNEED failed for file {} with IOcontext {}", name, context, t);
             }
 
-            decryptSegment(arena, mmapSegment, offset);
+            decryptSegment(arena, mmapSegment, offset, decryptionKey);
 
             segments[i] = mmapSegment;
             offset += segmentSize;
@@ -131,7 +155,7 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
         return segments;
     }
 
-    public void decryptSegment(Arena arena, MemorySegment segment, long segmentOffsetInFile) throws Throwable {
+    public void decryptSegment(Arena arena, MemorySegment segment, long segmentOffsetInFile, Key decryptionKey) throws Throwable {
         final long size = segment.byteSize();
 
         final int twoMB = 1 << 21; // 2 MiB
@@ -139,14 +163,11 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
         final int eightMB = 1 << 23; // 8 MiB
         final int sixteenMB = 1 << 24; // 16 MiB
 
-        final byte[] key = this.keyIvResolver.getDataKey().getEncoded();
-        final byte[] iv = this.keyIvResolver.getIvBytes();
-
         // Fast-path: no parallelism for ≤ 4 MiB
         if (size <= (4L << 20)) {
             long start = System.nanoTime();
 
-            OpenSslNativeCipher.decryptInPlace(arena, segment.address(), size, key, iv, segmentOffsetInFile);
+            OpenSslNativeCipher.decryptInPlace(arena, segment.address(), size, decryptionKey.getEncoded(), segmentOffsetInFile);
 
             long end = System.nanoTime();
             long durationMs = (end - start) / 1_000_000;
@@ -176,7 +197,7 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
             long addr = segment.address() + offset;
 
             try {
-                OpenSslNativeCipher.decryptInPlace(addr, length, key, iv, fileOffset);
+                OpenSslNativeCipher.decryptInPlace(addr, length, decryptionKey.getEncoded(), fileOffset);
             } catch (Throwable t) {
                 throw new RuntimeException("Decryption failed at offset: " + fileOffset, t);
             }

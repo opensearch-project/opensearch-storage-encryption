@@ -13,7 +13,6 @@ import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.Locale;
 
 import org.apache.logging.log4j.LogManager;
@@ -52,7 +51,7 @@ public final class OpenSslNativeCipher {
             // Common Homebrew path for OpenSSL on macOS
             String[] macPaths = {
                 "/opt/homebrew/opt/openssl@3/lib/libcrypto.dylib",   // Apple Silicon (M1/M2)
-                "/usr/local/opt/openssl@3/lib/libcrypto.dylib"       // Intel Macs
+                "/usr/local/opt/openssl@3/lib/libcrypto.dylib",       // Intel Macs
             };
 
             for (String path : macPaths) {
@@ -147,39 +146,23 @@ public final class OpenSslNativeCipher {
         }
     }
 
-    public static byte[] computeOffsetIV(byte[] baseIV, long offset) {
-        byte[] ivCopy = Arrays.copyOf(baseIV, baseIV.length);
-        int blockOffset = (int) (offset / AesCipherFactory.AES_BLOCK_SIZE_BYTES);
-
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 1] = (byte) blockOffset;
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 2] = (byte) (blockOffset >>> 8);
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 3] = (byte) (blockOffset >>> 16);
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 4] = (byte) (blockOffset >>> 24);
-
-        return ivCopy;
-    }
-
     /**
      * Encrypts the input data using AES-256-CTR mode.
      *
      * @param key   The 32-byte encryption key
-     * @param iv    The 16-byte initialization vector
      * @param input The data to encrypt
      * @return The encrypted data
      * @throws IllegalArgumentException if the input parameters are invalid
      * @throws OpenSslException if encryption fails
      * @throws Throwable if there's an unexpected error
      */
-    public static byte[] encrypt(byte[] key, byte[] iv, byte[] input) throws Throwable {
-        return encrypt(key, iv, input, 0L);
+    public static byte[] encrypt(byte[] key, byte[] input) throws Throwable {
+        return encrypt(key, input, 0L);
     }
 
-    public static byte[] encrypt(byte[] key, byte[] iv, byte[] input, long filePosition) throws Throwable {
+    public static byte[] encrypt(byte[] key, byte[] input, long filePosition) throws Throwable {
         if (key == null || key.length != AES_256_KEY_SIZE) {
             throw new IllegalArgumentException("Invalid key length: expected " + AES_256_KEY_SIZE + " bytes");
-        }
-        if (iv == null || iv.length != AES_BLOCK_SIZE) {
-            throw new IllegalArgumentException("Invalid IV length: expected " + AES_BLOCK_SIZE + " bytes");
         }
         if (input == null || input.length == 0) {
             throw new IllegalArgumentException("Input cannot be null or empty");
@@ -197,7 +180,7 @@ public final class OpenSslNativeCipher {
                     throw new OpenSslException("EVP_aes_256_ctr failed");
                 }
 
-                byte[] adjustedIV = computeOffsetIV(iv, filePosition);
+                byte[] adjustedIV = AesCtrCipherFactory.computeOffsetIV(filePosition);
                 MemorySegment keySeg = arena.allocateArray(ValueLayout.JAVA_BYTE, key);
                 MemorySegment ivSeg = arena.allocateArray(ValueLayout.JAVA_BYTE, adjustedIV);
 
@@ -247,7 +230,7 @@ public final class OpenSslNativeCipher {
             if (cipher.address() == 0)
                 throw new OpenSslException("EVP_aes_256_ctr failed");
 
-            byte[] adjustedIV = computeOffsetIV(iv, fileOffset);
+            byte[] adjustedIV = AesCtrCipherFactory.computeOffsetIV(fileOffset);
             MemorySegment keySeg = arena.allocateArray(ValueLayout.JAVA_BYTE, key);
             MemorySegment ivSeg = arena.allocateArray(ValueLayout.JAVA_BYTE, adjustedIV);
 
@@ -277,20 +260,17 @@ public final class OpenSslNativeCipher {
     * This method is symmetric with `encrypt(...)` because AES-CTR uses the same function for encryption and decryption.
     *
     * @param key   The 32-byte AES key
-    * @param iv    The 16-byte initialization vector
     * @param input The encrypted data
     * @param filePosition The file offset (used to adjust IV counter)
     * @return The decrypted plaintext
     * @throws OpenSslException if decryption fails
     * @throws Throwable if a low-level Panama error occurs
     */
-    public static byte[] decrypt(byte[] key, byte[] iv, byte[] input, long filePosition) throws Throwable {
+    public static byte[] decrypt(byte[] key, byte[] input, long filePosition) throws Throwable {
         if (key == null || key.length != AES_256_KEY_SIZE) {
             throw new IllegalArgumentException("Invalid key length: expected " + AES_256_KEY_SIZE + " bytes");
         }
-        if (iv == null || iv.length != AES_BLOCK_SIZE) {
-            throw new IllegalArgumentException("Invalid IV length: expected " + AES_BLOCK_SIZE + " bytes");
-        }
+
         if (input == null || input.length == 0) {
             throw new IllegalArgumentException("Input cannot be null or empty");
         }
@@ -308,7 +288,7 @@ public final class OpenSslNativeCipher {
                 }
 
                 // Compute IV with offset counter
-                byte[] adjustedIV = computeOffsetIV(iv, filePosition);
+                byte[] adjustedIV = AesCtrCipherFactory.computeOffsetIV(filePosition);
                 MemorySegment keySeg = arena.allocateArray(ValueLayout.JAVA_BYTE, key);
                 MemorySegment ivSeg = arena.allocateArray(ValueLayout.JAVA_BYTE, adjustedIV);
 
@@ -343,11 +323,9 @@ public final class OpenSslNativeCipher {
         }
     }
 
-    public static void decryptInPlace(long addr, long length, byte[] key, byte[] iv, long fileOffset) throws Throwable {
+    public static void decryptInPlace(long addr, long length, byte[] key, long fileOffset) throws Throwable {
         if (key == null || key.length != AES_256_KEY_SIZE)
             throw new IllegalArgumentException("Key must be 32 bytes for AES-256-CTR");
-        if (iv == null || iv.length != AES_BLOCK_SIZE)
-            throw new IllegalArgumentException("IV must be 16 bytes for AES-CTR");
 
         long tStart = System.nanoTime();
 
@@ -365,7 +343,7 @@ public final class OpenSslNativeCipher {
                 if (cipher.address() == 0)
                     throw new OpenSslException("EVP_aes_256_ctr failed");
 
-                byte[] adjustedIV = computeOffsetIV(iv, fileOffset);
+                byte[] adjustedIV = AesCtrCipherFactory.computeOffsetIV(fileOffset);
                 long tKeyIvStart = System.nanoTime();
                 MemorySegment keySeg = arena.allocateArray(ValueLayout.JAVA_BYTE, key);
                 MemorySegment ivSeg = arena.allocateArray(ValueLayout.JAVA_BYTE, adjustedIV);
@@ -422,11 +400,9 @@ public final class OpenSslNativeCipher {
         }
     }
 
-    public static void decryptInPlace(Arena arena, long addr, long length, byte[] key, byte[] iv, long fileOffset) throws Throwable {
+    public static void decryptInPlace(Arena arena, long addr, long length, byte[] key, long fileOffset) throws Throwable {
         if (key == null || key.length != AES_256_KEY_SIZE)
             throw new IllegalArgumentException("Key must be 32 bytes for AES-256-CTR");
-        if (iv == null || iv.length != AES_BLOCK_SIZE)
-            throw new IllegalArgumentException("IV must be 16 bytes for AES-CTR");
 
         MemorySegment ctx = (MemorySegment) EVP_CIPHER_CTX_new.invoke();
         if (ctx.address() == 0)
@@ -437,7 +413,7 @@ public final class OpenSslNativeCipher {
             if (cipher.address() == 0)
                 throw new OpenSslException("EVP_aes_256_ctr failed");
 
-            byte[] adjustedIV = computeOffsetIV(iv, fileOffset);
+            byte[] adjustedIV = AesCtrCipherFactory.computeOffsetIV(fileOffset);
             MemorySegment keySeg = arena.allocateArray(ValueLayout.JAVA_BYTE, key);
             MemorySegment ivSeg = arena.allocateArray(ValueLayout.JAVA_BYTE, adjustedIV);
 

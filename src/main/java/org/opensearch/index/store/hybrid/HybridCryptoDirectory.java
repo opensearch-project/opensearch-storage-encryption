@@ -18,7 +18,7 @@ import org.apache.lucene.store.IOContext.Context;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.common.util.io.IOUtils;
-import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.mmap.EagerDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.mmap.LazyDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
@@ -40,7 +40,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         LazyDecryptedCryptoMMapDirectory delegate,
         EagerDecryptedCryptoMMapDirectory eagerDecryptedCryptoMMapDirectory1,
         Provider provider,
-        KeyIvResolver keyIvResolver,
+        KeyResolver keyIvResolver,
         Set<String> nioExtensions
     )
         throws IOException {

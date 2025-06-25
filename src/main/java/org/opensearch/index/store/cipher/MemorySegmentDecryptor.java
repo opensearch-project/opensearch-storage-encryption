@@ -7,56 +7,30 @@ package org.opensearch.index.store.cipher;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
-import java.security.NoSuchAlgorithmException;
-import java.security.NoSuchProviderException;
-import java.util.Arrays;
 
 import javax.crypto.Cipher;
-import javax.crypto.NoSuchPaddingException;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
-
-/**
- * Hybrid cipher implementation that can use either:
- * 1. Native OpenSSL via Panama (for large operations)
- * 2. Java Cipher API via ByteBuffer (for small operations, better JIT optimization)
- */
 
 @SuppressWarnings("preview")
 public class MemorySegmentDecryptor {
 
-    private static final byte[] ZERO_SKIP = new byte[AesCipherFactory.AES_BLOCK_SIZE_BYTES];
+    private static final byte[] ZERO_SKIP = new byte[AesCtrCipherFactory.AES_BLOCK_SIZE_BYTES];
     private static final int DEFAULT_MAX_CHUNK_SIZE = 16_384;
-
-    private static final ThreadLocal<Cipher> CIPHER_POOL = ThreadLocal.withInitial(() -> {
-        try {
-            return Cipher.getInstance("AES/CTR/NoPadding", "SunJCE");
-        } catch (NoSuchAlgorithmException | NoSuchProviderException | NoSuchPaddingException e) {
-            throw new RuntimeException(e);
-        }
-    });
 
     private MemorySegmentDecryptor() {
 
     }
 
-    public static void decryptInPlace(Arena arena, long addr, long length, byte[] key, byte[] iv, long fileOffset) throws Exception {
-        // Get thread-local cipher
-        Cipher cipher = CIPHER_POOL.get();
+    public static void decryptInPlace(Arena arena, long addr, long length, byte[] key, long fileOffset) throws Exception {
+        Cipher cipher = AesCtrCipherFactory.CIPHER_POOL.get();
         SecretKeySpec keySpec = new SecretKeySpec(key, "AES");
-        byte[] ivCopy = Arrays.copyOf(iv, iv.length);
+        byte[] iv = AesCtrCipherFactory.computeOffsetIV(fileOffset);
 
-        int blockOffset = (int) (fileOffset / AesCipherFactory.AES_BLOCK_SIZE_BYTES);
+        cipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(iv));
 
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 1] = (byte) blockOffset;
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 2] = (byte) (blockOffset >>> 8);
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 3] = (byte) (blockOffset >>> 16);
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 4] = (byte) (blockOffset >>> 24);
-
-        cipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(ivCopy));
-
-        if (fileOffset % AesCipherFactory.AES_BLOCK_SIZE_BYTES > 0) {
-            cipher.update(ZERO_SKIP, 0, (int) (fileOffset % AesCipherFactory.AES_BLOCK_SIZE_BYTES));
+        if (fileOffset % AesCtrCipherFactory.AES_BLOCK_SIZE_BYTES > 0) {
+            cipher.update(ZERO_SKIP, 0, (int) (fileOffset % AesCtrCipherFactory.AES_BLOCK_SIZE_BYTES));
         }
 
         MemorySegment segment = MemorySegment.ofAddress(addr).reinterpret(length, arena, null);
@@ -89,22 +63,15 @@ public class MemorySegmentDecryptor {
         }
     }
 
-    public static void decryptInPlace(long addr, long length, byte[] key, byte[] iv, long fileOffset) throws Exception {
-        Cipher cipher = CIPHER_POOL.get();
+    public static void decryptInPlace(long addr, long length, byte[] key, long fileOffset) throws Exception {
+        Cipher cipher = AesCtrCipherFactory.CIPHER_POOL.get();
         SecretKeySpec keySpec = new SecretKeySpec(key, "AES");
-        byte[] ivCopy = Arrays.copyOf(iv, iv.length);
+        byte[] iv = AesCtrCipherFactory.computeOffsetIV(fileOffset);
 
-        int blockOffset = (int) (fileOffset / AesCipherFactory.AES_BLOCK_SIZE_BYTES);
+        cipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(iv));
 
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 1] = (byte) blockOffset;
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 2] = (byte) (blockOffset >>> 8);
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 3] = (byte) (blockOffset >>> 16);
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 4] = (byte) (blockOffset >>> 24);
-
-        cipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(ivCopy));
-
-        if (fileOffset % AesCipherFactory.AES_BLOCK_SIZE_BYTES > 0) {
-            cipher.update(ZERO_SKIP, 0, (int) (fileOffset % AesCipherFactory.AES_BLOCK_SIZE_BYTES));
+        if (fileOffset % AesCtrCipherFactory.AES_BLOCK_SIZE_BYTES > 0) {
+            cipher.update(ZERO_SKIP, 0, (int) (fileOffset % AesCtrCipherFactory.AES_BLOCK_SIZE_BYTES));
         }
 
         MemorySegment segment = MemorySegment.ofAddress(addr).reinterpret(length);
@@ -137,22 +104,14 @@ public class MemorySegmentDecryptor {
         }
     }
 
-    public static void decryptSegment(MemorySegment segment, long fileOffset, byte[] key, byte[] iv, int segmentSize) throws Exception {
-        Cipher cipher = CIPHER_POOL.get();
+    public static void decryptSegment(MemorySegment segment, long fileOffset, byte[] key, int segmentSize) throws Exception {
+        Cipher cipher = AesCtrCipherFactory.CIPHER_POOL.get();
         SecretKeySpec keySpec = new SecretKeySpec(key, "AES");
-        byte[] ivCopy = Arrays.copyOf(iv, iv.length);
+        byte[] iv = AesCtrCipherFactory.computeOffsetIV(fileOffset);
+        cipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(iv));
 
-        int blockOffset = (int) (fileOffset / AesCipherFactory.AES_BLOCK_SIZE_BYTES);
-
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 1] = (byte) blockOffset;
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 2] = (byte) (blockOffset >>> 8);
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 3] = (byte) (blockOffset >>> 16);
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 4] = (byte) (blockOffset >>> 24);
-
-        cipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(ivCopy));
-
-        if (fileOffset % AesCipherFactory.AES_BLOCK_SIZE_BYTES > 0) {
-            cipher.update(ZERO_SKIP, 0, (int) (fileOffset % AesCipherFactory.AES_BLOCK_SIZE_BYTES));
+        if (fileOffset % AesCtrCipherFactory.AES_BLOCK_SIZE_BYTES > 0) {
+            cipher.update(ZERO_SKIP, 0, (int) (fileOffset % AesCtrCipherFactory.AES_BLOCK_SIZE_BYTES));
         }
 
         ByteBuffer buffer = segment.asByteBuffer();
@@ -175,6 +134,5 @@ public class MemorySegmentDecryptor {
 
             position += size;
         }
-
     }
 }

@@ -4,11 +4,13 @@
  */
 package org.opensearch.index.store;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.security.Key;
 import java.security.Provider;
 import java.security.Security;
 import java.util.ArrayList;
@@ -26,7 +28,8 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.tests.mockfile.ExtrasFS;
 import org.opensearch.common.Randomness;
-import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.key.FileEncryptionKeyResolver;
+import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 
 /**
@@ -35,7 +38,7 @@ import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 // @RunWith(RandomizedRunner.class)
 public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
 
-    static final String KEY_FILE_NAME = "keyfile";
+    static final String KEY_FILE_NAME = "enc.data.key";
 
     @Override
     protected Directory getDirectory(Path file) throws IOException {
@@ -46,18 +49,20 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
         rnd.nextBytes(rawKey);
         rnd.nextBytes(encryptedKey);
 
-        // Create mock KeyIvResolver
-        KeyIvResolver keyIvResolver = mock(KeyIvResolver.class);
-        byte[] iv = new byte[16]; // 128-bit IV for AES/CTR
-        rnd.nextBytes(iv);
-
-        when(keyIvResolver.getDataKey()).thenReturn(new SecretKeySpec(rawKey, "AES"));
-        when(keyIvResolver.getIvBytes()).thenReturn(iv);
-
         Provider provider = Security.getProvider("SunJCE");
+
+        // Create mock KeyIvResolver
+        KeyResolver keyResolver = mock(KeyResolver.class);
+        Key dataKey = new SecretKeySpec(rawKey, "AES");
+        Key fileEncryptionKey = FileEncryptionKeyResolver.generateEncryptionKey(dataKey);
+
+        when(keyResolver.getDataKey()).thenReturn(dataKey);
+        when(keyResolver.deriveNewFileEncryptionKey(any(String.class))).thenReturn(fileEncryptionKey);
+        when(keyResolver.getFileEncryptionKey(any(Path.class), any(String.class))).thenReturn(fileEncryptionKey);
+
         assertNotNull("Provider should not be null", provider);
 
-        return new CryptoNIOFSDirectory(FSLockFactory.getDefault(), file, provider, keyIvResolver);
+        return new CryptoNIOFSDirectory(FSLockFactory.getDefault(), file, provider, keyResolver);
     }
 
     @Override
