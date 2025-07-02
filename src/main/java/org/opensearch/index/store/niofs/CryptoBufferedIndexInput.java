@@ -28,6 +28,7 @@ import org.opensearch.index.store.iv.KeyIvResolver;
  */
 final class CryptoBufferedIndexInput extends BufferedIndexInput {
 
+    private static final ByteBuffer EMPTY_BYTEBUFFER = ByteBuffer.allocate(0);
     private static final int CHUNK_SIZE = 16_384;
 
     private final FileChannel channel;
@@ -37,7 +38,7 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
     private Cipher cipher;
     private final KeyIvResolver keyResolver;
 
-    private ByteBuffer tmpBuffer = ByteBuffer.allocate(CHUNK_SIZE);
+    private ByteBuffer tmpBuffer = EMPTY_BYTEBUFFER;
 
     public CryptoBufferedIndexInput(String resourceDesc, FileChannel fc, IOContext context, Cipher cipher, KeyIvResolver keyResolver)
         throws IOException {
@@ -81,7 +82,7 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
     @Override
     public CryptoBufferedIndexInput clone() {
         CryptoBufferedIndexInput clone = (CryptoBufferedIndexInput) super.clone();
-        clone.tmpBuffer = ByteBuffer.allocate(CHUNK_SIZE);
+        clone.tmpBuffer = EMPTY_BYTEBUFFER;
         clone.cipher = AesCipherFactory.getCipher(cipher.getProvider());
         AesCipherFactory
             .initCipher(clone.cipher, keyResolver.getDataKey(), keyResolver.getIvBytes(), Cipher.DECRYPT_MODE, getFilePointer() + off);
@@ -113,6 +114,13 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
 
     @SuppressForbidden(reason = "FileChannel#read is efficient and used intentionally")
     private int read(ByteBuffer dst, long position) throws IOException {
+
+        //initialize buffer lazy because Lucene may open input slices and clones ahead but never use them
+        //see org.apache.lucene.store.BufferedIndexInput
+        if( tmpBuffer == EMPTY_BYTEBUFFER ) {
+            tmpBuffer = ByteBuffer.allocate(CHUNK_SIZE);
+        }
+
         tmpBuffer.clear().limit(dst.remaining());
         int bytesRead = channel.read(tmpBuffer, position);
         if (bytesRead == -1) {
