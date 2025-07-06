@@ -26,6 +26,13 @@ public class PanamaNativeAccess {
     private static final MethodHandle GET_PAGE_SIZE;
     private static final MethodHandle OPEN;
     private static final MethodHandle CLOSE;
+    public static final MethodHandle POSIX_MEMALIGN;
+    public static final MethodHandle READ;
+    public static final MethodHandle PREAD;
+
+    public static final int O_RDONLY = 0;
+    public static final int O_DIRECT = 040000;
+    public static final int O_SYNC = 04010000;
 
     private static final SymbolLookup LIBC = loadLibc();
 
@@ -96,6 +103,32 @@ public class PanamaNativeAccess {
                 );
 
             GET_PAGE_SIZE = LINKER.downcallHandle(LIBC.find("getpagesize").orElseThrow(), FunctionDescriptor.of(ValueLayout.JAVA_INT));
+
+            POSIX_MEMALIGN = LINKER
+                .downcallHandle(
+                    LIBC.find("posix_memalign").orElseThrow(),
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG)
+                );
+
+            READ = LINKER
+                .downcallHandle(
+                    LIBC.find("read").orElseThrow(),
+                    FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
+                );
+
+            PREAD = LINKER
+                .downcallHandle(
+                    LIBC.find("pread").orElseThrow(),
+                    FunctionDescriptor
+                        .of(
+                            ValueLayout.JAVA_LONG,  // ssize_t
+                            ValueLayout.JAVA_INT,   // int fd
+                            ValueLayout.ADDRESS,    // void *buf
+                            ValueLayout.JAVA_LONG,  // size_t count
+                            ValueLayout.JAVA_LONG
+                        )  // off_t offset
+                );
+
         } catch (RuntimeException e) {
             throw new RuntimeException("Failed to load mmap", e);
         }
@@ -148,6 +181,13 @@ public class PanamaNativeAccess {
             MemorySegment pathSegment = arena.allocateUtf8String(path);
             return (int) OPEN.invoke(pathSegment, 0); // O_RDONLY = 0
         }
+    }
+
+    public static int openFileWithODirect(String path, boolean direct, Arena arena) throws Throwable {
+        MemorySegment cPath = arena.allocateUtf8String(path);
+        int flags = O_RDONLY | (direct ? O_DIRECT : 0);
+
+        return (int) OPEN.invoke(cPath, flags);
     }
 
     public static void closeFile(int fd) throws Throwable {

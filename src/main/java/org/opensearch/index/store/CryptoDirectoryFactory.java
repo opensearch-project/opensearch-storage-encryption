@@ -29,6 +29,7 @@ import org.opensearch.crypto.CryptoHandlerRegistry;
 import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.shard.ShardPath;
+import org.opensearch.index.store.directio.EagerDecryptedDirectIODirectory;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
 import org.opensearch.index.store.iv.DefaultKeyIvResolver;
 import org.opensearch.index.store.iv.KeyIvResolver;
@@ -132,12 +133,19 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                     provider,
                     keyIvResolver
                 );
-                lazyDecryptedCryptoMMapDirectory.setPreloadExtensions(preLoadExtensions);
+
+                EagerDecryptedDirectIODirectory eagerDecryptedDirectIODirectory = new EagerDecryptedDirectIODirectory(
+                    location,
+                    lockFactory,
+                    provider,
+                    keyIvResolver
+                );
 
                 return new HybridCryptoDirectory(
                     lockFactory,
                     lazyDecryptedCryptoMMapDirectory,
                     egarDecryptedCryptoMMapDirectory,
+                    eagerDecryptedDirectIODirectory,
                     provider,
                     keyIvResolver,
                     nioExtensions
