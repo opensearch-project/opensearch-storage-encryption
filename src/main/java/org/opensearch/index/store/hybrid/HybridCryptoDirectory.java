@@ -18,6 +18,7 @@ import org.apache.lucene.store.IOContext.Context;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.common.util.io.IOUtils;
+import org.opensearch.index.store.directio.EagerDecryptedDirectIODirectory;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.mmap.EagerDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.mmap.LazyDecryptedCryptoMMapDirectory;
@@ -28,6 +29,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
 
     private final LazyDecryptedCryptoMMapDirectory lazyDecryptedCryptoMMapDirectoryDelegate;
     private final EagerDecryptedCryptoMMapDirectory eagerDecryptedCryptoMMapDirectory;
+    private final EagerDecryptedDirectIODirectory eagerDecryptedDirectIODirectory;
 
     // File size thresholds for special files only
     private static final long MEDIUM_FILE_THRESHOLD = 10 * 1024 * 1024; // 10MB
@@ -38,7 +40,8 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
     public HybridCryptoDirectory(
         LockFactory lockFactory,
         LazyDecryptedCryptoMMapDirectory delegate,
-        EagerDecryptedCryptoMMapDirectory eagerDecryptedCryptoMMapDirectory1,
+        EagerDecryptedCryptoMMapDirectory eagerDecryptedCryptoMMapDirectory,
+        EagerDecryptedDirectIODirectory eagerDecryptedDirectIODirectory,
         Provider provider,
         KeyIvResolver keyIvResolver,
         Set<String> nioExtensions
@@ -46,7 +49,8 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         throws IOException {
         super(lockFactory, delegate.getDirectory(), provider, keyIvResolver);
         this.lazyDecryptedCryptoMMapDirectoryDelegate = delegate;
-        this.eagerDecryptedCryptoMMapDirectory = eagerDecryptedCryptoMMapDirectory1;
+        this.eagerDecryptedCryptoMMapDirectory = eagerDecryptedCryptoMMapDirectory;
+        this.eagerDecryptedDirectIODirectory = eagerDecryptedDirectIODirectory;
         this.specialExtensions = Set.of("kdd", "kdi", "kdm", "tip", "tim", "tmd", "cfs", "doc", "dvd", "nvd", "psm", "fdm");
     }
 
@@ -63,7 +67,9 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         ensureCanRead(name);
 
         // Special routing for key file types
-        return routeSpecialFile(name, extension, context);
+        // return routeSpecialFile(name, extension, context);
+
+        return eagerDecryptedDirectIODirectory.openInput(name, context);
     }
 
     private IndexInput routeSpecialFile(String name, String extension, IOContext context) throws IOException {

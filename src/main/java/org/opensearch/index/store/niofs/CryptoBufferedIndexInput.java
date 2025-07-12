@@ -115,9 +115,9 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
     @SuppressForbidden(reason = "FileChannel#read is efficient and used intentionally")
     private int read(ByteBuffer dst, long position) throws IOException {
 
-        //initialize buffer lazy because Lucene may open input slices and clones ahead but never use them
-        //see org.apache.lucene.store.BufferedIndexInput
-        if( tmpBuffer == EMPTY_BYTEBUFFER ) {
+        // initialize buffer lazy because Lucene may open input slices and clones ahead but never use them
+        // see org.apache.lucene.store.BufferedIndexInput
+        if (tmpBuffer == EMPTY_BYTEBUFFER) {
             tmpBuffer = ByteBuffer.allocate(CHUNK_SIZE);
         }
 
