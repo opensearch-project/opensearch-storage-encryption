@@ -81,6 +81,7 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
 
         ensureOpen();
         Path path = directory.resolve(name);
+
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
         return new CryptoOutputStreamIndexOutput(name, path, fos, this.keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());

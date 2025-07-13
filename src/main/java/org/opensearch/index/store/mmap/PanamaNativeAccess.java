@@ -4,6 +4,7 @@
  */
 package org.opensearch.index.store.mmap;
 
+import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
@@ -29,6 +30,7 @@ public class PanamaNativeAccess {
     public static final MethodHandle POSIX_MEMALIGN;
     public static final MethodHandle READ;
     public static final MethodHandle PREAD;
+    public static final MethodHandle PWRITE;
 
     public static final int O_RDONLY = 0;
     public static final int O_DIRECT = 040000;
@@ -129,6 +131,19 @@ public class PanamaNativeAccess {
                         )  // off_t offset
                 );
 
+            PWRITE = LINKER
+                .downcallHandle(
+                    LIBC.find("pwrite").orElseThrow(),
+                    FunctionDescriptor
+                        .of(
+                            ValueLayout.JAVA_LONG,   // return ssize_t
+                            ValueLayout.JAVA_INT,    // int fd
+                            ValueLayout.ADDRESS,     // const void *buf
+                            ValueLayout.JAVA_LONG,   // size_t count
+                            ValueLayout.JAVA_LONG
+                        )   // off_t offset
+                );
+
         } catch (RuntimeException e) {
             throw new RuntimeException("Failed to load mmap", e);
         }
@@ -188,6 +203,17 @@ public class PanamaNativeAccess {
         int flags = O_RDONLY | (direct ? O_DIRECT : 0);
 
         return (int) OPEN.invoke(cPath, flags);
+    }
+
+    public static void pwrite(int fd, MemorySegment segment, long length, long offset) throws IOException {
+        try {
+            long written = (long) PWRITE.invokeExact(fd, segment.address(), length, offset);
+            if (written != length) {
+                throw new IOException("pwrite wrote only " + written + " of " + length + " bytes");
+            }
+        } catch (Throwable t) {
+            throw new IOException("pwrite failed", t);
+        }
     }
 
     public static void closeFile(int fd) throws Throwable {

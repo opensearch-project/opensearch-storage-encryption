@@ -4,107 +4,24 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIoConstants.DIRECT_IO_ALIGNMENT;
-import static org.opensearch.index.store.directio.DirectIoConstants.MAX_CHUNK_SIZE;
+import static org.opensearch.index.store.directio.DirectIoUtils.DIRECT_IO_ALIGNMENT;
 
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.security.Provider;
 import java.util.stream.IntStream;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.lucene.store.FSDirectory;
-import org.apache.lucene.store.IOContext;
-import org.apache.lucene.store.IndexInput;
-import org.apache.lucene.store.LockFactory;
-import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
-import org.opensearch.index.store.iv.KeyIvResolver;
-import org.opensearch.index.store.mmap.MemorySegmentIndexInput;
 import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
 @SuppressWarnings("preview")
-@SuppressForbidden(reason = "uses custom DirectIO")
-public final class EagerDecryptedDirectIODirectory extends FSDirectory {
-    private static final Logger LOGGER = LogManager.getLogger(EagerDecryptedDirectIODirectory.class);
-
-    private final KeyIvResolver keyIvResolver;
+public class CryptoDirectIOIndexInputHelper {
+    private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOIndexInputHelper.class);
     private static final TieredDirectIOBufferPool BUFFER_POOL = new TieredDirectIOBufferPool();
 
-    public EagerDecryptedDirectIODirectory(Path path, LockFactory lockFactory, Provider provider, KeyIvResolver keyIvResolver)
-        throws IOException {
-        super(path, lockFactory);
-        this.keyIvResolver = keyIvResolver;
-    }
-
-    @Override
-    public IndexInput openInput(String name, IOContext context) throws IOException {
-        ensureOpen();
-        ensureCanRead(name);
-
-        Path file = getDirectory().resolve(name);
-        long size = Files.size(file);
-        if (size == 0) {
-            throw new IOException("Cannot open empty file with DirectIO: " + file);
-        }
-
-        boolean confined = context == IOContext.READONCE;
-        Arena arena = confined ? Arena.ofConfined() : Arena.ofShared();
-
-        int chunkSizePower = MAX_CHUNK_SIZE;
-        long chunkSize = 1L << chunkSizePower;
-
-        int numChunks = (int) ((size + chunkSize - 1) >>> chunkSizePower);
-        boolean success = false;
-
-        int fd = -1;
-        try {
-            MemorySegment[] segments = new MemorySegment[numChunks];
-
-            fd = PanamaNativeAccess.openFileWithODirect(file.toAbsolutePath().toString(), true, arena);
-
-            long offset = 0;
-            for (int i = 0; i < numChunks; i++) {
-                long remaining = size - offset;
-                long segmentSize = Math.min(chunkSize, remaining);
-
-                MemorySegment segment = directIOReadAligned(fd, offset, segmentSize, arena);
-
-                // Decrypt in place using OpenSSL
-                decryptSegment(arena, segment, offset);
-
-                segments[i] = segment;
-                offset += segmentSize;
-            }
-
-            IndexInput in = MemorySegmentIndexInput
-                .newInstance("CryptoDirectIOIndexInput(path=\"" + file + "\")", arena, segments, size, chunkSizePower);
-
-            success = true;
-            return in;
-
-        } catch (Throwable t) {
-            LOGGER.error("DirectIO decryption failed for file: {}", file, t);
-            throw new IOException("Failed to direct-io/decrypt: " + file, t);
-        } finally {
-            // Close file descriptor after all chunks are processed
-            if (fd >= 0) {
-                try {
-                    PanamaNativeAccess.closeFile(fd);
-                } catch (Throwable closeEx) {
-                    LOGGER.warn("Failed to close file descriptor for: {}", file, closeEx);
-                }
-            }
-
-            if (success == false) {
-                arena.close();
-            }
-        }
-    }
+    private CryptoDirectIOIndexInputHelper() {}
 
     /**
      * Reads data using Direct I/O with proper alignment.
@@ -194,16 +111,14 @@ public final class EagerDecryptedDirectIODirectory extends FSDirectory {
 
     }
 
-    public void decryptSegment(Arena arena, MemorySegment segment, long segmentOffsetInFile) throws Throwable {
+    public static void decryptSegment(Arena arena, MemorySegment segment, long segmentOffsetInFile, byte[] key, byte[] iv)
+        throws Throwable {
         final long size = segment.byteSize();
 
         final int twoMB = 1 << 21; // 2 MiB
         final int fourMB = 1 << 22; // 4 MiB
         final int eightMB = 1 << 23; // 8 MiB
         final int sixteenMB = 1 << 24; // 16 MiB
-
-        final byte[] key = this.keyIvResolver.getDataKey().getEncoded();
-        final byte[] iv = this.keyIvResolver.getIvBytes();
 
         // Fast-path: no parallelism for ≤ 4 MiB
         if (size <= (4L << 20)) {

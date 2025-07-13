@@ -31,7 +31,7 @@ public class DirectIOBufferPool {
     private static final Logger LOGGER = LogManager.getLogger(DirectIOBufferPool.class);
 
     private static final Arena PROCESS_ARENA = Arena.ofShared();
-    private static final int BUFFER_SIZE = 1 << DirectIoConstants.MAX_CHUNK_SIZE; // 16MB
+    private static final int BUFFER_SIZE = 1 << DirectIoUtils.MAX_CHUNK_SIZE; // 16MB
     private static final int DEFAULT_MAX_BUFFERS = 64; // ~1GB total
 
     private final ConcurrentLinkedQueue<MemorySegment> freeBuffers = new ConcurrentLinkedQueue<>();
@@ -47,7 +47,7 @@ public class DirectIOBufferPool {
      * @return A reusable MemorySegment buffer
      * @throws DirectIOBufferException if buffer cannot be acquired
      */
-    public MemorySegment acquireBuffer() {
+    public MemorySegment acquireBuffer(int lenght) {
         // Fast path: try to get a free buffer without locking
         MemorySegment buffer = freeBuffers.poll();
         if (buffer != null) {
@@ -65,7 +65,7 @@ public class DirectIOBufferPool {
             // Try to allocate a new buffer if under limit
             if (allocatedCount.get() < maxBuffers.get()) {
                 try {
-                    MemorySegment newBuffer = PROCESS_ARENA.allocate(BUFFER_SIZE, DirectIoConstants.DIRECT_IO_ALIGNMENT);
+                    MemorySegment newBuffer = PROCESS_ARENA.allocate(BUFFER_SIZE, DirectIoUtils.DIRECT_IO_ALIGNMENT);
                     int currentCount = allocatedCount.incrementAndGet();
                     LOGGER
                         .debug(
@@ -97,7 +97,7 @@ public class DirectIOBufferPool {
 
             if (allocatedCount.get() < maxBuffers.get()) {
                 try {
-                    MemorySegment newBuffer = PROCESS_ARENA.allocate(BUFFER_SIZE, DirectIoConstants.DIRECT_IO_ALIGNMENT);
+                    MemorySegment newBuffer = PROCESS_ARENA.allocate(BUFFER_SIZE, DirectIoUtils.DIRECT_IO_ALIGNMENT);
                     int currentCount = allocatedCount.incrementAndGet();
                     LOGGER
                         .debug(
