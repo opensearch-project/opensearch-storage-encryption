@@ -7,11 +7,12 @@ package org.opensearch.index.store.directio;
 import static org.opensearch.index.store.directio.DirectIoUtils.getDirectOpenOption;
 
 import java.io.IOException;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.Arrays;
 import java.util.zip.CRC32;
 import java.util.zip.Checksum;
 
@@ -20,6 +21,8 @@ import org.apache.lucene.store.IndexOutput;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.mmap.PanamaNativeAccess;
+
+@SuppressWarnings("preview")
 
 public class CryptoDirectIOIndexOutput extends IndexOutput {
 
@@ -36,6 +39,7 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
 
     private final byte[] plaintextBuf = new byte[BUFFER_SIZE];
     private final ByteBuffer encryptedBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE + BLOCK_SIZE).alignedSlice(BLOCK_SIZE);
+    private final ByteBuffer zeroPaddingBuffer = ByteBuffer.allocate(BLOCK_SIZE);
 
     public CryptoDirectIOIndexOutput(Path path, String name, KeyIvResolver keyIvResolver) throws IOException {
         super("DirectIOIndexOutput(path=\"" + path.toString() + "\")", name);
@@ -82,41 +86,66 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
 
         buffer.flip(); // switch to read mode
 
-        // Read into reusable plaintext buffer
-        buffer.get(plaintextBuf, 0, size);
-
         byte[] key = keyIvResolver.getDataKey().getEncoded();
         byte[] iv = keyIvResolver.getIvBytes();
 
-        byte[] encrypted;
-        try {
-            encrypted = OpenSslNativeCipher.encrypt(key, iv, plaintextBuf, filePos);
-        } catch (Throwable t) {
-            throw new IOException("Encryption failed at offset " + filePos, t);
+        int bytesWritten;
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment inputSeg = MemorySegment.ofBuffer(buffer.slice(0, size));
+            MemorySegment outputSeg = MemorySegment.ofBuffer(encryptedBuffer);
+
+            bytesWritten = OpenSslNativeCipher.encryptInto(arena, key, iv, inputSeg, outputSeg, filePos);
+
+            inputSeg.fill((byte) 0);
+        } catch (Throwable e) {
+            throw new IOException(
+                String
+                    .format(
+                        "Encryption failed: offset=%d, inputSize=%d, outputCapacity=%d, error=%s",
+                        filePos,
+                        size,
+                        encryptedBuffer.capacity(),
+                        e.getMessage()
+                    ),
+                e
+            );
         }
 
-        // Compute aligned size
-        int encryptedLen = encrypted.length;
-        int paddedLen = ((encryptedLen + BLOCK_SIZE - 1) / BLOCK_SIZE) * BLOCK_SIZE;
+        if (bytesWritten < size) {
+            throw new IOException("Unexpected: fewer bytes written than input size. Possible cipher error.");
+        }
 
-        // ✅ Copy encrypted data into aligned ByteBuffer
+        // pad ...
+        int paddedLen = ((bytesWritten + BLOCK_SIZE - 1) / BLOCK_SIZE) * BLOCK_SIZE;
+        if (bytesWritten < paddedLen) {
+            encryptedBuffer.position(bytesWritten);
+            int paddingSize = paddedLen - bytesWritten;
+            zeroPaddingBuffer.clear().limit(paddingSize);
+            encryptedBuffer.put(zeroPaddingBuffer);
+        }
+
+        // Write encrypted + padded data
+        encryptedBuffer.position(0).limit(paddedLen);
+        int written = channel.write(encryptedBuffer, filePos);
+
+        if (written != paddedLen) {
+            throw new IOException(
+                String
+                    .format(
+                        "Incomplete write at offset %d: expected %d bytes, wrote %d bytes. "
+                            + "Possible causes: disk full, I/O error, or direct I/O alignment issue.",
+                        filePos,
+                        paddedLen,
+                        written
+                    )
+            );
+        }
+
+        filePos += size;
+        buffer.clear();
+
+        MemorySegment.ofBuffer(encryptedBuffer).fill((byte) 0);
         encryptedBuffer.clear();
-        encryptedBuffer.put(encrypted);
-
-        // Pad any remaining space with zeroes
-        for (int i = encryptedLen; i < paddedLen; i++) {
-            encryptedBuffer.put((byte) 0);
-        }
-
-        encryptedBuffer.flip();
-
-        channel.write(encryptedBuffer, filePos);
-        filePos += size; // not paddedLen, since size is from plaintext
-
-        buffer.clear(); // ready for next block
-
-        // zerioize out plaintext
-        Arrays.fill(plaintextBuf, 0, size, (byte) 0);
     }
 
     @Override
