@@ -13,6 +13,8 @@ import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.Objects;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
@@ -20,6 +22,8 @@ import org.apache.lucene.util.ArrayUtil;
 
 @SuppressWarnings("preview")
 public class MemorySegmentIndexInput extends IndexInput implements RandomAccessInput {
+    private static final Logger LOGGER = LogManager.getLogger(MemorySegmentIndexInput.class);
+
     static final ValueLayout.OfByte LAYOUT_BYTE = ValueLayout.JAVA_BYTE;
     static final ValueLayout.OfShort LAYOUT_LE_SHORT = ValueLayout.JAVA_SHORT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
     static final ValueLayout.OfInt LAYOUT_LE_INT = ValueLayout.JAVA_INT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
@@ -392,11 +396,22 @@ public class MemorySegmentIndexInput extends IndexInput implements RandomAccessI
             return;
         }
 
-        // the master IndexInput has an Arena and is able
-        // to release all resources (unmap segments) - a
-        // side effect is that other threads still using clones
-        // will throw IllegalStateException
         if (arena != null) {
+            // Before closing the arena, advise the kernel to release private mappings from the memory.
+            for (MemorySegment segment : segments) {
+                if (segment != null && segment.address() != 0) {
+                    try {
+                        PanamaNativeAccess.madvise(segment.address(), segment.byteSize(), PanamaNativeAccess.MADV_DONTNEED);
+                    } catch (Throwable t) {
+                        LOGGER.warn("madvise MADV_DONTNEED failed on close", t);
+                    }
+                }
+            }
+
+            // the master IndexInput has an Arena and is able
+            // to release all resources (unmap segments) - a
+            // side effect is that other threads still using clones
+            // will throw IllegalStateException
             while (arena.scope().isAlive()) {
                 try {
                     arena.close();
@@ -407,7 +422,7 @@ public class MemorySegmentIndexInput extends IndexInput implements RandomAccessI
             }
         }
 
-        // make sure all accesses to this IndexInput instance throw NPE:
+        // Nullify fields to ensure any access fails fast
         curSegment = null;
         Arrays.fill(segments, null);
     }

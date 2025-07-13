@@ -973,11 +973,22 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             return;
         }
 
-        // the master IndexInput has an Arena and is able
-        // to release all resources (unmap segments) - a
-        // side effect is that other threads still using clones
-        // will throw IllegalStateException
         if (arena != null) {
+            // Before closing the arena, advise the kernel to release private mappings from the memory.
+            for (MemorySegment segment : segments) {
+                if (segment != null && segment.address() != 0) {
+                    try {
+                        PanamaNativeAccess.madvise(segment.address(), segment.byteSize(), PanamaNativeAccess.MADV_DONTNEED);
+                    } catch (Throwable t) {
+                        LOGGER.warn("madvise MADV_DONTNEED failed on close", t);
+                    }
+                }
+            }
+
+            // the master IndexInput has an Arena and is able
+            // to release all resources (unmap segments) - a
+            // side effect is that other threads still using clones
+            // will throw IllegalStateException
             while (arena.scope().isAlive()) {
                 try {
                     arena.close();
@@ -988,7 +999,7 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
             }
         }
 
-        // make sure all accesses to this IndexInput instance throw NPE:
+        // Nullify fields to ensure any access fails fast
         curSegment = null;
         Arrays.fill(segments, null);
     }

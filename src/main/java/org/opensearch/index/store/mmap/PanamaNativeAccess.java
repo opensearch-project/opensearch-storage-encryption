@@ -30,6 +30,8 @@ public class PanamaNativeAccess {
     private static final SymbolLookup LIBC = loadLibc();
 
     public static final int MADV_WILLNEED = 3;
+    public static final int MADV_DONTNEED = 4;
+
     public static final int PROT_READ = 0x1;
     public static final int PROT_WRITE = 0x2;
     public static final int MAP_PRIVATE = 0x02;
