@@ -70,6 +70,8 @@ dependencies {
     internalClusterTestImplementation "org.opensearch.plugin:parent-join-client:${opensearch_version}"
     internalClusterTestImplementation "org.opensearch.plugin:crypto-kms:${opensearch_version}"
     internalClusterTestImplementation "org.opensearch.plugin:aggs-matrix-stats-client:${opensearch_version}"
+
+    implementation 'com.github.ben-manes.caffeine:caffeine:3.0.0'
 }
 
 test {

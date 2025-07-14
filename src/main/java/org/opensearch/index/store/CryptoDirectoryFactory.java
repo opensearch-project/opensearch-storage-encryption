@@ -29,6 +29,10 @@ import org.opensearch.crypto.CryptoHandlerRegistry;
 import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.shard.ShardPath;
+import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.block_cache.DefaultMemorySegmentPool;
+import org.opensearch.index.store.block_cache.DirectIOBlockCache;
+import org.opensearch.index.store.block_cache.MemorySegmentPool;
 import org.opensearch.index.store.directio.CryptoDirectIODirectory;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
 import org.opensearch.index.store.iv.DefaultKeyIvResolver;
@@ -134,11 +138,28 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                     keyIvResolver
                 );
 
+                // Per directory configuration.
+                // todo: This will be later per node configuration.
+                long poolMemoryBytes = 100L * 1024 * 1024;
+                int segementSizeBytes = 65_536;
+                int maxBlocks = (int) (poolMemoryBytes / segementSizeBytes);
+
+                MemorySegmentPool memorySegmentPool = new DefaultMemorySegmentPool(poolMemoryBytes, segementSizeBytes);
+                // warm up the pool with a few segments. 
+                memorySegmentPool.warmUp((int) (maxBlocks * 0.2));
+
+                // Cache should use 90% of the segments
+                int maxCacheBlocks = (int) (maxBlocks * 0.9);
+
+                BlockCache blockCache = new DirectIOBlockCache(memorySegmentPool, maxCacheBlocks);
+
                 CryptoDirectIODirectory cryptoDirectIODirectory = new CryptoDirectIODirectory(
                     location,
                     lockFactory,
                     provider,
-                    keyIvResolver
+                    keyIvResolver,
+                    memorySegmentPool,
+                    blockCache
                 );
 
                 return new HybridCryptoDirectory(

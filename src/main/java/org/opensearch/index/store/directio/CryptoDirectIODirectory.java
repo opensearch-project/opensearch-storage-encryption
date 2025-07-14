@@ -24,6 +24,8 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.block_cache.MemorySegmentPool;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.mmap.MemorySegmentIndexInput;
 import org.opensearch.index.store.mmap.PanamaNativeAccess;
@@ -34,11 +36,23 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIODirectory.class);
     private final AtomicLong nextTempFileCounter = new AtomicLong();
 
+    private final MemorySegmentPool memorySegmentPool;
+    private final BlockCache blockCache;
     private final KeyIvResolver keyIvResolver;
 
-    public CryptoDirectIODirectory(Path path, LockFactory lockFactory, Provider provider, KeyIvResolver keyIvResolver) throws IOException {
+    public CryptoDirectIODirectory(
+        Path path,
+        LockFactory lockFactory,
+        Provider provider,
+        KeyIvResolver keyIvResolver,
+        MemorySegmentPool memorySegmentPool,
+        BlockCache blockCache
+    )
+        throws IOException {
         super(path, lockFactory);
         this.keyIvResolver = keyIvResolver;
+        this.memorySegmentPool = memorySegmentPool;
+        this.blockCache = blockCache;
     }
 
     @Override
@@ -115,7 +129,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         ensureOpen();
         Path path = directory.resolve(name);
 
-        return new CryptoDirectIOIndexOutput(path, name, this.keyIvResolver);
+        return new CryptoDirectIOIndexOutput(path, name, this.keyIvResolver, this.memorySegmentPool, this.blockCache);
     }
 
     @Override
@@ -128,7 +142,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         String name = getTempFileName(prefix, suffix, nextTempFileCounter.getAndIncrement());
         Path path = directory.resolve(name);
 
-        return new CryptoDirectIOIndexOutput(path, name, this.keyIvResolver);
+        return new CryptoDirectIOIndexOutput(path, name, this.keyIvResolver, this.memorySegmentPool, this.blockCache);
 
     }
 
