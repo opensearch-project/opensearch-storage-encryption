@@ -25,7 +25,7 @@ import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
-import org.opensearch.index.store.block_cache.MemorySegmentPool;
+import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.mmap.MemorySegmentIndexInput;
 import org.opensearch.index.store.mmap.PanamaNativeAccess;
@@ -36,8 +36,8 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIODirectory.class);
     private final AtomicLong nextTempFileCounter = new AtomicLong();
 
-    private final MemorySegmentPool memorySegmentPool;
-    private final BlockCache blockCache;
+    private final Pool<MemorySegment> memorySegmentPool;
+    private final BlockCache<MemorySegment> blockCache;
     private final KeyIvResolver keyIvResolver;
 
     public CryptoDirectIODirectory(
@@ -45,8 +45,8 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         LockFactory lockFactory,
         Provider provider,
         KeyIvResolver keyIvResolver,
-        MemorySegmentPool memorySegmentPool,
-        BlockCache blockCache
+        Pool<MemorySegment> memorySegmentPool,
+        BlockCache<MemorySegment> blockCache
     )
         throws IOException {
         super(path, lockFactory);

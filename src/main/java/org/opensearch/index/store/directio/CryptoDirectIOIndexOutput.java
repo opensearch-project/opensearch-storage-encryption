@@ -23,8 +23,8 @@ import org.apache.lucene.store.BufferedChecksum;
 import org.apache.lucene.store.IndexOutput;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
-import org.opensearch.index.store.block_cache.MemorySegmentPool;
-import org.opensearch.index.store.block_cache.PooledBlockCacheValue;
+import org.opensearch.index.store.block_cache.MemorySegmentCacheValue;
+import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.mmap.PanamaNativeAccess;
@@ -37,8 +37,8 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
     private static final int BUFFER_SIZE = 65_536;
     private static final int BLOCK_SIZE = PanamaNativeAccess.getPageSize(); // often returns 4096
 
-    private final MemorySegmentPool memorySegmentPool;
-    private final BlockCache blockCache;
+    private final Pool<MemorySegment> memorySegmentPool;
+    private final BlockCache<MemorySegment> blockCache;
     private final FileChannel channel;
     private final KeyIvResolver keyIvResolver;
     private final ByteBuffer buffer;
@@ -55,8 +55,8 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
         Path path,
         String name,
         KeyIvResolver keyIvResolver,
-        MemorySegmentPool memorySegmentPool,
-        BlockCache blockCache
+        Pool<MemorySegment> memorySegmentPool,
+        BlockCache<MemorySegment> blockCache
     )
         throws IOException {
         super("DirectIOIndexOutput(path=\"" + path.toString() + "\")", name);
@@ -156,8 +156,8 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
                     plain.fill((byte) 0);
 
                     // Add to block cache
-                    BlockCacheKey cacheKey = new BlockCacheKey(path, alignedOffset);
-                    blockCache.put(cacheKey, new PooledBlockCacheValue(pooled, size, memorySegmentPool));
+                    BlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, alignedOffset);
+                    blockCache.put(cacheKey, new MemorySegmentCacheValue(pooled, size, memorySegmentPool));
 
                     pooled = null; // ownership transferred to cache
                 } else {

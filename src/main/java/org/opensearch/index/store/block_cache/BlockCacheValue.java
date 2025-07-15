@@ -4,19 +4,10 @@
  */
 package org.opensearch.index.store.block_cache;
 
-import java.lang.foreign.MemorySegment;
+public interface BlockCacheValue<T> extends AutoCloseable {
 
-@SuppressWarnings("preview")
-public interface BlockCacheValue extends AutoCloseable {
+    T block();
 
-    /**
-     * The memory segment containing cached block data.
-     */
-    MemorySegment segment();
-
-    /**
-     * Returns the size (in bytes) of the valid data within the segment.
-     */
     int length();
 
     @Override

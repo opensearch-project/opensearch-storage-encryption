@@ -7,14 +7,14 @@ package org.opensearch.index.store.block_cache;
 import java.lang.foreign.MemorySegment;
 
 @SuppressWarnings("preview")
-public final class PooledBlockCacheValue implements BlockCacheValue {
+public final class MemorySegmentCacheValue implements BlockCacheValue<MemorySegment> {
     private final MemorySegment segment;
-    private final MemorySegmentPool pool;
+    private final Pool<MemorySegment> pool;
     private volatile boolean released = false;
 
     private final int length;
 
-    public PooledBlockCacheValue(MemorySegment segment, int length, MemorySegmentPool pool) {
+    public MemorySegmentCacheValue(MemorySegment segment, int length, Pool<MemorySegment> pool) {
         if (segment == null || pool == null) {
             throw new IllegalArgumentException("segment and pool must not be null");
         }
@@ -27,7 +27,7 @@ public final class PooledBlockCacheValue implements BlockCacheValue {
     }
 
     @Override
-    public MemorySegment segment() {
+    public MemorySegment block() {
         return segment.asSlice(0, length);
     }
 

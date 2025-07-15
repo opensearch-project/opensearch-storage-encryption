@@ -5,12 +5,14 @@
 package org.opensearch.index.store;
 
 import java.io.IOException;
+import java.lang.foreign.MemorySegment;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Provider;
 import java.security.Security;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 import org.apache.logging.log4j.LogManager;
@@ -30,10 +32,14 @@ import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.shard.ShardPath;
 import org.opensearch.index.store.block_cache.BlockCache;
-import org.opensearch.index.store.block_cache.DefaultMemorySegmentPool;
-import org.opensearch.index.store.block_cache.DirectIOBlockCache;
+import org.opensearch.index.store.block_cache.BlockCacheKey;
+import org.opensearch.index.store.block_cache.BlockCacheValue;
+import org.opensearch.index.store.block_cache.BlockLoader;
+import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.MemorySegmentPool;
+import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.directio.CryptoDirectIODirectory;
+import org.opensearch.index.store.directio.CryptoDirectIOSegmentBlockLoader;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
 import org.opensearch.index.store.iv.DefaultKeyIvResolver;
 import org.opensearch.index.store.iv.KeyIvResolver;
@@ -42,6 +48,11 @@ import org.opensearch.index.store.mmap.LazyDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 import org.opensearch.plugins.IndexStorePlugin;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.RemovalCause;
+
+@SuppressWarnings("preview")
 @SuppressForbidden(reason = "temporary")
 /**
  * Factory for an encrypted filesystem directory
@@ -138,28 +149,11 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                     keyIvResolver
                 );
 
-                // Per directory configuration.
-                // todo: This will be later per node configuration.
-                long poolMemoryBytes = 100L * 1024 * 1024;
-                int segementSizeBytes = 65_536;
-                int maxBlocks = (int) (poolMemoryBytes / segementSizeBytes);
-
-                MemorySegmentPool memorySegmentPool = new DefaultMemorySegmentPool(poolMemoryBytes, segementSizeBytes);
-                // warm up the pool with a few segments. 
-                memorySegmentPool.warmUp((int) (maxBlocks * 0.2));
-
-                // Cache should use 90% of the segments
-                int maxCacheBlocks = (int) (maxBlocks * 0.9);
-
-                BlockCache blockCache = new DirectIOBlockCache(memorySegmentPool, maxCacheBlocks);
-
-                CryptoDirectIODirectory cryptoDirectIODirectory = new CryptoDirectIODirectory(
+                CryptoDirectIODirectory cryptoDirectIODirectory = createCryptoDirectIODirectory(
                     location,
                     lockFactory,
                     provider,
-                    keyIvResolver,
-                    memorySegmentPool,
-                    blockCache
+                    keyIvResolver
                 );
 
                 return new HybridCryptoDirectory(
@@ -184,5 +178,46 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             }
             default -> throw new AssertionError("unexpected built-in store type [" + type + "]");
         }
+    }
+
+    private static CryptoDirectIODirectory createCryptoDirectIODirectory(
+        Path location,
+        LockFactory lockFactory,
+        Provider provider,
+        KeyIvResolver keyIvResolver
+    ) throws IOException {
+        long poolMemoryBytes = 100L * 1024 * 1024; // 100 MB
+        int segmentSizeBytes = 65_536;
+        int maxBlocks = (int) (poolMemoryBytes / segmentSizeBytes);
+
+        Pool<MemorySegment> memorySegmentPool = new MemorySegmentPool(poolMemoryBytes, segmentSizeBytes);
+
+        // Warm-up the pool with 20% of segments
+        memorySegmentPool.warmUp((int) (maxBlocks * 0.2));
+
+        // Cache should use 90% of the segment budget
+        int maxCacheBlocks = (int) (maxBlocks * 0.9);
+
+        BlockLoader<MemorySegment> blockLoader = new CryptoDirectIOSegmentBlockLoader(memorySegmentPool, keyIvResolver);
+
+        Cache<BlockCacheKey, BlockCacheValue<MemorySegment>> cache = Caffeine
+            .newBuilder()
+            .maximumSize(maxBlocks)
+            .expireAfterAccess(15, TimeUnit.MINUTES)
+            .executor(Runnable::run)
+            .removalListener((BlockCacheKey key, BlockCacheValue<MemorySegment> value, RemovalCause cause) -> {
+                if (value != null) {
+                    value.close();
+                } else {
+                    LogManager
+                        .getLogger(CryptoDirectIODirectory.class)
+                        .warn("BlockCache eviction with null value: key={} cause={}", key, cause);
+                }
+            })
+            .build();
+
+        BlockCache<MemorySegment> blockCache = new CaffeineBlockCache<>(cache, blockLoader, maxCacheBlocks);
+
+        return new CryptoDirectIODirectory(location, lockFactory, provider, keyIvResolver, memorySegmentPool, blockCache);
     }
 }

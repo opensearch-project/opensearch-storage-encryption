@@ -6,5 +6,8 @@ package org.opensearch.index.store.block_cache;
 
 import java.nio.file.Path;
 
-public record BlockCacheKey(Path filePath, long alignedOffset) {
+public interface BlockCacheKey {
+    Path filePath();
+
+    long alignedOffset();
 }
