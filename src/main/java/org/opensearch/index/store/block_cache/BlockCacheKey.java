@@ -9,5 +9,5 @@ import java.nio.file.Path;
 public interface BlockCacheKey {
     Path filePath();
 
-    long alignedOffset();
+    long offset();
 }

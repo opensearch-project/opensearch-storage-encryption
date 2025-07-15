@@ -4,6 +4,8 @@
  */
 package org.opensearch.index.store.directio;
 
+import static org.opensearch.index.store.directio.DirectIoUtils.DIRECT_IO_ALIGNMENT;
+import static org.opensearch.index.store.directio.DirectIoUtils.SEGMENT_SIZE_BYTES;
 import static org.opensearch.index.store.directio.DirectIoUtils.getDirectOpenOption;
 
 import java.io.IOException;
@@ -27,15 +29,12 @@ import org.opensearch.index.store.block_cache.MemorySegmentCacheValue;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
 import org.opensearch.index.store.iv.KeyIvResolver;
-import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
 @SuppressWarnings("preview")
 public class CryptoDirectIOIndexOutput extends IndexOutput {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOIndexOutput.class);
 
-    // todo derive from segment size of the pool.
-    private static final int BUFFER_SIZE = 65_536;
-    private static final int BLOCK_SIZE = PanamaNativeAccess.getPageSize(); // often returns 4096
+    private static final int BUFFER_SIZE = SEGMENT_SIZE_BYTES;
 
     private final Pool<MemorySegment> memorySegmentPool;
     private final BlockCache<MemorySegment> blockCache;
@@ -48,8 +47,10 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
     private long filePos;
     private boolean isOpen;
 
-    private final ByteBuffer encryptedBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE + BLOCK_SIZE).alignedSlice(BLOCK_SIZE);
-    private final ByteBuffer zeroPaddingBuffer = ByteBuffer.allocate(BLOCK_SIZE);
+    private final ByteBuffer encryptedBuffer = ByteBuffer
+        .allocateDirect(BUFFER_SIZE + DIRECT_IO_ALIGNMENT)
+        .alignedSlice(DIRECT_IO_ALIGNMENT);
+    private final ByteBuffer zeroPaddingBuffer = ByteBuffer.allocate(DIRECT_IO_ALIGNMENT);
 
     public CryptoDirectIOIndexOutput(
         Path path,
@@ -66,7 +67,7 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
         this.blockCache = blockCache;
         this.path = path;
 
-        buffer = ByteBuffer.allocateDirect(BUFFER_SIZE + BLOCK_SIZE - 1).alignedSlice(BLOCK_SIZE);
+        buffer = ByteBuffer.allocateDirect(BUFFER_SIZE + DIRECT_IO_ALIGNMENT - 1).alignedSlice(DIRECT_IO_ALIGNMENT);
         channel = FileChannel.open(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW, getDirectOpenOption());
         digest = new BufferedChecksum(new CRC32());
 
@@ -112,7 +113,9 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
 
         int bytesWritten;
         MemorySegment pooled = null;
-        long alignedOffset = filePos & ~(BLOCK_SIZE - 1); // Capture before increment
+
+        // Create a readonly slice of the plaintext *before* it's modified or zeroed
+        ByteBuffer plainCopy = buffer.slice(0, size).asReadOnlyBuffer();
 
         try {
             // Encrypt
@@ -123,10 +126,8 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
                 bytesWritten = OpenSslNativeCipher.encryptInto(arena, key, iv, inputSeg, outputSeg, filePos);
             }
 
-            inputSeg.fill((byte) 0);
-
             // Pad to alignment
-            int paddedLen = ((bytesWritten + BLOCK_SIZE - 1) / BLOCK_SIZE) * BLOCK_SIZE;
+            int paddedLen = ((bytesWritten + DIRECT_IO_ALIGNMENT - 1) / DIRECT_IO_ALIGNMENT) * DIRECT_IO_ALIGNMENT;
             if (bytesWritten < paddedLen) {
                 encryptedBuffer.position(bytesWritten);
                 int paddingSize = paddedLen - bytesWritten;
@@ -147,21 +148,18 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
             // Try acquiring a segment for caching decrypted content
             try {
                 pooled = memorySegmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
-
                 if (pooled != null) {
-                    // Copy decrypted data into pooled segment
                     MemorySegment pooledSlice = pooled.asSlice(0, size);
-                    MemorySegment plain = MemorySegment.ofBuffer(buffer.slice(0, size));
-                    MemorySegment.copy(plain, 0, pooledSlice, 0, size);
-                    plain.fill((byte) 0);
 
-                    // Add to block cache
-                    BlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, alignedOffset);
+                    // note plainSegment is read-only
+                    MemorySegment plainSegment = MemorySegment.ofBuffer(plainCopy);
+                    MemorySegment.copy(plainSegment, 0, pooledSlice, 0, size);
+
+                    BlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, filePos);
                     blockCache.put(cacheKey, new MemorySegmentCacheValue(pooled, size, memorySegmentPool));
-
                     pooled = null; // ownership transferred to cache
                 } else {
-                    LOGGER.debug("Memory pool segment not available within timeout; skipping cache population.");
+                    LOGGER.debug("Memory pool segment not available within timeout; skipping cache population {}", this.path);
                 }
 
             } catch (InterruptedException ie) {

@@ -4,6 +4,11 @@
  */
 package org.opensearch.index.store;
 
+import static org.opensearch.index.store.directio.DirectIoUtils.PER_DIRECTORY_RESEVERED_POOL_SIZE_IN_BYTES;
+import static org.opensearch.index.store.directio.DirectIoUtils.SEGMENT_POOL_TO_CACHE_SIZE_RATIO;
+import static org.opensearch.index.store.directio.DirectIoUtils.SEGMENT_SIZE_BYTES;
+import static org.opensearch.index.store.directio.DirectIoUtils.WARM_UP_PERCENTAGE;
+
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Files;
@@ -186,17 +191,15 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         Provider provider,
         KeyIvResolver keyIvResolver
     ) throws IOException {
-        long poolMemoryBytes = 100L * 1024 * 1024; // 100 MB
-        int segmentSizeBytes = 65_536;
-        int maxBlocks = (int) (poolMemoryBytes / segmentSizeBytes);
 
-        Pool<MemorySegment> memorySegmentPool = new MemorySegmentPool(poolMemoryBytes, segmentSizeBytes);
+        int maxBlocks = (int) (PER_DIRECTORY_RESEVERED_POOL_SIZE_IN_BYTES / SEGMENT_SIZE_BYTES);
+        Pool<MemorySegment> memorySegmentPool = new MemorySegmentPool(PER_DIRECTORY_RESEVERED_POOL_SIZE_IN_BYTES, SEGMENT_SIZE_BYTES);
 
-        // Warm-up the pool with 20% of segments
-        memorySegmentPool.warmUp((int) (maxBlocks * 0.2));
+        // Warm-up the pool with allocated segments.
+        memorySegmentPool.warmUp((int) (maxBlocks * WARM_UP_PERCENTAGE));
 
         // Cache should use 90% of the segment budget
-        int maxCacheBlocks = (int) (maxBlocks * 0.9);
+        int maxCacheBlocks = (int) (maxBlocks * SEGMENT_POOL_TO_CACHE_SIZE_RATIO);
 
         BlockLoader<MemorySegment> blockLoader = new CryptoDirectIOSegmentBlockLoader(memorySegmentPool, keyIvResolver);
 
@@ -209,9 +212,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                 if (value != null) {
                     value.close();
                 } else {
-                    LogManager
-                        .getLogger(CryptoDirectIODirectory.class)
-                        .warn("BlockCache eviction with null value: key={} cause={}", key, cause);
+                    LOGGER.warn("BlockCache eviction with null value: key={} cause={}", key, cause);
                 }
             })
             .build();

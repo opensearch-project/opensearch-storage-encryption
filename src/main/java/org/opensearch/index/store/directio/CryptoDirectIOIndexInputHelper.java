@@ -60,7 +60,7 @@ public class CryptoDirectIOIndexInputHelper {
      * @throws Throwable if the I/O operation fails
      */
     public static MemorySegment directIOReadAligned(int fd, long offset, long length, Arena arena) throws Throwable {
-        int alignment = Math.max(DIRECT_IO_ALIGNMENT, PanamaNativeAccess.getPageSize());
+        int alignment = DIRECT_IO_ALIGNMENT;
 
         // Align the offset down to the nearest alignment boundary.
         // Example: 1003 -> 512 (floor to nearest 512)

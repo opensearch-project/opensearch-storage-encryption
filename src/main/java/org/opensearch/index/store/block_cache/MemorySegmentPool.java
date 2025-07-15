@@ -120,15 +120,14 @@ public class MemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
                 }
 
                 if (nanos <= 0) {
-                    if (LOGGER.isDebugEnabled()) {
-                        LOGGER
-                            .debug(
-                                "Failed to acquire segment within {}ms, pool stats: allocated={}, free={}",
-                                unit.toMillis(timeout),
-                                allocatedSegments,
-                                freeList.size()
-                            );
-                    }
+                    LOGGER
+                        .debug(
+                            "Failed to acquire segment within {}ms, pool stats: allocated={}, free={}",
+                            unit.toMillis(timeout),
+                            allocatedSegments,
+                            freeList.size()
+                        );
+
                     return null;
                 }
 
@@ -226,12 +225,7 @@ public class MemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
      * Get current pool utilization statistics
      */
     public PoolStats getStats() {
-        lock.lock();
-        try {
-            return new PoolStats(maxSegments, allocatedSegments, freeList.size(), maxSegments - allocatedSegments);
-        } finally {
-            lock.unlock();
-        }
+        return new PoolStats(maxSegments, allocatedSegments, freeList.size(), maxSegments - allocatedSegments);
     }
 
     /**

@@ -23,7 +23,6 @@ import org.opensearch.index.store.block_cache.MemorySegmentCacheValue;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
 import org.opensearch.index.store.iv.KeyIvResolver;
-import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
 @SuppressWarnings("preview")
 public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegment> {
@@ -37,7 +36,7 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
 
     @Override
     public Optional<BlockCacheValue<MemorySegment>> load(BlockCacheKey key, int size) throws Exception {
-        long offset = key.alignedOffset();
+        long offset = key.offset();
 
         // Try to acquire from pool with a small timeout
         // todo, make it configurable.
@@ -89,7 +88,7 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
     *
     */
     public static void loadAndDecrypt(FileChannel channel, long offset, MemorySegment target, byte[] key, byte[] iv) throws IOException {
-        int alignment = Math.max(DIRECT_IO_ALIGNMENT, PanamaNativeAccess.getPageSize());
+        int alignment = DIRECT_IO_ALIGNMENT;
 
         long alignedOffset = offset & ~(alignment - 1);
         long offsetDelta = offset - alignedOffset;
@@ -110,7 +109,7 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
             }
 
             try {
-                OpenSslNativeCipher.decryptInPlace(arena, temp.address(), temp.byteSize(), key, iv, alignedOffset);
+                OpenSslNativeCipher.decryptInPlace(arena, temp.address(), temp.byteSize(), key, iv, offset);
             } catch (Throwable e) {
                 throw new RuntimeException("Decryption failed at offset: " + offset, e);
 

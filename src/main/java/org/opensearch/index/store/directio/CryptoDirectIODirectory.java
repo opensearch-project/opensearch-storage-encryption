@@ -6,7 +6,7 @@ package org.opensearch.index.store.directio;
 
 import static org.opensearch.index.store.directio.CryptoDirectIOIndexInputHelper.decryptSegment;
 import static org.opensearch.index.store.directio.CryptoDirectIOIndexInputHelper.directIOReadAligned;
-import static org.opensearch.index.store.directio.DirectIoUtils.MAX_CHUNK_SIZE;
+import static org.opensearch.index.store.directio.DirectIoUtils.CHUNK_SIZE_POWER;
 
 import java.io.IOException;
 import java.lang.foreign.Arena;
@@ -25,6 +25,8 @@ import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.block_cache.BlockCacheKey;
+import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.mmap.MemorySegmentIndexInput;
@@ -69,7 +71,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         boolean confined = context == IOContext.READONCE;
         Arena arena = confined ? Arena.ofConfined() : Arena.ofShared();
 
-        int chunkSizePower = MAX_CHUNK_SIZE;
+        int chunkSizePower = CHUNK_SIZE_POWER;
         long chunkSize = 1L << chunkSizePower;
 
         int numChunks = (int) ((size + chunkSize - 1) >>> chunkSizePower);
@@ -86,11 +88,18 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                 long remaining = size - offset;
                 long segmentSize = Math.min(chunkSize, remaining);
 
-                MemorySegment segment = directIOReadAligned(fd, offset, segmentSize, arena);
-                // Decrypt in place using OpenSSL
-                decryptSegment(arena, segment, offset, this.keyIvResolver.getDataKey().getEncoded(), this.keyIvResolver.getIvBytes());
+                BlockCacheKey cacheKey = new DirectIOBlockCacheKey(file, offset);
+                BlockCacheValue<MemorySegment> value = blockCache.get(cacheKey);
 
-                segments[i] = segment;
+                if (value != null && value.block() != null) {
+                    segments[i] = value.block();
+                } else {
+                    MemorySegment segment = directIOReadAligned(fd, offset, segmentSize, arena);
+                    // Decrypt in place using OpenSSL
+                    decryptSegment(arena, segment, offset, this.keyIvResolver.getDataKey().getEncoded(), this.keyIvResolver.getIvBytes());
+                    segments[i] = segment;
+                }
+
                 offset += segmentSize;
             }
 
