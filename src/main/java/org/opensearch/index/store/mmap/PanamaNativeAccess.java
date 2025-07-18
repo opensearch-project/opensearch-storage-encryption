@@ -27,33 +27,12 @@ public class PanamaNativeAccess {
     private static final MethodHandle OPEN;
     private static final MethodHandle CLOSE;
 
-    private static final SymbolLookup LIBC = loadLibc();
+    private static final SymbolLookup LIBC = LINKER.defaultLookup();
 
     public static final int MADV_WILLNEED = 3;
     public static final int PROT_READ = 0x1;
     public static final int PROT_WRITE = 0x2;
     public static final int MAP_PRIVATE = 0x02;
-
-    private static SymbolLookup loadLibc() {
-        String os = System.getProperty("os.name").toLowerCase();
-        if (os.contains("mac")) {
-            return SymbolLookup.libraryLookup("/usr/lib/libSystem.B.dylib", Arena.global());
-        } else if (os.contains("linux")) {
-            try {
-                // Try the 64-bit version first
-                return SymbolLookup.libraryLookup("/lib64/libc.so.6", Arena.global());
-            } catch (Exception e) {
-                try {
-                    // Fall back to the 32-bit version
-                    return SymbolLookup.libraryLookup("/lib/libc.so.6", Arena.global());
-                } catch (Exception e2) {
-                    throw new RuntimeException("Could not load libc from either /lib64/libc.so.6 or /lib/libc.so.6", e2);
-                }
-            }
-        } else {
-            throw new UnsupportedOperationException("Unsupported OS: " + os);
-        }
-    }
 
     static {
         try {
