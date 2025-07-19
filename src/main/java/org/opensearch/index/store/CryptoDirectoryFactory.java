@@ -198,14 +198,14 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         // Warm-up the pool with allocated segments.
         memorySegmentPool.warmUp((int) (maxBlocks * WARM_UP_PERCENTAGE));
 
-        // Cache should use 90% of the segment budget
+        // Cache should have lowere budger than the segment budget
         int maxCacheBlocks = (int) (maxBlocks * SEGMENT_POOL_TO_CACHE_SIZE_RATIO);
 
         BlockLoader<MemorySegment> blockLoader = new CryptoDirectIOSegmentBlockLoader(memorySegmentPool, keyIvResolver);
 
         Cache<BlockCacheKey, BlockCacheValue<MemorySegment>> cache = Caffeine
             .newBuilder()
-            .maximumSize(maxBlocks)
+            .maximumSize(maxCacheBlocks)
             .recordStats()
             .expireAfterAccess(30, TimeUnit.MINUTES)
             .executor(Runnable::run)

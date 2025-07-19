@@ -97,7 +97,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                 if (valueOpt.isPresent() && valueOpt.get().block() != null) {
                     segments[i] = valueOpt.get().block();
                 }
-                // This will happen if no segment pool is full.
+                // This will happen if segment pool is full.
                 else {
                     logCacheAndPoolStats(file);
                     MemorySegment segment = directIOReadAligned(fd, offset, segmentSize, arena);
