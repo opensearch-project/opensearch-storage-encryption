@@ -4,13 +4,20 @@
  */
 package org.opensearch.index.store;
 
+import static org.opensearch.index.store.directio.DirectIoUtils.PER_DIRECTORY_RESEVERED_POOL_SIZE_IN_BYTES;
+import static org.opensearch.index.store.directio.DirectIoUtils.SEGMENT_POOL_TO_CACHE_SIZE_RATIO;
+import static org.opensearch.index.store.directio.DirectIoUtils.SEGMENT_SIZE_BYTES;
+import static org.opensearch.index.store.directio.DirectIoUtils.WARM_UP_PERCENTAGE;
+
 import java.io.IOException;
+import java.lang.foreign.MemorySegment;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Provider;
 import java.security.Security;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 import org.apache.logging.log4j.LogManager;
@@ -29,6 +36,15 @@ import org.opensearch.crypto.CryptoHandlerRegistry;
 import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.shard.ShardPath;
+import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.block_cache.BlockCacheKey;
+import org.opensearch.index.store.block_cache.BlockCacheValue;
+import org.opensearch.index.store.block_cache.BlockLoader;
+import org.opensearch.index.store.block_cache.CaffeineBlockCache;
+import org.opensearch.index.store.block_cache.MemorySegmentPool;
+import org.opensearch.index.store.block_cache.Pool;
+import org.opensearch.index.store.directio.CryptoDirectIODirectory;
+import org.opensearch.index.store.directio.CryptoDirectIOSegmentBlockLoader;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
 import org.opensearch.index.store.iv.DefaultKeyIvResolver;
 import org.opensearch.index.store.iv.KeyIvResolver;
@@ -37,6 +53,11 @@ import org.opensearch.index.store.mmap.LazyDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 import org.opensearch.plugins.IndexStorePlugin;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.RemovalCause;
+
+@SuppressWarnings("preview")
 @SuppressForbidden(reason = "temporary")
 /**
  * Factory for an encrypted filesystem directory
@@ -132,12 +153,19 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                     provider,
                     keyIvResolver
                 );
-                lazyDecryptedCryptoMMapDirectory.setPreloadExtensions(preLoadExtensions);
+
+                CryptoDirectIODirectory cryptoDirectIODirectory = createCryptoDirectIODirectory(
+                    location,
+                    lockFactory,
+                    provider,
+                    keyIvResolver
+                );
 
                 return new HybridCryptoDirectory(
                     lockFactory,
                     lazyDecryptedCryptoMMapDirectory,
                     egarDecryptedCryptoMMapDirectory,
+                    cryptoDirectIODirectory,
                     provider,
                     keyIvResolver,
                     nioExtensions
@@ -155,5 +183,43 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             }
             default -> throw new AssertionError("unexpected built-in store type [" + type + "]");
         }
+    }
+
+    private static CryptoDirectIODirectory createCryptoDirectIODirectory(
+        Path location,
+        LockFactory lockFactory,
+        Provider provider,
+        KeyIvResolver keyIvResolver
+    ) throws IOException {
+
+        int maxBlocks = (int) (PER_DIRECTORY_RESEVERED_POOL_SIZE_IN_BYTES / SEGMENT_SIZE_BYTES);
+        Pool<MemorySegment> memorySegmentPool = new MemorySegmentPool(PER_DIRECTORY_RESEVERED_POOL_SIZE_IN_BYTES, SEGMENT_SIZE_BYTES);
+
+        // Warm-up the pool with allocated segments.
+        memorySegmentPool.warmUp((int) (maxBlocks * WARM_UP_PERCENTAGE));
+
+        // Cache should have lowere budger than the segment budget
+        int maxCacheBlocks = (int) (maxBlocks * SEGMENT_POOL_TO_CACHE_SIZE_RATIO);
+
+        BlockLoader<MemorySegment> blockLoader = new CryptoDirectIOSegmentBlockLoader(memorySegmentPool, keyIvResolver);
+
+        Cache<BlockCacheKey, BlockCacheValue<MemorySegment>> cache = Caffeine
+            .newBuilder()
+            .maximumSize(maxCacheBlocks)
+            .recordStats()
+            .expireAfterAccess(30, TimeUnit.MINUTES)
+            .executor(Runnable::run)
+            .removalListener((BlockCacheKey key, BlockCacheValue<MemorySegment> value, RemovalCause cause) -> {
+                if (value != null) {
+                    value.close();
+                } else {
+                    LOGGER.warn("BlockCache eviction with null value: key={} cause={}", key, cause);
+                }
+            })
+            .build();
+
+        BlockCache<MemorySegment> blockCache = new CaffeineBlockCache<>(cache, blockLoader, maxCacheBlocks);
+
+        return new CryptoDirectIODirectory(location, lockFactory, provider, keyIvResolver, memorySegmentPool, blockCache);
     }
 }

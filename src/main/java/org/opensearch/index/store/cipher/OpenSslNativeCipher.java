@@ -231,6 +231,58 @@ public final class OpenSslNativeCipher {
         }
     }
 
+    public static int encryptInto(Arena arena, byte[] key, byte[] iv, MemorySegment input, MemorySegment output, long filePosition)
+        throws Throwable {
+        if (key.length != AES_256_KEY_SIZE || iv.length != AES_BLOCK_SIZE) {
+            throw new IllegalArgumentException("Invalid key or IV length");
+        }
+
+        MemorySegment ctx = (MemorySegment) EVP_CIPHER_CTX_new.invoke();
+        if (ctx.address() == 0)
+            throw new OpenSslException("EVP_CIPHER_CTX_new failed");
+
+        try {
+            MemorySegment cipher = (MemorySegment) EVP_aes_256_ctr.invoke();
+            if (cipher.address() == 0)
+                throw new OpenSslException("EVP_aes_256_ctr failed");
+
+            byte[] adjustedIV = computeOffsetIV(iv, filePosition);
+            MemorySegment keySeg = arena.allocateArray(ValueLayout.JAVA_BYTE, key);
+            MemorySegment ivSeg = arena.allocateArray(ValueLayout.JAVA_BYTE, adjustedIV);
+
+            int rc = (int) EVP_EncryptInit_ex.invoke(ctx, cipher, MemorySegment.NULL, keySeg, ivSeg);
+            if (rc != 1)
+                throw new OpenSslException("EVP_EncryptInit_ex failed");
+
+            // handle partial block alignment (CTR skip)
+            int skip = (int) (filePosition % AES_BLOCK_SIZE);
+            if (skip > 0) {
+                MemorySegment dummyIn = arena.allocateArray(ValueLayout.JAVA_BYTE, skip);
+                MemorySegment dummyOut = arena.allocate(skip + AES_BLOCK_SIZE);
+                MemorySegment dummyLen = arena.allocate(ValueLayout.JAVA_INT);
+                EVP_EncryptUpdate.invoke(ctx, dummyOut, dummyLen, dummyIn, skip);
+            }
+
+            MemorySegment outLen = arena.allocate(ValueLayout.JAVA_INT);
+
+            rc = (int) EVP_EncryptUpdate
+                .invoke(
+                    ctx,
+                    output,              // write directly into the provided aligned MemorySegment
+                    outLen,
+                    input,
+                    (int) input.byteSize()
+                );
+            if (rc != 1)
+                throw new OpenSslException("EVP_EncryptUpdate failed");
+
+            return outLen.get(ValueLayout.JAVA_INT, 0);
+        } finally {
+            EVP_CIPHER_CTX_free.invoke(ctx);
+        }
+
+    }
+
     public static MemorySegment decryptInto(long srcAddr, long length, byte[] key, byte[] iv, long fileOffset, Arena arena)
         throws Throwable {
         if (key == null || key.length != AES_256_KEY_SIZE)
