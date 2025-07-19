@@ -14,6 +14,7 @@ import java.lang.foreign.MemorySegment;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Provider;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.logging.log4j.LogManager;
@@ -27,6 +28,8 @@ import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
+import org.opensearch.index.store.block_cache.CaffeineBlockCache;
+import org.opensearch.index.store.block_cache.MemorySegmentPool;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.mmap.MemorySegmentIndexInput;
@@ -89,13 +92,15 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                 long segmentSize = Math.min(chunkSize, remaining);
 
                 BlockCacheKey cacheKey = new DirectIOBlockCacheKey(file, offset);
-                BlockCacheValue<MemorySegment> value = blockCache.get(cacheKey);
+                Optional<BlockCacheValue<MemorySegment>> valueOpt = blockCache.getOrLoad(cacheKey, (int) segmentSize);
 
-                if (value != null && value.block() != null) {
-                    segments[i] = value.block();
-                } else {
+                if (valueOpt.isPresent() && valueOpt.get().block() != null) {
+                    segments[i] = valueOpt.get().block();
+                }
+                // This will happen if no segment pool is full.
+                else {
+                    logCacheAndPoolStats(file);
                     MemorySegment segment = directIOReadAligned(fd, offset, segmentSize, arena);
-                    // Decrypt in place using OpenSSL
                     decryptSegment(arena, segment, offset, this.keyIvResolver.getDataKey().getEncoded(), this.keyIvResolver.getIvBytes());
                     segments[i] = segment;
                 }
@@ -125,6 +130,25 @@ public final class CryptoDirectIODirectory extends FSDirectory {
             if (success == false) {
                 arena.close();
             }
+        }
+    }
+
+    private void logCacheAndPoolStats(Path file) {
+        try {
+
+            if (blockCache instanceof CaffeineBlockCache) {
+                String cacheStats = ((CaffeineBlockCache<?>) blockCache).cacheStats();
+                LOGGER.info("{} ", cacheStats);
+            }
+
+            if (memorySegmentPool instanceof MemorySegmentPool memorySegmentPool1) {
+                MemorySegmentPool.PoolStats poolStats = memorySegmentPool1.getStats();
+                LOGGER.info("{} \n {}", poolStats.toString(), file);
+
+            }
+
+        } catch (Exception e) {
+            LOGGER.warn("Failed to log cache/pool stats", e);
         }
     }
 

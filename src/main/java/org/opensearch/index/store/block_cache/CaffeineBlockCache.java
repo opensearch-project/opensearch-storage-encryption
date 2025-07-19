@@ -22,7 +22,7 @@ public final class CaffeineBlockCache<T> implements BlockCache<T> {
 
     @Override
     public BlockCacheValue<T> get(BlockCacheKey key) {
-        return cache.getIfPresent(key);
+        return cache.get(key, k -> null); // will count as a miss if key is absent
     }
 
     @Override
@@ -75,5 +75,20 @@ public final class CaffeineBlockCache<T> implements BlockCache<T> {
     @Override
     public void clear() {
         cache.invalidateAll();
+    }
+
+    @Override
+    public String cacheStats() {
+        var stats = cache.stats();
+        return String
+            .format(
+                "Cache[size=%d, hits=%d, misses=%d, hitRate=%.2f%%, loads=%d, avgLoadTime=%.2fms]",
+                cache.estimatedSize(),
+                stats.hitCount(),
+                stats.missCount(),
+                stats.hitRate() * 100,
+                stats.loadCount(),
+                stats.averageLoadPenalty() / 1_000_000.0  // Convert to ms
+            );
     }
 }

@@ -206,7 +206,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         Cache<BlockCacheKey, BlockCacheValue<MemorySegment>> cache = Caffeine
             .newBuilder()
             .maximumSize(maxBlocks)
-            .expireAfterAccess(15, TimeUnit.MINUTES)
+            .recordStats()
+            .expireAfterAccess(30, TimeUnit.MINUTES)
             .executor(Runnable::run)
             .removalListener((BlockCacheKey key, BlockCacheValue<MemorySegment> value, RemovalCause cause) -> {
                 if (value != null) {

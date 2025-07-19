@@ -38,4 +38,9 @@ public interface BlockCache<T> {
      * Clear all blocks.
      */
     void clear();
+
+    /**
+     * cache stats
+     */
+    String cacheStats();
 }
