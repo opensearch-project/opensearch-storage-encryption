@@ -13,10 +13,12 @@ import java.util.stream.IntStream;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
 import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
 @SuppressWarnings("preview")
+@SuppressForbidden(reason = "uses custom DirectIO")
 public class CryptoDirectIOIndexInputHelper {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOIndexInputHelper.class);
     private static final TieredDirectIOBufferPool BUFFER_POOL = new TieredDirectIOBufferPool();

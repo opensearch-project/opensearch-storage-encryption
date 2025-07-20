@@ -4,9 +4,7 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.CryptoDirectIOIndexInputHelper.decryptSegment;
-import static org.opensearch.index.store.directio.CryptoDirectIOIndexInputHelper.directIOReadAligned;
-import static org.opensearch.index.store.directio.DirectIoUtils.CHUNK_SIZE_POWER;
+import static org.opensearch.index.store.directio.DirectIoUtils.SEGMENT_SIZE_BYTES;
 
 import java.io.IOException;
 import java.lang.foreign.Arena;
@@ -14,7 +12,6 @@ import java.lang.foreign.MemorySegment;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Provider;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.logging.log4j.LogManager;
@@ -26,13 +23,10 @@ import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
-import org.opensearch.index.store.block_cache.BlockCacheKey;
-import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.MemorySegmentPool;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.iv.KeyIvResolver;
-import org.opensearch.index.store.mmap.MemorySegmentIndexInput;
 import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
 @SuppressWarnings("preview")
@@ -74,49 +68,23 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         boolean confined = context == IOContext.READONCE;
         Arena arena = confined ? Arena.ofConfined() : Arena.ofShared();
 
-        int chunkSizePower = CHUNK_SIZE_POWER;
-        long chunkSize = 1L << chunkSizePower;
-
-        int numChunks = (int) ((size + chunkSize - 1) >>> chunkSizePower);
         boolean success = false;
 
         int fd = -1;
-
-        @SuppressWarnings("unchecked")
-        BlockCacheValue<MemorySegment>[] heldBlocks = (BlockCacheValue<MemorySegment>[]) new BlockCacheValue<?>[numChunks];
-
         try {
-            MemorySegment[] segments = new MemorySegment[numChunks];
 
             fd = PanamaNativeAccess.openFileWithODirect(file.toAbsolutePath().toString(), true, arena);
 
-            long offset = 0;
-            for (int i = 0; i < numChunks; i++) {
-                long remaining = size - offset;
-                long segmentSize = Math.min(chunkSize, remaining);
-
-                if (segmentSize == chunkSize) {
-                    BlockCacheKey cacheKey = new DirectIOBlockCacheKey(file, offset);
-                    Optional<BlockCacheValue<MemorySegment>> valueOpt = blockCache.getOrLoad(cacheKey, (int) segmentSize);
-
-                    if (valueOpt.isPresent()) {
-                        BlockCacheValue<MemorySegment> blockValue = valueOpt.get();
-                        segments[i] = blockValue.block(); // increments ref
-                        heldBlocks[i] = blockValue;       // track for release
-                    }
-                } else {
-                    logCacheAndPoolStats(file);
-
-                    MemorySegment segment = directIOReadAligned(fd, offset, segmentSize, arena);
-                    decryptSegment(arena, segment, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
-                    segments[i] = segment;
-                }
-
-                offset += segmentSize;
-            }
-
-            IndexInput in = MemorySegmentIndexInput
-                .newInstance("CryptoDirectIOIndexInput(path=\"" + file + "\")", arena, segments, size, chunkSizePower);
+            IndexInput in = new MemorySegmentDirectIOIndexInput(
+                name,
+                file,
+                fd,
+                arena,
+                keyIvResolver.getDataKey().getEncoded(),
+                keyIvResolver.getIvBytes(),
+                SEGMENT_SIZE_BYTES,
+                size
+            );
 
             success = true;
             return in;
@@ -125,23 +93,16 @@ public final class CryptoDirectIODirectory extends FSDirectory {
             LOGGER.error("DirectIO decryption failed for file: {}", file, t);
             throw new IOException("Failed to direct-io/decrypt: " + file, t);
         } finally {
-
-            for (BlockCacheValue<MemorySegment> value : heldBlocks) {
-                if (value != null) {
-                    value.close(); // decref
-                }
-            }
-
-            if (fd >= 0) {
-                try {
-                    PanamaNativeAccess.closeFile(fd);
-                } catch (Throwable closeEx) {
-                    LOGGER.warn("Failed to close file descriptor for: {}", file, closeEx);
-                }
-            }
-
             if (success == false) {
                 arena.close(); // if not reused
+
+                if (fd >= 0) {
+                    try {
+                        PanamaNativeAccess.closeFile(fd);
+                    } catch (Throwable closeEx) {
+                        LOGGER.warn("Failed to close file descriptor for: {}", file, closeEx);
+                    }
+                }
             }
         }
     }

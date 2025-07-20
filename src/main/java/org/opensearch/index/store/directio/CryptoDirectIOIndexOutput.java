@@ -23,6 +23,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.BufferedChecksum;
 import org.apache.lucene.store.IndexOutput;
+import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.Pool;
@@ -32,6 +33,7 @@ import org.opensearch.index.store.cipher.OpenSslNativeCipher;
 import org.opensearch.index.store.iv.KeyIvResolver;
 
 @SuppressWarnings("preview")
+@SuppressForbidden(reason = "uses custom DirectIO")
 public class CryptoDirectIOIndexOutput extends IndexOutput {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOIndexOutput.class);
 

@@ -8,8 +8,11 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.Optional;
 
+import org.opensearch.common.SuppressForbidden;
+
 import com.github.benmanes.caffeine.cache.Cache;
 
+@SuppressForbidden(reason = "uses custom DirectIO")
 public final class CaffeineBlockCache<T> implements BlockCache<T> {
 
     private final Cache<BlockCacheKey, BlockCacheValue<T>> cache;
