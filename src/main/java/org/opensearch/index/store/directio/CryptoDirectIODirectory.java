@@ -81,6 +81,10 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         boolean success = false;
 
         int fd = -1;
+
+        @SuppressWarnings("unchecked")
+        BlockCacheValue<MemorySegment>[] heldBlocks = (BlockCacheValue<MemorySegment>[]) new BlockCacheValue<?>[numChunks];
+
         try {
             MemorySegment[] segments = new MemorySegment[numChunks];
 
@@ -91,17 +95,20 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                 long remaining = size - offset;
                 long segmentSize = Math.min(chunkSize, remaining);
 
-                BlockCacheKey cacheKey = new DirectIOBlockCacheKey(file, offset);
-                Optional<BlockCacheValue<MemorySegment>> valueOpt = blockCache.getOrLoad(cacheKey, (int) segmentSize);
+                if (segmentSize == chunkSize) {
+                    BlockCacheKey cacheKey = new DirectIOBlockCacheKey(file, offset);
+                    Optional<BlockCacheValue<MemorySegment>> valueOpt = blockCache.getOrLoad(cacheKey, (int) segmentSize);
 
-                if (valueOpt.isPresent() && valueOpt.get().block() != null) {
-                    segments[i] = valueOpt.get().block();
-                }
-                // This will happen if segment pool is full.
-                else {
+                    if (valueOpt.isPresent()) {
+                        BlockCacheValue<MemorySegment> blockValue = valueOpt.get();
+                        segments[i] = blockValue.block(); // increments ref
+                        heldBlocks[i] = blockValue;       // track for release
+                    }
+                } else {
                     logCacheAndPoolStats(file);
+
                     MemorySegment segment = directIOReadAligned(fd, offset, segmentSize, arena);
-                    decryptSegment(arena, segment, offset, this.keyIvResolver.getDataKey().getEncoded(), this.keyIvResolver.getIvBytes());
+                    decryptSegment(arena, segment, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
                     segments[i] = segment;
                 }
 
@@ -118,7 +125,13 @@ public final class CryptoDirectIODirectory extends FSDirectory {
             LOGGER.error("DirectIO decryption failed for file: {}", file, t);
             throw new IOException("Failed to direct-io/decrypt: " + file, t);
         } finally {
-            // Close file descriptor after all chunks are processed
+
+            for (BlockCacheValue<MemorySegment> value : heldBlocks) {
+                if (value != null) {
+                    value.close(); // decref
+                }
+            }
+
             if (fd >= 0) {
                 try {
                     PanamaNativeAccess.closeFile(fd);
@@ -128,7 +141,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
             }
 
             if (success == false) {
-                arena.close();
+                arena.close(); // if not reused
             }
         }
     }

@@ -25,8 +25,9 @@ import org.apache.lucene.store.BufferedChecksum;
 import org.apache.lucene.store.IndexOutput;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
-import org.opensearch.index.store.block_cache.MemorySegmentCacheValue;
 import org.opensearch.index.store.block_cache.Pool;
+import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
+import org.opensearch.index.store.block_cache.RefCountedMemorySegmentCacheValue;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
 import org.opensearch.index.store.iv.KeyIvResolver;
 
@@ -60,18 +61,17 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
         BlockCache<MemorySegment> blockCache
     )
         throws IOException {
-        super("DirectIOIndexOutput(path=\"" + path.toString() + "\")", name);
-
+        super("DirectIOIndexOutput(path=\"" + path + "\")", name);
         this.keyIvResolver = keyIvResolver;
         this.memorySegmentPool = memorySegmentPool;
         this.blockCache = blockCache;
         this.path = path;
 
-        buffer = ByteBuffer.allocateDirect(BUFFER_SIZE + DIRECT_IO_ALIGNMENT - 1).alignedSlice(DIRECT_IO_ALIGNMENT);
-        channel = FileChannel.open(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW, getDirectOpenOption());
-        digest = new BufferedChecksum(new CRC32());
+        this.buffer = ByteBuffer.allocateDirect(BUFFER_SIZE + DIRECT_IO_ALIGNMENT - 1).alignedSlice(DIRECT_IO_ALIGNMENT);
 
-        isOpen = true;
+        this.channel = FileChannel.open(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW, getDirectOpenOption());
+        this.digest = new BufferedChecksum(new CRC32());
+        this.isOpen = true;
     }
 
     @Override
@@ -86,10 +86,8 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
     @Override
     public void writeBytes(byte[] src, int offset, int len) throws IOException {
         int toWrite = len;
-
         while (toWrite > 0) {
-            final int left = buffer.remaining();
-            final int chunk = Math.min(left, toWrite);
+            int chunk = Math.min(buffer.remaining(), toWrite);
             buffer.put(src, offset, chunk);
             digest.update(src, offset, chunk);
             offset += chunk;
@@ -107,21 +105,17 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
             return;
 
         buffer.flip();
-
         byte[] key = keyIvResolver.getDataKey().getEncoded();
         byte[] iv = keyIvResolver.getIvBytes();
-
         int bytesWritten;
-        MemorySegment pooled = null;
 
-        // Create a readonly slice of the plaintext *before* it's modified or zeroed
+        // Plaintext snapshot for caching (must be done before zeroing/encryption)
         ByteBuffer plainCopy = buffer.slice(0, size).asReadOnlyBuffer();
 
         try {
             // Encrypt
             MemorySegment inputSeg = MemorySegment.ofBuffer(buffer.slice(0, size));
             MemorySegment outputSeg = MemorySegment.ofBuffer(encryptedBuffer);
-
             try (Arena arena = Arena.ofConfined()) {
                 bytesWritten = OpenSslNativeCipher.encryptInto(arena, key, iv, inputSeg, outputSeg, filePos);
             }
@@ -130,55 +124,63 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
             int paddedLen = ((bytesWritten + DIRECT_IO_ALIGNMENT - 1) / DIRECT_IO_ALIGNMENT) * DIRECT_IO_ALIGNMENT;
             if (bytesWritten < paddedLen) {
                 encryptedBuffer.position(bytesWritten);
-                int paddingSize = paddedLen - bytesWritten;
-                zeroPaddingBuffer.clear().limit(paddingSize);
-                encryptedBuffer.put(zeroPaddingBuffer);
+                encryptedBuffer.put(zeroPaddingBuffer.clear().limit(paddedLen - bytesWritten));
             }
 
-            // Write encrypted + padded data
+            // Write to disk
             encryptedBuffer.position(0).limit(paddedLen);
             int written = channel.write(encryptedBuffer, filePos);
             if (written != paddedLen) {
                 throw new IOException("Incomplete write: expected=" + paddedLen + ", wrote=" + written);
             }
 
+            // Zero out encrypted buffer
             MemorySegment.ofBuffer(encryptedBuffer).fill((byte) 0);
             encryptedBuffer.clear();
 
-            // Try acquiring a segment for caching decrypted content
-            try {
-                pooled = memorySegmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
-                if (pooled != null) {
-                    MemorySegment pooledSlice = pooled.asSlice(0, size);
-
-                    // note plainSegment is read-only
-                    MemorySegment plainSegment = MemorySegment.ofBuffer(plainCopy);
-                    MemorySegment.copy(plainSegment, 0, pooledSlice, 0, size);
-
-                    BlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, filePos);
-                    blockCache.put(cacheKey, new MemorySegmentCacheValue(pooled, size, memorySegmentPool));
-                    pooled = null; // ownership transferred to cache
-                } else {
-                    LOGGER.debug("Memory pool segment not available within timeout; skipping cache population {}", this.path);
-                }
-
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                LOGGER.warn("Interrupted while acquiring segment from pool; skipping decrypted cache.");
-            } catch (IllegalStateException e) {
-                LOGGER.debug("Could not acquire segment from pool in time; skipping decrypted cache.");
-            }
+            // Cache plaintext if it was a full aligned block
+            tryCachePlaintextBlock(plainCopy, size, filePos);
 
             filePos += size;
             buffer.clear();
 
         } catch (Throwable t) {
             throw new IOException("Encryption failed at offset " + filePos, t);
-        } finally {
-            if (pooled != null) {
-                pooled.fill((byte) 0);
-                memorySegmentPool.release(pooled);
+        }
+    }
+
+    private void tryCachePlaintextBlock(ByteBuffer plainCopy, int size, long offset) {
+        if (size != BUFFER_SIZE)
+            return;
+
+        try {
+            final MemorySegment pooled = memorySegmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
+            if (pooled == null) {
+                LOGGER.debug("Memory pool segment not available within timeout; skipping cache for {}", path);
+                return;
             }
+
+            final MemorySegment pooledSlice = pooled.asSlice(0, size);
+            final MemorySegment plainSegment = MemorySegment.ofBuffer(plainCopy);
+
+            MemorySegment.copy(plainSegment, 0, pooledSlice, 0, size);
+
+            BlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, offset);
+
+            RefCountedMemorySegment refSegment = new RefCountedMemorySegment(
+                pooled,
+                size,
+                segment -> memorySegmentPool.release(pooled) // SegmentReleaser
+            );
+            RefCountedMemorySegmentCacheValue cacheValue = new RefCountedMemorySegmentCacheValue(refSegment);
+
+            blockCache.put(cacheKey, cacheValue);
+
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            LOGGER.warn("Interrupted while acquiring segment for cache.");
+        } catch (IllegalStateException e) {
+            LOGGER.debug("Failed to acquire segment from pool; skipping decrypted cache.");
         }
     }
 

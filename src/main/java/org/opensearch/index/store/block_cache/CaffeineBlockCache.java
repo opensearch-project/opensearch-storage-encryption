@@ -25,6 +25,22 @@ public final class CaffeineBlockCache<T> implements BlockCache<T> {
         return cache.get(key, k -> null); // will count as a miss if key is absent
     }
 
+    /**
+    * Retrieves the cached block associated with the given key, or loads it if not present.
+    * <p>
+    * If the block is present in the cache, it is returned immediately.
+    * If the block is absent, the {@link BlockLoader} is invoked to load it. If loading succeeds,
+    * the loaded block is inserted into the cache and returned. If loading fails or returns empty,
+    * an empty {@link Optional} is returned.
+    * <p>
+    * Any {@link IOException} thrown by the loader is propagated, while other exceptions are wrapped
+    * in {@link IOException}.
+    *
+    * @param key  The key identifying the block to retrieve or load.
+    * @param size The expected size of the block; passed to the loader.
+    * @return An {@link Optional} containing the cached or newly loaded block, or empty if loading failed or returned no value.
+    * @throws IOException if the block loading fails with an IO-related error.
+    */
     @Override
     public Optional<BlockCacheValue<T>> getOrLoad(BlockCacheKey key, int size) throws IOException {
         try {

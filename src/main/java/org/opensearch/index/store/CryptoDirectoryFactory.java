@@ -43,6 +43,8 @@ import org.opensearch.index.store.block_cache.BlockLoader;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.MemorySegmentPool;
 import org.opensearch.index.store.block_cache.Pool;
+import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
+import org.opensearch.index.store.block_cache.RefCountedMemorySegmentCacheValue;
 import org.opensearch.index.store.directio.CryptoDirectIODirectory;
 import org.opensearch.index.store.directio.CryptoDirectIOSegmentBlockLoader;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
@@ -210,11 +212,23 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             .expireAfterAccess(30, TimeUnit.MINUTES)
             .executor(Runnable::run)
             .removalListener((BlockCacheKey key, BlockCacheValue<MemorySegment> value, RemovalCause cause) -> {
-                if (value != null) {
-                    value.close();
-                } else {
-                    LOGGER.warn("BlockCache eviction with null value: key={} cause={}", key, cause);
+                if (value == null) {
+                    throw new IllegalStateException("Unexpected null value during cache eviction for key: " + key);
                 }
+
+                if (!(value instanceof RefCountedMemorySegmentCacheValue refValue)) {
+                    throw new IllegalStateException("Unexpected non-ref-counted cache value: " + value.getClass().getName());
+                }
+
+                RefCountedMemorySegment refSegment = refValue.getRefSegment();
+
+                // a runnable will cleanup after the last usage of the segment.
+                refSegment.setOnFullyReleased(segment -> {
+
+                });
+
+                // Cache's ownership ends here. If all ownerships are gone, we are good to release.
+                refSegment.decRef();
             })
             .build();
 

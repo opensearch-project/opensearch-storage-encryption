@@ -4,28 +4,27 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIoUtils.DIRECT_IO_ALIGNMENT;
-import static org.opensearch.index.store.directio.DirectIoUtils.getDirectOpenOption;
-
-import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
-import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
-import java.nio.file.StandardOpenOption;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.BlockLoader;
-import org.opensearch.index.store.block_cache.MemorySegmentCacheValue;
 import org.opensearch.index.store.block_cache.Pool;
-import org.opensearch.index.store.cipher.OpenSslNativeCipher;
+import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
+import org.opensearch.index.store.block_cache.RefCountedMemorySegmentCacheValue;
 import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
 @SuppressWarnings("preview")
+
 public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegment> {
+    private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOSegmentBlockLoader.class);
+
     private final Pool<MemorySegment> segmentPool;
     private final KeyIvResolver keyIvResolver;
 
@@ -37,86 +36,53 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
     @Override
     public Optional<BlockCacheValue<MemorySegment>> load(BlockCacheKey key, int size) throws Exception {
         long offset = key.offset();
+        int fd = -1;
 
-        // Try to acquire from pool with a small timeout
-        // todo, make it configurable.
-        MemorySegment target = segmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
-        if (target == null) {
-            return Optional.empty(); // Pool exhausted, skip caching
-        }
-
-        byte[] keyBytes = keyIvResolver.getDataKey().getEncoded();
-        byte[] iv = keyIvResolver.getIvBytes();
-
-        try (FileChannel channel = FileChannel.open(key.filePath(), StandardOpenOption.READ, getDirectOpenOption())) {
-            loadAndDecrypt(channel, offset, target, keyBytes, iv);
-            return Optional.of(new MemorySegmentCacheValue(target, size, segmentPool));
-        } catch (IOException | RuntimeException e) {
-            segmentPool.release(target);
-            throw e;
-        }
-    }
-
-    /**
-    * Reads data using Direct I/O with proper alignment.
-    * <p>
-    * Direct I/O requires alignment to storage device sector boundaries.
-    * </p>
-    *
-    * <p><b>File Layout:</b></p>
-    * <pre>
-    * ┌─────┬─────┬─────┬─────┬─────┬─────┐
-    * │  0  │ 512 │1024 │1536 │2048 │2560 │ ← Sector boundaries
-    * └─────┴─────┴─────┴─────┴─────┴─────┘
-    * </pre>
-    *
-    * <p><b>Incorrect: Reading from offset 1000</b></p>
-    * <pre>
-    *                     ↓ start here
-    * ┌─────┬─────┬─────┬─────┬─────┬─────┐
-    * │  0  │ 512 │1024 │1536 │2048 │2560 │
-    *                 ███│█████
-    * </pre>
-    *
-    * <p><b>Correct: Reading from offset 1024</b></p>
-    * <pre>
-    *                      ↓ start here  
-    * ┌─────┬─────┬─────┬─────┬─────┬─────┐
-    * │  0  │ 512 │1024 │1536 │2048 │2560 │
-    *                     │█████│█████│
-    * </pre>
-    *
-    */
-    public static void loadAndDecrypt(FileChannel channel, long offset, MemorySegment target, byte[] key, byte[] iv) throws IOException {
-        int alignment = DIRECT_IO_ALIGNMENT;
-
-        long alignedOffset = offset & ~(alignment - 1);
-        long offsetDelta = offset - alignedOffset;
-        long adjustedLength = offsetDelta + target.byteSize();
-        long alignedLength = (adjustedLength + alignment - 1) & ~(alignment - 1);
-
-        if (alignedLength > Integer.MAX_VALUE) {
-            throw new IOException("Aligned read size too large: " + alignedLength);
+        // Try to acquire a pooled segment for decrypted output
+        MemorySegment pooled = segmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
+        if (pooled == null) {
+            return Optional.empty(); // Pool exhausted
         }
 
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment temp = arena.allocate(alignedLength, alignment);
-            ByteBuffer buffer = temp.asByteBuffer();
+            fd = PanamaNativeAccess.openFileWithODirect(key.filePath().toAbsolutePath().toString(), true, arena);
 
-            int bytesRead = channel.read(buffer, alignedOffset);
-            if (bytesRead < offsetDelta + target.byteSize()) {
-                throw new IOException("Incomplete read: expected=" + (offsetDelta + target.byteSize()) + ", actual=" + bytesRead);
+            // Read encrypted data via Direct I/O
+            MemorySegment encrypted = CryptoDirectIOIndexInputHelper.directIOReadAligned(fd, offset, size, arena);
+
+            if (encrypted.byteSize() < size) {
+                throw new IllegalArgumentException("Encrypted segment too small: expected " + size + ", got " + encrypted.byteSize());
             }
 
-            try {
-                OpenSslNativeCipher.decryptInPlace(arena, temp.address(), temp.byteSize(), key, iv, offset);
-            } catch (Throwable e) {
-                throw new RuntimeException("Decryption failed at offset: " + offset, e);
+            // Decrypt into-place
+            CryptoDirectIOIndexInputHelper
+                .decryptSegment(arena, encrypted, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
 
+            // Copy decrypted bytes into pooled segment
+            MemorySegment.copy(encrypted, 0, pooled, 0, size);
+
+            // Wrap in ref-counted segment
+            RefCountedMemorySegment refSegment = new RefCountedMemorySegment(
+                pooled,
+                size,
+                segment -> segmentPool.release(pooled) // SegmentReleaser
+            );
+
+            return Optional.of(new RefCountedMemorySegmentCacheValue(refSegment));
+
+        } catch (Throwable t) {
+            segmentPool.release(pooled);
+            LOGGER.warn("Failed to load or decrypt block at offset {} from file {}: {}", offset, key.filePath(), t.toString());
+            LOGGER.debug("Stack trace", t);
+            return Optional.empty();
+        } finally {
+            if (fd >= 0) {
+                try {
+                    PanamaNativeAccess.closeFile(fd);
+                } catch (Throwable closeErr) {
+                    LOGGER.warn("Failed to close file descriptor for: {}", key.filePath(), closeErr);
+                }
             }
-
-            MemorySegment.copy(temp, offsetDelta, target, 0, target.byteSize());
         }
     }
-
 }
