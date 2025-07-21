@@ -4,21 +4,27 @@
  */
 package org.opensearch.index.store.directio;
 
+import static java.nio.ByteOrder.LITTLE_ENDIAN;
+import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
+import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
+
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.channels.FileChannel;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Objects;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.IndexInput;
-import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
 @SuppressWarnings("preview")
 public final class MemorySegmentDirectIOIndexInput extends IndexInput {
@@ -30,7 +36,6 @@ public final class MemorySegmentDirectIOIndexInput extends IndexInput {
     static final ValueLayout.OfLong LAYOUT_LE_LONG = ValueLayout.JAVA_LONG_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
     static final ValueLayout.OfFloat LAYOUT_LE_FLOAT = ValueLayout.JAVA_FLOAT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
 
-    private final int fd;
     private final Arena arena;
     private final Path path;
     private final long length;
@@ -38,6 +43,7 @@ public final class MemorySegmentDirectIOIndexInput extends IndexInput {
     private final byte[] iv;
     private final long offset; // for slices
     private final boolean isClosable; // clones and slices are not closable
+    private final FileChannel channel;
 
     private long filePointer = 0;
     private MemorySegment buffer = null;
@@ -49,7 +55,6 @@ public final class MemorySegmentDirectIOIndexInput extends IndexInput {
     public MemorySegmentDirectIOIndexInput(
         String resourceDescription,
         Path path,
-        int fd,
         Arena arena,
         byte[] key,
         byte[] iv,
@@ -59,11 +64,11 @@ public final class MemorySegmentDirectIOIndexInput extends IndexInput {
         throws IOException {
         super(resourceDescription);
         this.path = Objects.requireNonNull(path);
+        this.channel = FileChannel.open(path, StandardOpenOption.READ, getDirectOpenOption());
         this.arena = arena;
         this.key = key;
         this.iv = iv;
         this.bufferSize = bufferSize;
-        this.fd = fd;
         this.length = size;
         this.offset = 0;
         this.isClosable = true;
@@ -75,19 +80,22 @@ public final class MemorySegmentDirectIOIndexInput extends IndexInput {
     private MemorySegmentDirectIOIndexInput(String resourceDescription, MemorySegmentDirectIOIndexInput other, long offset, long length) {
         super(resourceDescription);
         Objects.checkFromIndexSize(offset, length, other.length);
-
+        this.channel = other.channel;
         this.path = other.path;
         this.arena = other.arena;  // Share arena but can't close it
         this.key = other.key;
         this.iv = other.iv;
         this.bufferSize = other.bufferSize;
-        this.fd = other.fd;
         this.length = length;
         this.offset = other.offset + offset;
         this.isClosable = false;
         this.filePointer = this.offset;
         this.isOpen = true;
 
+    }
+
+    private static ByteBuffer allocateBuffer(int bufferSize, int blockSize) {
+        return ByteBuffer.allocateDirect(bufferSize + blockSize - 1).alignedSlice(blockSize).order(LITTLE_ENDIAN);
     }
 
     private void ensureOpen() {
@@ -97,30 +105,48 @@ public final class MemorySegmentDirectIOIndexInput extends IndexInput {
     }
 
     private void refill() throws IOException {
-        // Calculate absolute position where buffer should start
         long absolutePos = filePointer;
-
-        // Calculate how much we can read from this position
         long remainingInFile = (offset + length) - absolutePos;
         long bytesToRead = Math.min(bufferSize, remainingInFile);
 
-        // EOF check (similar to Lucene's early check)
         if (absolutePos > offset + length || bytesToRead <= 0) {
             throw new EOFException("read past EOF: " + this);
         }
 
         try {
-            // Use DirectIO helper to read aligned data
-            buffer = DirectIOReader.directIOReadAligned(fd, absolutePos, bytesToRead, arena);
+            buffer = directIOReadAligned(channel, absolutePos, bytesToRead, arena);
 
-            DirectIOReader.decryptSegment(arena, buffer, absolutePos, key, iv);
-                            
-            // Track where this buffer starts in the file
+            if (key != null && iv != null) {
+                DirectIOReader.decryptSegment(arena, buffer, absolutePos, key, iv);
+            }
+
             bufferStart = absolutePos;
 
         } catch (Throwable t) {
             throw new IOException("Failed to refill at absolutePos=" + absolutePos + ": " + this, t);
         }
+    }
+
+    public static MemorySegment directIOReadAligned(FileChannel channel, long offset, long length, Arena arena) throws IOException {
+        int alignment = DIRECT_IO_ALIGNMENT;
+        long alignedOffset = offset - (offset % alignment);
+        long offsetDelta = offset - alignedOffset;
+        long alignedLength = ((offsetDelta + length + alignment - 1) / alignment) * alignment;
+
+        ByteBuffer alignedBuffer = allocateBuffer((int) alignedLength, alignment);
+
+        // Read aligned data from file
+        int bytesRead = channel.read(alignedBuffer, alignedOffset);
+
+        if (bytesRead < offsetDelta + length) {
+            throw new IOException("O_DIRECT read incomplete (read=" + bytesRead + ", expected=" + (offsetDelta + length) + ")");
+        }
+
+        // Create MemorySegment in arena with just the requested data
+        MemorySegment result = arena.allocate(length);
+        MemorySegment.copy(MemorySegment.ofBuffer(alignedBuffer), offsetDelta, result, 0, length);
+
+        return result;
     }
 
     @Override
@@ -141,13 +167,7 @@ public final class MemorySegmentDirectIOIndexInput extends IndexInput {
                 }
             }
 
-            if (fd >= 0) {
-                try {
-                    PanamaNativeAccess.closeFile(fd);
-                } catch (Throwable closeEx) {
-                    LOGGER.warn("Failed to close file descriptor for: {}", path, closeEx);
-                }
-            }
+            channel.close();
             isOpen = false;
         }
     }
@@ -275,6 +295,7 @@ public final class MemorySegmentDirectIOIndexInput extends IndexInput {
         }
 
         int toRead = len;
+        int dstOffset = offset;
         while (toRead > 0) {
             // Ensure we have a buffer and current position is within it
             if (buffer == null || filePointer < bufferStart || filePointer >= bufferStart + buffer.byteSize()) {
@@ -287,11 +308,11 @@ public final class MemorySegmentDirectIOIndexInput extends IndexInput {
             int bytesToCopy = (int) Math.min(toRead, available);
 
             // Copy from buffer to destination array
-            MemorySegment.copy(buffer, LAYOUT_BYTE, bufferPos, dst, offset, bytesToCopy);
+            MemorySegment.copy(buffer, LAYOUT_BYTE, bufferPos, dst, dstOffset, bytesToCopy);
 
             // Update counters
             filePointer += bytesToCopy;
-            offset += bytesToCopy;
+            dstOffset += bytesToCopy;
             toRead -= bytesToCopy;
         }
     }

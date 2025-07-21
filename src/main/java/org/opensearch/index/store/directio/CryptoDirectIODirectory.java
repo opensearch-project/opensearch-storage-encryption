@@ -4,6 +4,8 @@
  */
 package org.opensearch.index.store.directio;
 
+import static org.opensearch.index.store.directio.DirectIoConfigs.SEGMENT_SIZE_BYTES;
+
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -24,9 +26,7 @@ import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.MemorySegmentPool;
 import org.opensearch.index.store.block_cache.Pool;
-import static org.opensearch.index.store.directio.DirectIoConfigs.SEGMENT_SIZE_BYTES;
 import org.opensearch.index.store.iv.KeyIvResolver;
-import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "uses custom DirectIO")
@@ -69,15 +69,10 @@ public final class CryptoDirectIODirectory extends FSDirectory {
 
         boolean success = false;
 
-        int fd = -1;
         try {
-
-            fd = PanamaNativeAccess.openFileWithODirect(file.toAbsolutePath().toString(), true, arena);
-
             IndexInput in = new MemorySegmentDirectIOIndexInput(
                 name,
                 file,
-                fd,
                 arena,
                 keyIvResolver.getDataKey().getEncoded(),
                 keyIvResolver.getIvBytes(),
@@ -94,14 +89,6 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         } finally {
             if (success == false) {
                 arena.close(); // if not reused
-
-                if (fd >= 0) {
-                    try {
-                        PanamaNativeAccess.closeFile(fd);
-                    } catch (Throwable closeEx) {
-                        LOGGER.warn("Failed to close file descriptor for: {}", file, closeEx);
-                    }
-                }
             }
         }
     }

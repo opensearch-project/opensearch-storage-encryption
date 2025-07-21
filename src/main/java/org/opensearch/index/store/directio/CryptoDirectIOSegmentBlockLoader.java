@@ -55,8 +55,7 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
             }
 
             // Decrypt into-place
-            DirectIOReader
-                .decryptSegment(arena, encrypted, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
+            DirectIOReader.decryptSegment(arena, encrypted, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
 
             // Copy decrypted bytes into pooled segment
             MemorySegment.copy(encrypted, 0, pooled, 0, size);

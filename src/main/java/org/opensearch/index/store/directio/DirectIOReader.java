@@ -4,6 +4,8 @@
  */
 package org.opensearch.index.store.directio;
 
+import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
+
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -15,7 +17,6 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
-import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
 import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
 @SuppressWarnings("preview")
@@ -28,7 +29,7 @@ public class DirectIOReader {
 
     private DirectIOReader() {}
 
-        static {
+    static {
         OpenOption option;
         try {
             final Class<? extends OpenOption> clazz = Class.forName("com.sun.nio.file.ExtendedOpenOption").asSubclass(OpenOption.class);
