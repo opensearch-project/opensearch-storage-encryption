@@ -4,26 +4,49 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIoUtils.DIRECT_IO_ALIGNMENT;
-
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.nio.file.OpenOption;
+import java.util.Arrays;
 import java.util.stream.IntStream;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
+import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
 import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "uses custom DirectIO")
-public class CryptoDirectIOIndexInputHelper {
-    private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOIndexInputHelper.class);
+public class DirectIOReader {
+    private static final Logger LOGGER = LogManager.getLogger(DirectIOReader.class);
     private static final TieredDirectIOBufferPool BUFFER_POOL = new TieredDirectIOBufferPool();
 
-    private CryptoDirectIOIndexInputHelper() {}
+    private static final OpenOption ExtendedOpenOption_DIRECT; // visible for test
+
+    private DirectIOReader() {}
+
+        static {
+        OpenOption option;
+        try {
+            final Class<? extends OpenOption> clazz = Class.forName("com.sun.nio.file.ExtendedOpenOption").asSubclass(OpenOption.class);
+            option = Arrays.stream(clazz.getEnumConstants()).filter(e -> e.toString().equalsIgnoreCase("DIRECT")).findFirst().orElse(null);
+        } catch (@SuppressWarnings("unused") Exception e) {
+            option = null;
+        }
+        ExtendedOpenOption_DIRECT = option;
+    }
+
+    public static OpenOption getDirectOpenOption() {
+        if (ExtendedOpenOption_DIRECT == null) {
+            throw new UnsupportedOperationException(
+                "com.sun.nio.file.ExtendedOpenOption.DIRECT is not available in the current JDK version."
+            );
+        }
+        return ExtendedOpenOption_DIRECT;
+    }
 
     /**
      * Reads data using Direct I/O with proper alignment.

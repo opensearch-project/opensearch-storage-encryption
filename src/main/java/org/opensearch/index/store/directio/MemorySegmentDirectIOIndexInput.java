@@ -111,10 +111,10 @@ public final class MemorySegmentDirectIOIndexInput extends IndexInput {
 
         try {
             // Use DirectIO helper to read aligned data
-            buffer = CryptoDirectIOIndexInputHelper.directIOReadAligned(fd, absolutePos, bytesToRead, arena);
+            buffer = DirectIOReader.directIOReadAligned(fd, absolutePos, bytesToRead, arena);
 
-            CryptoDirectIOIndexInputHelper.decryptSegment(arena, buffer, absolutePos, key, iv);
-
+            DirectIOReader.decryptSegment(arena, buffer, absolutePos, key, iv);
+                            
             // Track where this buffer starts in the file
             bufferStart = absolutePos;
 

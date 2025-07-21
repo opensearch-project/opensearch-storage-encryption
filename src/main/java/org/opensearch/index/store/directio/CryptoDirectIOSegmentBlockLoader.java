@@ -48,14 +48,14 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
             fd = PanamaNativeAccess.openFileWithODirect(key.filePath().toAbsolutePath().toString(), true, arena);
 
             // Read encrypted data via Direct I/O
-            MemorySegment encrypted = CryptoDirectIOIndexInputHelper.directIOReadAligned(fd, offset, size, arena);
+            MemorySegment encrypted = DirectIOReader.directIOReadAligned(fd, offset, size, arena);
 
             if (encrypted.byteSize() < size) {
                 throw new IllegalArgumentException("Encrypted segment too small: expected " + size + ", got " + encrypted.byteSize());
             }
 
             // Decrypt into-place
-            CryptoDirectIOIndexInputHelper
+            DirectIOReader
                 .decryptSegment(arena, encrypted, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
 
             // Copy decrypted bytes into pooled segment

@@ -4,10 +4,6 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIoUtils.DIRECT_IO_ALIGNMENT;
-import static org.opensearch.index.store.directio.DirectIoUtils.SEGMENT_SIZE_BYTES;
-import static org.opensearch.index.store.directio.DirectIoUtils.getDirectOpenOption;
-
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -30,6 +26,9 @@ import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegmentCacheValue;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
+import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
+import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
+import static org.opensearch.index.store.directio.DirectIoConfigs.SEGMENT_SIZE_BYTES;
 import org.opensearch.index.store.iv.KeyIvResolver;
 
 @SuppressWarnings("preview")

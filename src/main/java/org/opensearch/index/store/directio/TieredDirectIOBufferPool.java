@@ -113,7 +113,7 @@ public class TieredDirectIOBufferPool {
 
                 long currentTotal = totalBytesAllocated.get();
                 if (allocated.get() < maxBuffers && currentTotal + bufferSize <= MAX_TOTAL_BYTES) {
-                    MemorySegment seg = PROCESS_ARENA.allocate(bufferSize, DirectIoUtils.DIRECT_IO_ALIGNMENT);
+                    MemorySegment seg = PROCESS_ARENA.allocate(bufferSize, DirectIoConfigs.DIRECT_IO_ALIGNMENT);
                     allocated.incrementAndGet();
                     totalBytesAllocated.addAndGet(bufferSize);
                     LOGGER.debug("Allocated {}B buffer (allocated={}B)", bufferSize, totalBytesAllocated.get());
