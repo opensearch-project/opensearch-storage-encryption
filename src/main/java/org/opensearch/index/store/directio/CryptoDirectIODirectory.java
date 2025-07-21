@@ -4,6 +4,10 @@
  */
 package org.opensearch.index.store.directio;
 
+import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CHUNK_SIZE_POWER;
+import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
+
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -13,7 +17,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.Provider;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.IntStream;
 
@@ -26,17 +29,11 @@ import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
-import org.opensearch.index.store.block_cache.BlockCacheKey;
-import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.MemorySegmentPool;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
-import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CHUNK_SIZE_POWER;
-import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
 import org.opensearch.index.store.iv.KeyIvResolver;
-import org.opensearch.index.store.mmap.MemorySegmentIndexInput;
 import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
 @SuppressWarnings("preview")
@@ -80,41 +77,47 @@ public final class CryptoDirectIODirectory extends FSDirectory {
 
         int chunkSizePower = CHUNK_SIZE_POWER;
         long chunkSize = 1L << chunkSizePower;
-
         int numChunks = (int) ((size + chunkSize - 1) >>> chunkSizePower);
-        boolean success = false;
 
+        MemorySegment[] segments = new MemorySegment[numChunks]; // Start with nulls
+
+        boolean success = false;
         try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ, getDirectOpenOption())) {
-            MemorySegment[] segments = new MemorySegment[numChunks];
+
+            // ONLY load partial chunks (typically just the last segment)
             long offset = 0;
             for (int i = 0; i < numChunks; i++) {
                 long remaining = size - offset;
                 long segmentSize = Math.min(chunkSize, remaining);
 
-                if (segmentSize == chunkSize) {
-                    BlockCacheKey cacheKey = new DirectIOBlockCacheKey(file, offset);
-                    Optional<BlockCacheValue<MemorySegment>> valueOpt = blockCache.getOrLoad(cacheKey, (int) segmentSize);
-
-                    if (valueOpt.isPresent()) {
-                        BlockCacheValue<MemorySegment> blockValue = valueOpt.get();
-                        segments[i] = blockValue.block(); // increments ref
-                    }
-                } else {                    
+                if (segmentSize < chunkSize) {
+                    // Partial chunk - load eagerly (small and uncacheable)
                     MemorySegment segment = directIOReadAligned(channel, offset, segmentSize, arena);
                     decryptSegment(arena, segment, offset);
                     segments[i] = segment;
                 }
+
+                // rest remains empty and will be loaded lazily.
                 offset += segmentSize;
             }
-            IndexInput in = MemorySegmentIndexInput
-                .newInstance("CryptoDirectIOIndexInput(path=\"" + file + "\")", arena, segments, size, chunkSizePower);
+
+            IndexInput in = CryptoDirectIOMemoryIndexInput
+                .newInstance(
+                    "CryptoMemorySegmentIndexInput(path=\"" + file + "\")",
+                    file,
+                    arena,
+                    blockCache,
+                    segments,
+                    offset,
+                    chunkSizePower
+                );
 
             success = true;
             return in;
 
         } catch (Throwable t) {
-            LOGGER.error("DirectIO decryption failed for file: {}", file, t);
-            throw new IOException("Failed to direct-io/decrypt: " + file, t);
+            LOGGER.error("DirectIO failed for file: {}", file, t);
+            throw new IOException("Failed to open DirectIO file: " + file, t);
         } finally {
             if (!success) {
                 arena.close();
