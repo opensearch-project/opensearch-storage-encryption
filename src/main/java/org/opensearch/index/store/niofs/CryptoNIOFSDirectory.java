@@ -43,7 +43,9 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
 
     @Override
     public IndexInput openInput(String name, IOContext context) throws IOException {
-        if (name.contains("segments_") || name.endsWith(".si")) {
+        // Skip encryption for Lucene metadata files that need to be readable by Lucene directly
+        if (name.contains("segments_") || name.endsWith(".si") || 
+            name.endsWith(".nvd") || name.endsWith(".nvm")) {
             return super.openInput(name, context);
         }
 
@@ -54,8 +56,8 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         boolean success = false;
 
         try {
-            Cipher cipher = AesCipherFactory.getCipher(provider);
-            AesCipherFactory.initCipher(cipher, keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), Cipher.DECRYPT_MODE, 0);
+            Cipher cipher = AesCipherFactory.getCipher(AesCipherFactory.CipherType.CTR, provider);
+            AesCipherFactory.initCipher(AesCipherFactory.CipherType.CTR, cipher, keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), Cipher.DECRYPT_MODE, 0);
 
             final IndexInput indexInput = new CryptoBufferedIndexInput(
                 "CryptoBufferedIndexInput(path=\"" + path + "\")",
@@ -75,7 +77,9 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
 
     @Override
     public IndexOutput createOutput(String name, IOContext context) throws IOException {
-        if (name.contains("segments_") || name.endsWith(".si")) {
+        // Skip encryption for Lucene metadata files that need to be readable by Lucene directly
+        if (name.contains("segments_") || name.endsWith(".si") || 
+            name.endsWith(".nvd") || name.endsWith(".nvm")) {
             return super.createOutput(name, context);
         }
 
@@ -83,12 +87,14 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-        return new CryptoOutputStreamIndexOutput(name, path, fos, this.keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
+        return new CryptoOutputStreamIndexOutput(name, path, fos, this.keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), provider);
     }
 
     @Override
     public IndexOutput createTempOutput(String prefix, String suffix, IOContext context) throws IOException {
-        if (prefix.contains("segments_") || prefix.endsWith(".si")) {
+        // Skip encryption for Lucene metadata files that need to be readable by Lucene directly
+        if (prefix.contains("segments_") || prefix.endsWith(".si") || 
+            prefix.endsWith(".nvd") || prefix.endsWith(".nvm")) {
             return super.createTempOutput(prefix, suffix, context);
         }
 
@@ -97,7 +103,7 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-        return new CryptoOutputStreamIndexOutput(name, path, fos, this.keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
+        return new CryptoOutputStreamIndexOutput(name, path, fos, this.keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), provider);
     }
 
     @Override
