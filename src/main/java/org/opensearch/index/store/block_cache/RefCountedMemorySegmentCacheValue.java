@@ -4,10 +4,7 @@
  */
 package org.opensearch.index.store.block_cache;
 
-import java.lang.foreign.MemorySegment;
-
-@SuppressWarnings("preview")
-public final class RefCountedMemorySegmentCacheValue implements BlockCacheValue<MemorySegment> {
+public final class RefCountedMemorySegmentCacheValue implements BlockCacheValue<RefCountedMemorySegment> {
 
     private final RefCountedMemorySegment refSegment;
     private final int length;
@@ -29,10 +26,10 @@ public final class RefCountedMemorySegmentCacheValue implements BlockCacheValue<
     }
 
     @Override
-    public MemorySegment block() {
+    public RefCountedMemorySegment block() {
         // Reader wants to retain usage so increment the reference for its usage.
         refSegment.incRef();
-        return refSegment.segment();
+        return refSegment;
     }
 
     @Override

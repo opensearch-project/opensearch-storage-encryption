@@ -22,7 +22,7 @@ import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
 @SuppressWarnings("preview")
 
-public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegment> {
+public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<RefCountedMemorySegment> {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOSegmentBlockLoader.class);
 
     private final Pool<MemorySegment> segmentPool;
@@ -34,7 +34,7 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
     }
 
     @Override
-    public Optional<BlockCacheValue<MemorySegment>> load(BlockCacheKey key, int size) throws Exception {
+    public Optional<BlockCacheValue<RefCountedMemorySegment>> load(BlockCacheKey key, int size) throws Exception {
         long offset = key.offset();
         int fd = -1;
 

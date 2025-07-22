@@ -40,7 +40,7 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
     private static final int BUFFER_SIZE = SEGMENT_SIZE_BYTES;
 
     private final Pool<MemorySegment> memorySegmentPool;
-    private final BlockCache<MemorySegment> blockCache;
+    private final BlockCache<RefCountedMemorySegment> blockCache;
     private final FileChannel channel;
     private final KeyIvResolver keyIvResolver;
     private final ByteBuffer buffer;
@@ -60,7 +60,7 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
         String name,
         KeyIvResolver keyIvResolver,
         Pool<MemorySegment> memorySegmentPool,
-        BlockCache<MemorySegment> blockCache
+        BlockCache<RefCountedMemorySegment> blockCache
     )
         throws IOException {
         super("DirectIOIndexOutput(path=\"" + path + "\")", name);

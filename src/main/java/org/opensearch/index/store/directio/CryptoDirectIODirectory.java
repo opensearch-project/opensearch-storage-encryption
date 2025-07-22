@@ -4,10 +4,6 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CHUNK_SIZE_POWER;
-import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
-
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -32,7 +28,11 @@ import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.MemorySegmentPool;
 import org.opensearch.index.store.block_cache.Pool;
+import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
+import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CHUNK_SIZE_POWER;
+import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
@@ -43,7 +43,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     private final AtomicLong nextTempFileCounter = new AtomicLong();
 
     private final Pool<MemorySegment> memorySegmentPool;
-    private final BlockCache<MemorySegment> blockCache;
+    private final BlockCache<RefCountedMemorySegment> blockCache;
     private final KeyIvResolver keyIvResolver;
 
     public CryptoDirectIODirectory(
@@ -52,13 +52,15 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         Provider provider,
         KeyIvResolver keyIvResolver,
         Pool<MemorySegment> memorySegmentPool,
-        BlockCache<MemorySegment> blockCache
+        BlockCache<RefCountedMemorySegment> blockCache
     )
         throws IOException {
         super(path, lockFactory);
         this.keyIvResolver = keyIvResolver;
         this.memorySegmentPool = memorySegmentPool;
         this.blockCache = blockCache;
+
+        startTelemetry();
     }
 
     @Override
@@ -79,7 +81,8 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         long chunkSize = 1L << chunkSizePower;
         int numChunks = (int) ((size + chunkSize - 1) >>> chunkSizePower);
 
-        MemorySegment[] segments = new MemorySegment[numChunks]; // Start with nulls
+        // CHANGE: Use RefCountedMemorySegment array
+        RefCountedMemorySegment[] segments = new RefCountedMemorySegment[numChunks];
 
         boolean success = false;
         try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ, getDirectOpenOption())) {
@@ -94,10 +97,16 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                     // Partial chunk - load eagerly (small and uncacheable)
                     MemorySegment segment = directIOReadAligned(channel, offset, segmentSize, arena);
                     decryptSegment(arena, segment, offset);
-                    segments[i] = segment;
-                }
 
-                // rest remains empty and will be loaded lazily.
+                    // CHANGE: Wrap in RefCountedMemorySegment for consistency
+                    RefCountedMemorySegment refSeg = new RefCountedMemorySegment(
+                        segment,
+                        (int) segmentSize,
+                        seg -> { /* No-op releaser since arena manages this */ }
+                    );
+                    segments[i] = refSeg;
+                }
+                // Full chunks remain null - loaded lazily via cache
                 offset += segmentSize;
             }
 
@@ -108,7 +117,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                     arena,
                     blockCache,
                     segments,
-                    offset,
+                    size, // ← FIX: Use size, not offset
                     chunkSizePower
                 );
 
@@ -275,25 +284,6 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         });
     }
 
-    private void logCacheAndPoolStats(Path file) {
-        try {
-
-            if (blockCache instanceof CaffeineBlockCache) {
-                String cacheStats = ((CaffeineBlockCache<?>) blockCache).cacheStats();
-                LOGGER.info("{} ", cacheStats);
-            }
-
-            if (memorySegmentPool instanceof MemorySegmentPool memorySegmentPool1) {
-                MemorySegmentPool.PoolStats poolStats = memorySegmentPool1.getStats();
-                LOGGER.info("{} \n {}", poolStats.toString(), file);
-
-            }
-
-        } catch (Exception e) {
-            LOGGER.warn("Failed to log cache/pool stats", e);
-        }
-    }
-
     @Override
     public IndexOutput createOutput(String name, IOContext context) throws IOException {
 
@@ -325,5 +315,44 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     public synchronized void close() throws IOException {
         isOpen = false;
         deletePendingFiles();
+    }
+
+
+    private void logCacheAndPoolStats() {
+        try {
+
+            if (blockCache instanceof CaffeineBlockCache) {
+                String cacheStats = ((CaffeineBlockCache<?>) blockCache).cacheStats();
+                LOGGER.info("{} ", cacheStats);
+            }
+
+            if (memorySegmentPool instanceof MemorySegmentPool memorySegmentPool1) {
+                MemorySegmentPool.PoolStats poolStats = memorySegmentPool1.getStats();
+                LOGGER.info("{} \n {}", poolStats.toString());
+            }
+
+        } catch (Exception e) {
+            LOGGER.warn("Failed to log cache/pool stats", e);
+        }
+    }
+
+    private void startTelemetry() {
+        Thread loggerThread = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(60_000); // 30 seconds
+                   logCacheAndPoolStats();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                } catch (Throwable t) {
+                    LOGGER.warn("Error in buffer pool stats logger", t);
+                }
+            }
+        });
+
+        loggerThread.setDaemon(true);
+        loggerThread.setName("DirectIOBufferPoolStatsLogger");
+        loggerThread.start();
     }
 }

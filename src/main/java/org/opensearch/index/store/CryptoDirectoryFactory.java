@@ -44,7 +44,6 @@ import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.MemorySegmentPool;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
-import org.opensearch.index.store.block_cache.RefCountedMemorySegmentCacheValue;
 import org.opensearch.index.store.directio.CryptoDirectIODirectory;
 import org.opensearch.index.store.directio.CryptoDirectIOSegmentBlockLoader;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
@@ -203,36 +202,25 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         // Cache should have lowere budger than the segment budget
         int maxCacheBlocks = (int) (maxBlocks * SEGMENT_POOL_TO_CACHE_SIZE_RATIO);
 
-        BlockLoader<MemorySegment> blockLoader = new CryptoDirectIOSegmentBlockLoader(memorySegmentPool, keyIvResolver);
+        BlockLoader<RefCountedMemorySegment> blockLoader = new CryptoDirectIOSegmentBlockLoader(memorySegmentPool, keyIvResolver);
 
-        Cache<BlockCacheKey, BlockCacheValue<MemorySegment>> cache = Caffeine
+        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> cache = Caffeine
             .newBuilder()
             .maximumSize(maxCacheBlocks)
             .recordStats()
             .expireAfterAccess(30, TimeUnit.MINUTES)
             .executor(Runnable::run)
-            .removalListener((BlockCacheKey key, BlockCacheValue<MemorySegment> value, RemovalCause cause) -> {
+            .removalListener((BlockCacheKey key, BlockCacheValue<RefCountedMemorySegment> value, RemovalCause cause) -> {
                 if (value == null) {
                     throw new IllegalStateException("Unexpected null value during cache eviction for key: " + key);
                 }
-
-                if (!(value instanceof RefCountedMemorySegmentCacheValue refValue)) {
-                    throw new IllegalStateException("Unexpected non-ref-counted cache value: " + value.getClass().getName());
-                }
-
-                RefCountedMemorySegment refSegment = refValue.getRefSegment();
-
+                RefCountedMemorySegment refSegment = value.block();
                 // a runnable will cleanup after the last usage of the segment.
-                refSegment.setOnFullyReleased(segment -> {
-
-                });
-
-                // Cache's ownership ends here. If all ownerships are gone, we are good to release.
-                refSegment.decRef();
+                refSegment.setOnFullyReleased(segment -> { value.close(); });
             })
             .build();
 
-        BlockCache<MemorySegment> blockCache = new CaffeineBlockCache<>(cache, blockLoader, maxCacheBlocks);
+        BlockCache<RefCountedMemorySegment> blockCache = new CaffeineBlockCache<>(cache, blockLoader, maxCacheBlocks);
 
         return new CryptoDirectIODirectory(location, lockFactory, provider, keyIvResolver, memorySegmentPool, blockCache);
     }

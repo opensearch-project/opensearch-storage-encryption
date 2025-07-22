@@ -38,7 +38,7 @@ public class TieredDirectIOBufferPool {
             pools.put(size, new BufferClassPool(size, maxBuffers));
         }
 
-        startStatsLogger();
+        // startStatsLogger();
     }
 
     /**
