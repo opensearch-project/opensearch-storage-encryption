@@ -4,6 +4,10 @@
  */
 package org.opensearch.index.store.directio;
 
+import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CHUNK_SIZE_POWER;
+import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
+
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -30,9 +34,6 @@ import org.opensearch.index.store.block_cache.MemorySegmentPool;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
-import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CHUNK_SIZE_POWER;
-import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
@@ -45,6 +46,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     private final Pool<MemorySegment> memorySegmentPool;
     private final BlockCache<RefCountedMemorySegment> blockCache;
     private final KeyIvResolver keyIvResolver;
+    private final Path path;
 
     public CryptoDirectIODirectory(
         Path path,
@@ -59,7 +61,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         this.keyIvResolver = keyIvResolver;
         this.memorySegmentPool = memorySegmentPool;
         this.blockCache = blockCache;
-
+        this.path = path;
         startTelemetry();
     }
 
@@ -317,18 +319,17 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         deletePendingFiles();
     }
 
-
     private void logCacheAndPoolStats() {
         try {
 
-            if (blockCache instanceof CaffeineBlockCache) {
+            if (blockCache instanceof CaffeineBlockCache && memorySegmentPool instanceof MemorySegmentPool memorySegmentPool1) {
                 String cacheStats = ((CaffeineBlockCache<?>) blockCache).cacheStats();
-                LOGGER.info("{} ", cacheStats);
-            }
 
-            if (memorySegmentPool instanceof MemorySegmentPool memorySegmentPool1) {
                 MemorySegmentPool.PoolStats poolStats = memorySegmentPool1.getStats();
-                LOGGER.info("{} \n {}", poolStats.toString());
+
+                if (poolStats.pressureRatio * 100 > 60) {
+                    LOGGER.info("{} {} \n {}", poolStats.toString(), cacheStats, path);
+                }
             }
 
         } catch (Exception e) {
@@ -340,8 +341,8 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         Thread loggerThread = new Thread(() -> {
             while (true) {
                 try {
-                    Thread.sleep(60_000); // 30 seconds
-                   logCacheAndPoolStats();
+                    Thread.sleep(60_000); // 60 seconds
+                    logCacheAndPoolStats();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return;

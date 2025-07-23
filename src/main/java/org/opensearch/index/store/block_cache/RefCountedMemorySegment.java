@@ -12,7 +12,7 @@ public final class RefCountedMemorySegment {
     private final MemorySegment segment;
     private final int length;
     private final AtomicInteger refCount = new AtomicInteger(1);
-    private SegmentReleaser onFullyReleased;
+    private final SegmentReleaser onFullyReleased;
 
     public RefCountedMemorySegment(MemorySegment segment, int length, SegmentReleaser onFullyReleased) {
         if (segment == null || onFullyReleased == null) {
@@ -31,18 +31,16 @@ public final class RefCountedMemorySegment {
     }
 
     public void decRef() {
-        int count = refCount.decrementAndGet();
-        if (count == 0) {
-            if (onFullyReleased != null) {
-                onFullyReleased.release(segment);
-            }
-        } else if (count < 0) {
-            throw new IllegalStateException("Too many decRef calls (refCount=" + count + ")");
+        int prev = refCount.getAndDecrement();
+        if (prev == 1) {
+            onFullyReleased.release(segment);
+        } else if (prev <= 0) {
+            throw new IllegalStateException("decRef underflow (refCount=" + (prev - 1) + ')');
         }
     }
 
-    public void setOnFullyReleased(SegmentReleaser callback) {
-        this.onFullyReleased = callback;
+    public int getRefCount() {
+        return refCount.get();
     }
 
     public MemorySegment segment() {

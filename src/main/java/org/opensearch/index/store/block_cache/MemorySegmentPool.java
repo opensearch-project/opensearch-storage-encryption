@@ -110,7 +110,6 @@ public class MemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
             long nanos = unit.toNanos(timeout);
 
             while (freeList.isEmpty()) {
-                // Try lazy allocation first
                 if (allocatedSegments < maxSegments) {
                     MemorySegment segment = sharedArena.allocate(segmentSize);
                     allocatedSegments++;
@@ -118,26 +117,29 @@ public class MemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
                 }
 
                 if (closed) {
+                    LOGGER.error("Pool is closed - cannot acquire segment");
                     throw new IllegalStateException("Pool is closed");
                 }
 
                 if (nanos <= 0) {
                     LOGGER
-                        .debug(
-                            "Failed to acquire segment within {}ms, pool stats: allocated={}, free={}",
+                        .info(
+                            "Pool exhausted: Failed to acquire segment within {}ms. "
+                                + "Pool stats: allocated={}/{}, free={}, waiting for segments to be released",
                             unit.toMillis(timeout),
                             allocatedSegments,
+                            maxSegments,
                             freeList.size()
                         );
-
                     return null;
                 }
-
                 nanos = notEmpty.awaitNanos(nanos);
             }
 
             MemorySegment segment = freeList.removeFirst();
             cachedFreeListSize = freeList.size();
+
+            LOGGER.trace("Acquired segment from free list: remaining free={}", cachedFreeListSize);
             return segment;
         } finally {
             lock.unlock();

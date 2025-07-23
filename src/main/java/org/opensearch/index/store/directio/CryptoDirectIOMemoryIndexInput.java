@@ -38,6 +38,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
     final RefCountedMemorySegment[] segments;
     final Path path;
     final BlockCache<RefCountedMemorySegment> blockCache;
+    final boolean ownsSegments;
     private volatile boolean closed = false;
 
     int curSegmentIndex = -1;
@@ -53,7 +54,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         long length,
         int chunkSizePower
     ) {
-        return new MultiSegmentImpl(resourceDescription, path, arena, blockCache, segments, 0, length, chunkSizePower);
+        return new MultiSegmentImpl(resourceDescription, path, arena, blockCache, segments, 0, length, chunkSizePower, true);
     }
 
     private CryptoDirectIOMemoryIndexInput(
@@ -63,7 +64,8 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         BlockCache<RefCountedMemorySegment> blockCache,
         RefCountedMemorySegment[] segments,
         long length,
-        int chunkSizePower
+        int chunkSizePower,
+        boolean ownsSegments
     ) {
         super(resourceDescription);
         this.arena = arena;
@@ -73,6 +75,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         this.length = length;
         this.chunkSizePower = chunkSizePower;
         this.chunkSizeMask = (1L << chunkSizePower) - 1L;
+        this.ownsSegments = ownsSegments;
         this.curSegment = (segments[0] != null) ? segments[0].segment() : null;
     }
 
@@ -106,7 +109,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
 
             if (valueOpt.isPresent()) {
                 BlockCacheValue<RefCountedMemorySegment> blockValue = valueOpt.get();
-
                 RefCountedMemorySegment refSeg = blockValue.block();
                 segments[segmentIndex] = refSeg;
             } else {
@@ -471,7 +473,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
     }
 
     /** Builds the actual sliced IndexInput (may apply extra offset in subclasses). * */
-
     CryptoDirectIOMemoryIndexInput buildSlice(String sliceDescription, long offset, long length) {
         ensureOpen();
 
@@ -479,7 +480,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         final int startIndex = (int) (offset >>> chunkSizePower);
         final int endIndex = (int) (sliceEnd >>> chunkSizePower);
 
-        // LAZY LOADING: Ensure all segments in slice range are loaded
+        // RESTORE: Ensure all segments in slice range are loaded (for correctness)
         for (int i = startIndex; i <= endIndex; i++) {
             if (segments[i] == null) {
                 try {
@@ -493,35 +494,25 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             }
         }
 
-        // Copy RefCountedMemorySegment references
+        // Copy RefCountedMemorySegment references (now all loaded)
         final RefCountedMemorySegment[] slices = ArrayUtil.copyOfSubArray(segments, startIndex, endIndex + 1);
 
-        // Handle the last segment slicing
+        // Handle the last segment slicing - ORIGINAL LOGIC
         if (slices[slices.length - 1] != null) {
             RefCountedMemorySegment originalRefSeg = slices[slices.length - 1];
             MemorySegment slicedSegment = originalRefSeg.segment().asSlice(0L, sliceEnd & chunkSizeMask);
 
-            // Create new RefCountedMemorySegment for sliced view (borrowing, not owning)
             slices[slices.length - 1] = new RefCountedMemorySegment(
                 slicedSegment,
                 (int) (sliceEnd & chunkSizeMask),
-                seg -> { /* No-op releaser - slice doesn't own the memory */ }
+                seg -> { /* No-op releaser */ }
             );
         }
 
         offset = offset & chunkSizeMask;
         final String newResourceDescription = getFullSliceDescription(sliceDescription);
 
-        return new MultiSegmentImpl(
-            newResourceDescription,
-            path,
-            null, // no arena ownership
-            blockCache,
-            slices, // RefCountedMemorySegment[] with proper boundaries
-            offset,
-            length,
-            chunkSizePower
-        );
+        return new MultiSegmentImpl(newResourceDescription, path, null, blockCache, slices, offset, length, chunkSizePower, false);
     }
 
     @Override
@@ -532,9 +523,12 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
 
         closed = true;  // Mark as closed first
 
-        for (RefCountedMemorySegment refSeg : segments) {
-            if (refSeg != null) {
-                refSeg.decRef();
+        // sliced segemnts are not owned.
+        if (ownsSegments) {
+            for (RefCountedMemorySegment refSeg : segments) {
+                if (refSeg != null) {
+                    refSeg.decRef();
+                }
             }
         }
 
@@ -569,9 +563,10 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             RefCountedMemorySegment[] segments,
             long offset,
             long length,
-            int chunkSizePower
+            int chunkSizePower,
+            boolean ownsSegments
         ) {
-            super(resourceDescription, path, arena, blockCache, segments, length, chunkSizePower);
+            super(resourceDescription, path, arena, blockCache, segments, length, chunkSizePower, ownsSegments);
             this.offset = offset;
             try {
                 seek(0L);

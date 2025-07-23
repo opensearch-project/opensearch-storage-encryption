@@ -54,25 +54,25 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<RefCountedM
                 throw new IllegalArgumentException("Encrypted segment too small: expected " + size + ", got " + encrypted.byteSize());
             }
 
-            // Decrypt into-place
             DirectIOReader.decryptSegment(arena, encrypted, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
 
             // Copy decrypted bytes into pooled segment
             MemorySegment.copy(encrypted, 0, pooled, 0, size);
 
-            // Wrap in ref-counted segment
             RefCountedMemorySegment refSegment = new RefCountedMemorySegment(
                 pooled,
                 size,
                 segment -> segmentPool.release(pooled) // SegmentReleaser
             );
 
-            return Optional.of(new RefCountedMemorySegmentCacheValue(refSegment));
+            RefCountedMemorySegmentCacheValue cacheValue = new RefCountedMemorySegmentCacheValue(refSegment);
+            refSegment.decRef();
+            return Optional.of(cacheValue);
 
         } catch (Throwable t) {
             segmentPool.release(pooled);
             LOGGER.warn("Failed to load or decrypt block at offset {} from file {}: {}", offset, key.filePath(), t.toString());
-            LOGGER.debug("Stack trace", t);
+
             return Optional.empty();
         } finally {
             if (fd >= 0) {
