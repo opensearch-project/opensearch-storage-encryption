@@ -79,30 +79,24 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         long chunkSize = 1L << chunkSizePower;
         int numChunks = (int) ((size + chunkSize - 1) >>> chunkSizePower);
 
-        // CHANGE: Use RefCountedMemorySegment array
-        RefCountedMemorySegment[] segments = new RefCountedMemorySegment[numChunks];
+        MemorySegment[] segments = new MemorySegment[numChunks];
+        RefCountedMemorySegment[] inAccessMemorySegments = new RefCountedMemorySegment[numChunks];
 
         boolean success = false;
-        try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ, getDirectOpenOption())) {
-
+        FileChannel channel = FileChannel.open(file, StandardOpenOption.READ, getDirectOpenOption());
+        try {
             // ONLY load partial chunks (typically just the last segment)
             long offset = 0;
             for (int i = 0; i < numChunks; i++) {
                 long remaining = size - offset;
                 long segmentSize = Math.min(chunkSize, remaining);
 
-                if (segmentSize < chunkSize) {
+                if (segmentSize < chunkSize || i == 0 || i == numChunks - 1) {
                     // Partial chunk - load eagerly (small and uncacheable)
                     MemorySegment segment = directIOReadAligned(channel, offset, segmentSize, arena);
                     DirectIOReader
                         .decryptSegment(arena, segment, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
-
-                    RefCountedMemorySegment refSeg = new RefCountedMemorySegment(
-                        segment,
-                        (int) segmentSize,
-                        seg -> { /* No-op releaser since arena manages this */ }
-                    );
-                    segments[i] = refSeg;
+                    segments[i] = segment;
                 }
                 // Full chunks remain null - loaded lazily via cache
                 offset += segmentSize;
@@ -111,12 +105,16 @@ public final class CryptoDirectIODirectory extends FSDirectory {
             IndexInput in = CryptoDirectIOMemoryIndexInput
                 .newInstance(
                     "CryptoMemorySegmentIndexInput(path=\"" + file + "\")",
+                    channel,
                     file,
                     arena,
                     blockCache,
                     segments,
-                    size, // ← FIX: Use size, not offset
-                    chunkSizePower
+                    inAccessMemorySegments,
+                    size,
+                    chunkSizePower,
+                    keyIvResolver.getDataKey().getEncoded(),
+                    keyIvResolver.getIvBytes()
                 );
 
             success = true;
@@ -127,6 +125,11 @@ public final class CryptoDirectIODirectory extends FSDirectory {
             throw new IOException("Failed to open DirectIO file: " + file, t);
         } finally {
             if (!success) {
+                try {
+                    channel.close();
+                } catch (IOException e) {
+                    LOGGER.warn("Failed to close channel on error", e);
+                }
                 arena.close();
             }
         }

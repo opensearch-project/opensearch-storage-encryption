@@ -152,8 +152,9 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
     }
 
     private void tryCachePlaintextBlock(ByteBuffer plainCopy, int size, long offset) {
-        if (size != BUFFER_SIZE)
+        if (size != BUFFER_SIZE || memorySegmentPool.isUnderPressure()) {
             return;
+        }
 
         try {
             final MemorySegment pooled = memorySegmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);

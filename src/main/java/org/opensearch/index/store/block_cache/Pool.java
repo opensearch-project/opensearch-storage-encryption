@@ -19,6 +19,8 @@ public interface Pool<T> {
 
     int pooledSegmentSize();
 
+    boolean isUnderPressure();
+
     void warmUp(int numBlocks);
 
     void close();

@@ -123,7 +123,7 @@ public class MemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
 
                 if (nanos <= 0) {
                     LOGGER
-                        .info(
+                        .debug(
                             "Pool exhausted: Failed to acquire segment within {}ms. "
                                 + "Pool stats: allocated={}/{}, free={}, waiting for segments to be released",
                             unit.toMillis(timeout),
@@ -235,8 +235,9 @@ public class MemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
     /**
      * Check if pool is under memory pressure
      */
+    @Override
     public boolean isUnderPressure() {
-        return allocatedSegments > (maxSegments * 0.9) && cachedFreeListSize < (maxSegments * 0.1);
+        return allocatedSegments > (maxSegments * 0.8) && cachedFreeListSize < (maxSegments * 0.1);
     }
 
     /**

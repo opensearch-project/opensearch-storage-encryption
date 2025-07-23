@@ -37,8 +37,11 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<RefCountedM
 
     @Override
     public Optional<BlockCacheValue<RefCountedMemorySegment>> load(BlockCacheKey key, int size) throws Exception {
-        long offset = key.offset();
+        if (segmentPool.isUnderPressure()) {
+            return Optional.empty();
+        }
 
+        long offset = key.offset();
         // Try to acquire a pooled segment for decrypted output
         MemorySegment pooled = segmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
         if (pooled == null) {
