@@ -4,8 +4,12 @@
  */
 package org.opensearch.index.store.directio;
 
+import static org.opensearch.index.store.directio.DirectIOReader.directIOReadAligned;
+
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.nio.channels.FileChannel;
+import java.nio.file.StandardOpenOption;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
@@ -18,10 +22,8 @@ import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegmentCacheValue;
 import org.opensearch.index.store.iv.KeyIvResolver;
-import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
 @SuppressWarnings("preview")
-
 public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<RefCountedMemorySegment> {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOSegmentBlockLoader.class);
 
@@ -36,7 +38,6 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<RefCountedM
     @Override
     public Optional<BlockCacheValue<RefCountedMemorySegment>> load(BlockCacheKey key, int size) throws Exception {
         long offset = key.offset();
-        int fd = -1;
 
         // Try to acquire a pooled segment for decrypted output
         MemorySegment pooled = segmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
@@ -44,26 +45,24 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<RefCountedM
             return Optional.empty(); // Pool exhausted
         }
 
-        try (Arena arena = Arena.ofConfined()) {
-            fd = PanamaNativeAccess.openFileWithODirect(key.filePath().toAbsolutePath().toString(), true, arena);
+        try (
+            Arena arena = Arena.ofConfined();
+            FileChannel channel = FileChannel.open(key.filePath(), StandardOpenOption.READ, DirectIOReader.getDirectOpenOption())
+        ) {
 
-            // Read encrypted data via Direct I/O
-            MemorySegment encrypted = DirectIOReader.directIOReadAligned(fd, offset, size, arena);
+            MemorySegment encrypted = directIOReadAligned(channel, offset, size, arena);
 
             if (encrypted.byteSize() < size) {
                 throw new IllegalArgumentException("Encrypted segment too small: expected " + size + ", got " + encrypted.byteSize());
             }
 
+            // Decrypt in-place
             DirectIOReader.decryptSegment(arena, encrypted, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
 
             // Copy decrypted bytes into pooled segment
             MemorySegment.copy(encrypted, 0, pooled, 0, size);
 
-            RefCountedMemorySegment refSegment = new RefCountedMemorySegment(
-                pooled,
-                size,
-                segment -> segmentPool.release(pooled) // SegmentReleaser
-            );
+            RefCountedMemorySegment refSegment = new RefCountedMemorySegment(pooled, size, segment -> segmentPool.release(pooled));
 
             RefCountedMemorySegmentCacheValue cacheValue = new RefCountedMemorySegmentCacheValue(refSegment);
             refSegment.decRef();
@@ -72,16 +71,7 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<RefCountedM
         } catch (Throwable t) {
             segmentPool.release(pooled);
             LOGGER.warn("Failed to load or decrypt block at offset {} from file {}: {}", offset, key.filePath(), t.toString());
-
             return Optional.empty();
-        } finally {
-            if (fd >= 0) {
-                try {
-                    PanamaNativeAccess.closeFile(fd);
-                } catch (Throwable closeErr) {
-                    LOGGER.warn("Failed to close file descriptor for: {}", key.filePath(), closeErr);
-                }
-            }
         }
     }
 }

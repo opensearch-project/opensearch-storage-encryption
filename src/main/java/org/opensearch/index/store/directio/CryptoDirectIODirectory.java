@@ -4,21 +4,19 @@
  */
 package org.opensearch.index.store.directio;
 
+import static org.opensearch.index.store.directio.DirectIOReader.directIOReadAligned;
 import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
 import static org.opensearch.index.store.directio.DirectIoConfigs.CHUNK_SIZE_POWER;
-import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
 
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
-import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.Provider;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.IntStream;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -33,9 +31,7 @@ import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.MemorySegmentPool;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
-import org.opensearch.index.store.cipher.OpenSslNativeCipher;
 import org.opensearch.index.store.iv.KeyIvResolver;
-import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "uses custom DirectIO")
@@ -98,9 +94,9 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                 if (segmentSize < chunkSize) {
                     // Partial chunk - load eagerly (small and uncacheable)
                     MemorySegment segment = directIOReadAligned(channel, offset, segmentSize, arena);
-                    decryptSegment(arena, segment, offset);
+                    DirectIOReader
+                        .decryptSegment(arena, segment, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
 
-                    // CHANGE: Wrap in RefCountedMemorySegment for consistency
                     RefCountedMemorySegment refSeg = new RefCountedMemorySegment(
                         segment,
                         (int) segmentSize,
@@ -134,156 +130,6 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                 arena.close();
             }
         }
-    }
-
-    /**
-     * Reads data using Direct I/O with proper alignment.
-     * <p>
-     * Direct I/O requires alignment to storage device sector boundaries.
-     * </p>
-     *
-     * <p><b>File Layout:</b></p>
-     * <pre>
-     * ┌─────┬─────┬─────┬─────┬─────┬─────┐
-     * │  0  │ 512 │1024 │1536 │2048 │2560 │ ← Sector boundaries
-     * └─────┴─────┴─────┴─────┴─────┴─────┘
-     * </pre>
-     *
-     * <p><b>Incorrect: Reading from offset 1000</b></p>
-     * <pre>
-     *                     ↓ start here
-     * ┌─────┬─────┬─────┬─────┬─────┬─────┐
-     * │  0  │ 512 │1024 │1536 │2048 │2560 │
-     *                 ███│█████
-     * </pre>
-     *
-     * <p><b>Correct: Reading from offset 1024</b></p>
-     * <pre>
-     *                      ↓ start here  
-     * ┌─────┬─────┬─────┬─────┬─────┬─────┐
-     * │  0  │ 512 │1024 │1536 │2048 │2560 │
-     *                     │█████│█████│
-     * </pre>
-     *
-     */
-    public static MemorySegment directIOReadAligned(FileChannel channel, long offset, long length, Arena arena) throws IOException {
-        int alignment = Math.max(DIRECT_IO_ALIGNMENT, PanamaNativeAccess.getPageSize());
-
-        // Require alignment to be a power of 2
-        if ((alignment & (alignment - 1)) != 0) {
-            throw new IllegalArgumentException("Alignment must be a power of 2: " + alignment);
-        }
-
-        long alignedOffset = offset & ~(alignment - 1);        // Align down
-        long offsetDelta = offset - alignedOffset;
-        long adjustedLength = offsetDelta + length;
-        long alignedLength = (adjustedLength + alignment - 1) & ~(alignment - 1); // Align up
-
-        if (alignedLength > Integer.MAX_VALUE) {
-            throw new IOException("Aligned read size too large: " + alignedLength);
-        }
-
-        long start = System.nanoTime();
-        long acquireStart = start;
-
-        MemorySegment alignedSegment = arena.allocate(alignedLength, alignment);
-        ByteBuffer directBuffer = alignedSegment.asByteBuffer();
-
-        long acquireEnd = System.nanoTime();
-
-        long readStart = acquireEnd;
-        int bytesRead = channel.read(directBuffer, alignedOffset);
-        long readEnd = System.nanoTime();
-
-        if (bytesRead < offsetDelta + length) {
-            throw new IOException(
-                "Incomplete read: read="
-                    + bytesRead
-                    + ", expected="
-                    + (offsetDelta + length)
-                    + ", offset="
-                    + offset
-                    + ", alignedOffset="
-                    + alignedOffset
-            );
-        }
-
-        long allocStart = readEnd;
-        MemorySegment finalSegment = arena.allocate(length);
-        long allocEnd = System.nanoTime();
-
-        long copyStart = allocEnd;
-        MemorySegment.copy(alignedSegment, offsetDelta, finalSegment, 0, length);
-        long copyEnd = System.nanoTime();
-
-        LOGGER
-            .debug(
-                String
-                    .format(
-                        "DirectIORead(offset=%d, length=%d): total=%d µs | acquire=%d µs | read=%d µs | allocate=%d µs | copy=%d µs",
-                        offset,
-                        length,
-                        (copyEnd - start) / 1_000,
-                        (acquireEnd - acquireStart) / 1_000,
-                        (readEnd - readStart) / 1_000,
-                        (allocEnd - allocStart) / 1_000,
-                        (copyEnd - copyStart) / 1_000
-                    )
-            );
-
-        return finalSegment;
-    }
-
-    public void decryptSegment(Arena arena, MemorySegment segment, long segmentOffsetInFile) throws Throwable {
-        final long size = segment.byteSize();
-
-        final int twoMB = 1 << 21; // 2 MiB
-        final int fourMB = 1 << 22; // 4 MiB
-        final int eightMB = 1 << 23; // 8 MiB
-        final int sixteenMB = 1 << 24; // 16 MiB
-
-        final byte[] key = this.keyIvResolver.getDataKey().getEncoded();
-        final byte[] iv = this.keyIvResolver.getIvBytes();
-
-        // Fast-path: no parallelism for ≤ 4 MiB
-        if (size <= (4L << 20)) {
-            long start = System.nanoTime();
-
-            OpenSslNativeCipher.decryptInPlace(arena, segment.address(), size, key, iv, segmentOffsetInFile);
-
-            long end = System.nanoTime();
-            long durationMs = (end - start) / 1_000_000;
-            LOGGER.debug("Eager decryption of {} MiB at offset {} took {} ms", size / 1048576.0, segmentOffsetInFile, durationMs);
-            return;
-        }
-
-        // Use Openssl for large block decrytion.
-        final int chunkSize;
-        if (size <= (8L << 20)) {
-            chunkSize = twoMB;
-        } else if (size <= (32L << 20)) {
-            chunkSize = fourMB;
-        } else if (size <= (64L << 20)) {
-            chunkSize = eightMB;
-        } else {
-            chunkSize = sixteenMB;
-        }
-
-        final int numChunks = (int) ((size + chunkSize - 1) / chunkSize);
-
-        // parallel decryptions.
-        IntStream.range(0, numChunks).parallel().forEach(i -> {
-            long offset = (long) i * chunkSize;
-            long length = Math.min(chunkSize, size - offset);
-            long fileOffset = segmentOffsetInFile + offset;
-            long addr = segment.address() + offset;
-
-            try {
-                OpenSslNativeCipher.decryptInPlace(addr, length, key, iv, fileOffset);
-            } catch (Throwable t) {
-                throw new RuntimeException("Decryption failed at offset: " + fileOffset, t);
-            }
-        });
     }
 
     @Override

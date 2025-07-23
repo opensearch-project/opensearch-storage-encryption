@@ -9,6 +9,8 @@ import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIG
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.OpenOption;
 import java.util.Arrays;
 import java.util.stream.IntStream;
@@ -23,7 +25,6 @@ import org.opensearch.index.store.mmap.PanamaNativeAccess;
 @SuppressForbidden(reason = "uses custom DirectIO")
 public class DirectIOReader {
     private static final Logger LOGGER = LogManager.getLogger(DirectIOReader.class);
-    private static final TieredDirectIOBufferPool BUFFER_POOL = new TieredDirectIOBufferPool();
 
     private static final OpenOption ExtendedOpenOption_DIRECT; // visible for test
 
@@ -78,63 +79,73 @@ public class DirectIOReader {
      *                     │█████│█████│
      * </pre>
      *
-     * @param fd     File descriptor (already opened with {@code O_DIRECT})
-     * @param offset File offset to read from
-     * @param length Number of bytes to read
-     * @param arena  Memory arena for allocation
-     * @return MemorySegment containing the read data
-     * @throws Throwable if the I/O operation fails
      */
-    public static MemorySegment directIOReadAligned(int fd, long offset, long length, Arena arena) throws Throwable {
-        int alignment = DIRECT_IO_ALIGNMENT;
+    public static MemorySegment directIOReadAligned(FileChannel channel, long offset, long length, Arena arena) throws IOException {
+        int alignment = Math.max(DIRECT_IO_ALIGNMENT, PanamaNativeAccess.getPageSize());
 
-        // Align the offset down to the nearest alignment boundary.
-        // Example: 1003 -> 512 (floor to nearest 512)
-        long alignedOffset = offset - (offset % alignment);
-
-        // Calculate how far into the aligned buffer the actual requested data starts.
-        // This tells us how many bytes to skip from the beginning of the buffer to reach the real data.
-        // Example: offsetDelta = 1003 - 512 = 491
-        long offsetDelta = offset - alignedOffset;
-
-        // Add offsetDelta to the original requested length.
-        // This gives the total number of bytes we need to read to ensure we can safely slice out the real region.
-        // Example: adjustedLength = 491 + 32768 (assume file size) = 33259
-        long adjustedLength = offsetDelta + length;
-
-        // Round up adjustedLength to the nearest alignment boundary.
-        // Ensures the allocated buffer is large enough and still aligned.
-        // Example: alignedLength = ceil(33259 / 512) * 512 = 33792
-        long alignedLength = ((adjustedLength + alignment - 1) / alignment) * alignment;
-
-        // Get a reusable buffer from pool
-        MemorySegment readBuffer = BUFFER_POOL.acquire(alignedLength);
-
-        try {
-            // Read into the pooled buffer
-            long bytesRead = (long) PanamaNativeAccess.PREAD.invoke(fd, readBuffer, alignedLength, alignedOffset);
-
-            if (bytesRead < 0) {
-                throw new IOException("O_DIRECT pread failed with result: " + bytesRead + " for alignedOffset: " + alignedOffset);
-            }
-
-            if (bytesRead < offsetDelta + length) {
-                throw new IOException("O_DIRECT pread incomplete (read=" + bytesRead + ", expected=" + (offsetDelta + length) + ")");
-            }
-
-            // Allocate final segment in the target arena
-            MemorySegment finalSegment = arena.allocate(length);
-
-            // Copy from pooled buffer to final segment
-            MemorySegment.copy(readBuffer, offsetDelta, finalSegment, 0, length);
-
-            return finalSegment;
-
-        } finally {
-            // Always return the buffer to the pool
-            BUFFER_POOL.release(readBuffer);
+        // Require alignment to be a power of 2
+        if ((alignment & (alignment - 1)) != 0) {
+            throw new IllegalArgumentException("Alignment must be a power of 2: " + alignment);
         }
 
+        long alignedOffset = offset & ~(alignment - 1);        // Align down
+        long offsetDelta = offset - alignedOffset;
+        long adjustedLength = offsetDelta + length;
+        long alignedLength = (adjustedLength + alignment - 1) & ~(alignment - 1); // Align up
+
+        if (alignedLength > Integer.MAX_VALUE) {
+            throw new IOException("Aligned read size too large: " + alignedLength);
+        }
+
+        long start = System.nanoTime();
+        long acquireStart = start;
+
+        MemorySegment alignedSegment = arena.allocate(alignedLength, alignment);
+        ByteBuffer directBuffer = alignedSegment.asByteBuffer();
+
+        long acquireEnd = System.nanoTime();
+
+        long readStart = acquireEnd;
+        int bytesRead = channel.read(directBuffer, alignedOffset);
+        long readEnd = System.nanoTime();
+
+        if (bytesRead < offsetDelta + length) {
+            throw new IOException(
+                "Incomplete read: read="
+                    + bytesRead
+                    + ", expected="
+                    + (offsetDelta + length)
+                    + ", offset="
+                    + offset
+                    + ", alignedOffset="
+                    + alignedOffset
+            );
+        }
+
+        long allocStart = readEnd;
+        MemorySegment finalSegment = arena.allocate(length);
+        long allocEnd = System.nanoTime();
+
+        long copyStart = allocEnd;
+        MemorySegment.copy(alignedSegment, offsetDelta, finalSegment, 0, length);
+        long copyEnd = System.nanoTime();
+
+        LOGGER
+            .debug(
+                String
+                    .format(
+                        "DirectIORead(offset=%d, length=%d): total=%d µs | acquire=%d µs | read=%d µs | allocate=%d µs | copy=%d µs",
+                        offset,
+                        length,
+                        (copyEnd - start) / 1_000,
+                        (acquireEnd - acquireStart) / 1_000,
+                        (readEnd - readStart) / 1_000,
+                        (allocEnd - allocStart) / 1_000,
+                        (copyEnd - copyStart) / 1_000
+                    )
+            );
+
+        return finalSegment;
     }
 
     public static void decryptSegment(Arena arena, MemorySegment segment, long segmentOffsetInFile, byte[] key, byte[] iv)

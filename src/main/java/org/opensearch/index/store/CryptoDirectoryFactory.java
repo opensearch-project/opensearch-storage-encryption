@@ -4,6 +4,11 @@
  */
 package org.opensearch.index.store;
 
+import static org.opensearch.index.store.directio.DirectIoConfigs.PER_DIRECTORY_RESEVERED_POOL_SIZE_IN_BYTES;
+import static org.opensearch.index.store.directio.DirectIoConfigs.SEGMENT_POOL_TO_CACHE_SIZE_RATIO;
+import static org.opensearch.index.store.directio.DirectIoConfigs.SEGMENT_SIZE_BYTES;
+import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
+
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Files;
@@ -41,10 +46,6 @@ import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.directio.CryptoDirectIODirectory;
 import org.opensearch.index.store.directio.CryptoDirectIOSegmentBlockLoader;
-import static org.opensearch.index.store.directio.DirectIoConfigs.PER_DIRECTORY_RESEVERED_POOL_SIZE_IN_BYTES;
-import static org.opensearch.index.store.directio.DirectIoConfigs.SEGMENT_POOL_TO_CACHE_SIZE_RATIO;
-import static org.opensearch.index.store.directio.DirectIoConfigs.SEGMENT_SIZE_BYTES;
-import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
 import org.opensearch.index.store.iv.DefaultKeyIvResolver;
 import org.opensearch.index.store.iv.KeyIvResolver;
