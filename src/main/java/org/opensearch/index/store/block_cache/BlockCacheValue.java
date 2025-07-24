@@ -8,6 +8,8 @@ public interface BlockCacheValue<T> extends AutoCloseable {
 
     T block();
 
+    T borrowBlock();
+
     int length();
 
     @Override

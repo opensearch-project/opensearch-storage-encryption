@@ -33,6 +33,11 @@ public final class RefCountedMemorySegmentCacheValue implements BlockCacheValue<
     }
 
     @Override
+    public RefCountedMemorySegment borrowBlock() {
+        return refSegment;
+    }
+
+    @Override
     public int length() {
         return length;
     }

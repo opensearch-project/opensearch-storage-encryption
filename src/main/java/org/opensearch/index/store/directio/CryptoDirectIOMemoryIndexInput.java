@@ -4,9 +4,6 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIOReader.directIOReadAligned;
-import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
-
 import java.io.EOFException;
 import java.io.IOException;
 import java.lang.foreign.Arena;
@@ -30,6 +27,8 @@ import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.BlockLoader;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
+import static org.opensearch.index.store.directio.DirectIOReader.directIOReadAligned;
+import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
 
 @SuppressWarnings("preview")
 public class CryptoDirectIOMemoryIndexInput extends IndexInput implements RandomAccessInput {
@@ -167,8 +166,8 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         }
 
         // todo figure out how we can use the already initilized file channel.
-        try (FileChannel verySubOptimalFileChannel = FileChannel.open(path, StandardOpenOption.READ, getDirectOpenOption())) {
-            segment = directIOReadAligned(verySubOptimalFileChannel, offset, chunkSize, arena);
+        try  {
+            segment = directIOReadAligned(channel, offset, chunkSize, arena);
             try {
                 DirectIOReader.decryptSegment(arena, segment, offset, key, iv);
             } catch (Throwable t) {
@@ -548,7 +547,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             if (slices[i] == null) {
                 int originalIndex = startIndex + i;
                 try {
-                    slices[i] = ensureSegmentLoaded(originalIndex);
+                    slices[i] = borrowSegment(originalIndex);
                 } catch (IOException e) {
                     throw new RuntimeException(
                         String.format("Failed to load segment %d via DirectIO (range: %d-%d)", i, startIndex, endIndex),
@@ -582,6 +581,40 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             key,
             iv
         );
+    }
+
+    private MemorySegment borrowSegment(int segmentIndex) throws IOException {
+        int chunkSize = (1 << chunkSizePower);
+        MemorySegment segment = segments[segmentIndex];
+
+        if (segment != null) {
+            return segment;
+        }
+
+        long offset = segmentIndex * chunkSize;
+        BlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, offset);
+
+        BlockCacheValue<RefCountedMemorySegment> maybeValue = blockCache.get(cacheKey);
+        if (maybeValue != null) {
+            RefCountedMemorySegment refSeg = maybeValue.borrowBlock();
+            segments[segmentIndex] = refSeg.segment();
+            return refSeg.segment();
+        }
+
+        // todo figure out how we can use the already initilized file channel.
+        try (FileChannel verySubOptimalFileChannel = FileChannel.open(path, StandardOpenOption.READ, getDirectOpenOption())) {
+            segment = directIOReadAligned(verySubOptimalFileChannel, offset, chunkSize, arena);
+            try {
+                DirectIOReader.decryptSegment(arena, segment, offset, key, iv);
+            } catch (Throwable t) {
+                throw new RuntimeException("Decryption failed at offset: " + offset, t);
+            }
+            segments[segmentIndex] = segment;
+            return segment;
+
+        } catch (java.nio.channels.ClosedChannelException e) {
+            throw new AlreadyClosedException("FileChannel already closed for: " + path, e);
+        }
     }
 
     @Override

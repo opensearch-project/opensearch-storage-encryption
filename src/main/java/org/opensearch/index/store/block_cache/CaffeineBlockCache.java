@@ -101,12 +101,13 @@ public final class CaffeineBlockCache<T> implements BlockCache<T> {
         var stats = cache.stats();
         return String
             .format(
-                "Cache[size=%d, hits=%d, misses=%d, hitRate=%.2f%%, loads=%d, avgLoadTime=%.2fms]",
+                "Cache[size=%d, hits=%d, misses=%d, hitRate=%.2f%%, loads=%d, evictionCount=%d, avgLoadTime=%.2fms]",
                 cache.estimatedSize(),
                 stats.hitCount(),
                 stats.missCount(),
                 stats.hitRate() * 100,
                 stats.loadCount(),
+                stats.evictionCount(),
                 stats.averageLoadPenalty() / 1_000_000.0  // Convert to ms
             );
     }
