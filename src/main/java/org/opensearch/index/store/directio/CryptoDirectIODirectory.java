@@ -27,6 +27,7 @@ import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.block_cache.BlockLoader;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.MemorySegmentPool;
 import org.opensearch.index.store.block_cache.Pool;
@@ -41,6 +42,8 @@ public final class CryptoDirectIODirectory extends FSDirectory {
 
     private final Pool<MemorySegment> memorySegmentPool;
     private final BlockCache<RefCountedMemorySegment> blockCache;
+    private final BlockLoader<RefCountedMemorySegment> blockLoader;
+
     private final KeyIvResolver keyIvResolver;
     private final Path path;
 
@@ -50,7 +53,8 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         Provider provider,
         KeyIvResolver keyIvResolver,
         Pool<MemorySegment> memorySegmentPool,
-        BlockCache<RefCountedMemorySegment> blockCache
+        BlockCache<RefCountedMemorySegment> blockCache,
+        BlockLoader<RefCountedMemorySegment> blockLoader
     )
         throws IOException {
         super(path, lockFactory);
@@ -58,6 +62,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         this.memorySegmentPool = memorySegmentPool;
         this.blockCache = blockCache;
         this.path = path;
+        this.blockLoader = blockLoader;
         startTelemetry();
     }
 
@@ -109,6 +114,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                     file,
                     arena,
                     blockCache,
+                    blockLoader,
                     segments,
                     inAccessMemorySegments,
                     size,

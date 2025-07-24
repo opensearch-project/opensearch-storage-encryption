@@ -17,7 +17,7 @@ public interface BlockCache<T> {
     /**
      * Returns the block, loading it via `BlockLoader` if absent.
      */
-    Optional<BlockCacheValue<T>> getOrLoad(BlockCacheKey key, int size) throws IOException;
+    Optional<BlockCacheValue<T>> getOrLoad(BlockCacheKey key, int size, BlockLoader<T> loader) throws IOException;
 
     /**
      * Asynchronously load the block into the cache if not present.

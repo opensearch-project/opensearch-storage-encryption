@@ -45,11 +45,11 @@ public final class CaffeineBlockCache<T> implements BlockCache<T> {
     * @throws IOException if the block loading fails with an IO-related error.
     */
     @Override
-    public Optional<BlockCacheValue<T>> getOrLoad(BlockCacheKey key, int size) throws IOException {
+    public Optional<BlockCacheValue<T>> getOrLoad(BlockCacheKey key, int size, BlockLoader<T> loader) throws IOException {
         try {
             BlockCacheValue<T> value = cache.get(key, k -> {
                 try {
-                    return blockLoader.load(k, size).orElse(null); // unwrap Optional
+                    return loader.load(k, size).orElse(null); // use per-call loader
                 } catch (Exception e) {
                     return handleLoadException(k, e);
                 }

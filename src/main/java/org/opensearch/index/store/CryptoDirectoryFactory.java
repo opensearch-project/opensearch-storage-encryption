@@ -4,8 +4,7 @@
  */
 package org.opensearch.index.store;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.PER_DIRECTORY_RESEVERED_POOL_SIZE_IN_BYTES;
-import static org.opensearch.index.store.directio.DirectIoConfigs.SEGMENT_POOL_TO_CACHE_SIZE_RATIO;
+import static org.opensearch.index.store.directio.DirectIoConfigs.RESEVERED_POOL_SIZE_IN_BYTES;
 import static org.opensearch.index.store.directio.DirectIoConfigs.SEGMENT_SIZE_BYTES;
 import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
 
@@ -66,6 +65,9 @@ import com.github.benmanes.caffeine.cache.RemovalCause;
 public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory {
 
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectoryFactory.class);
+
+    private static volatile Pool<MemorySegment> sharedSegmentPool;
+    private static final Object initLock = new Object();
 
     /**
      * Creates a new CryptoDirectoryFactory
@@ -149,7 +151,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                     provider,
                     keyIvResolver
                 );
-                EagerDecryptedCryptoMMapDirectory egarDecryptedCryptoMMapDirectory = new EagerDecryptedCryptoMMapDirectory(
+                EagerDecryptedCryptoMMapDirectory eagerDecryptedCryptoMMapDirectory = new EagerDecryptedCryptoMMapDirectory(
                     location,
                     provider,
                     keyIvResolver
@@ -165,7 +167,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                 return new HybridCryptoDirectory(
                     lockFactory,
                     lazyDecryptedCryptoMMapDirectory,
-                    egarDecryptedCryptoMMapDirectory,
+                    eagerDecryptedCryptoMMapDirectory,
                     cryptoDirectIODirectory,
                     provider,
                     keyIvResolver,
@@ -186,29 +188,21 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         }
     }
 
-    private static CryptoDirectIODirectory createCryptoDirectIODirectory(
+    private CryptoDirectIODirectory createCryptoDirectIODirectory(
         Path location,
         LockFactory lockFactory,
         Provider provider,
         KeyIvResolver keyIvResolver
     ) throws IOException {
+        ensureSharedPoolInitialized();
 
-        int maxBlocks = (int) (PER_DIRECTORY_RESEVERED_POOL_SIZE_IN_BYTES / SEGMENT_SIZE_BYTES);
-        Pool<MemorySegment> memorySegmentPool = new MemorySegmentPool(PER_DIRECTORY_RESEVERED_POOL_SIZE_IN_BYTES, SEGMENT_SIZE_BYTES);
-
-        // Warm-up the pool with allocated segments.
-        memorySegmentPool.warmUp((int) (maxBlocks * WARM_UP_PERCENTAGE));
-
-        // Cache should have lowere budger than the segment budget
-        int maxCacheBlocks = (int) (maxBlocks * SEGMENT_POOL_TO_CACHE_SIZE_RATIO);
-
-        BlockLoader<RefCountedMemorySegment> blockLoader = new CryptoDirectIOSegmentBlockLoader(memorySegmentPool, keyIvResolver);
+        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOSegmentBlockLoader(sharedSegmentPool, keyIvResolver);
 
         Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> cache = Caffeine
             .newBuilder()
-            .maximumSize(maxCacheBlocks)
+            .maximumSize(8192)
             .recordStats()
-            .expireAfterAccess(30, TimeUnit.MINUTES)
+            .expireAfterAccess(10, TimeUnit.MINUTES)
             .executor(Runnable::run)
             .removalListener((BlockCacheKey key, BlockCacheValue<RefCountedMemorySegment> value, RemovalCause cause) -> {
                 if (value != null) {
@@ -217,8 +211,28 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             })
             .build();
 
-        BlockCache<RefCountedMemorySegment> blockCache = new CaffeineBlockCache<>(cache, blockLoader, maxCacheBlocks);
+        BlockCache<RefCountedMemorySegment> blockCache = new CaffeineBlockCache<>(cache, loader, 8192);
 
-        return new CryptoDirectIODirectory(location, lockFactory, provider, keyIvResolver, memorySegmentPool, blockCache);
+        return new CryptoDirectIODirectory(location, lockFactory, provider, keyIvResolver, sharedSegmentPool, blockCache, loader);
+
+    }
+
+    private void ensureSharedPoolInitialized() {
+        if (sharedSegmentPool == null) {
+            synchronized (initLock) {
+                if (sharedSegmentPool == null) {
+                    long maxBlocks = RESEVERED_POOL_SIZE_IN_BYTES / SEGMENT_SIZE_BYTES;
+                    sharedSegmentPool = new MemorySegmentPool(RESEVERED_POOL_SIZE_IN_BYTES, SEGMENT_SIZE_BYTES);
+                    LOGGER
+                        .info(
+                            "Creating pool with sizeBytes={}, segmentSize={}, totalSegments={}",
+                            RESEVERED_POOL_SIZE_IN_BYTES,
+                            SEGMENT_SIZE_BYTES,
+                            RESEVERED_POOL_SIZE_IN_BYTES / SEGMENT_SIZE_BYTES
+                        );
+                    sharedSegmentPool.warmUp((long) (maxBlocks * WARM_UP_PERCENTAGE));
+                }
+            }
+        }
     }
 }

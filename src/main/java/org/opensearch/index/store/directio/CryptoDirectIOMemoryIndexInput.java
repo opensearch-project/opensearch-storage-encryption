@@ -4,6 +4,9 @@
  */
 package org.opensearch.index.store.directio;
 
+import static org.opensearch.index.store.directio.DirectIOReader.directIOReadAligned;
+import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
+
 import java.io.EOFException;
 import java.io.IOException;
 import java.lang.foreign.Arena;
@@ -25,9 +28,8 @@ import org.apache.lucene.util.ArrayUtil;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
+import org.opensearch.index.store.block_cache.BlockLoader;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
-import static org.opensearch.index.store.directio.DirectIOReader.directIOReadAligned;
-import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
 
 @SuppressWarnings("preview")
 public class CryptoDirectIOMemoryIndexInput extends IndexInput implements RandomAccessInput {
@@ -48,6 +50,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
     final RefCountedMemorySegment[] inAccessMemorySegments;
     final Path path;
     final BlockCache<RefCountedMemorySegment> blockCache;
+    final BlockLoader<RefCountedMemorySegment> blockLoader;
     final boolean ownsSegments;
     final String resourceDescription;
     final byte[] key;
@@ -64,6 +67,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         Path path,
         Arena arena,
         BlockCache<RefCountedMemorySegment> blockCache,
+        BlockLoader<RefCountedMemorySegment> blockLoader,
         MemorySegment[] segments,
         RefCountedMemorySegment[] inAccessMemorySegments,
         long length,
@@ -77,6 +81,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             path,
             arena,
             blockCache,
+            blockLoader,
             segments,
             inAccessMemorySegments,
             0,
@@ -94,6 +99,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         Path path,
         Arena arena,
         BlockCache<RefCountedMemorySegment> blockCache,
+        BlockLoader<RefCountedMemorySegment> blockLoader,
         MemorySegment[] segments,
         RefCountedMemorySegment[] inAccessMemorySegments,
         long length,
@@ -107,6 +113,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         this.arena = arena;
         this.resourceDescription = resourceDescription;
         this.blockCache = blockCache;
+        this.blockLoader = blockLoader;
         this.path = path;
         this.segments = segments;
         this.inAccessMemorySegments = inAccessMemorySegments;
@@ -150,7 +157,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         long offset = segmentIndex * chunkSize;
         BlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, offset);
 
-        Optional<BlockCacheValue<RefCountedMemorySegment>> valueOpt = blockCache.getOrLoad(cacheKey, chunkSize);
+        Optional<BlockCacheValue<RefCountedMemorySegment>> valueOpt = blockCache.getOrLoad(cacheKey, chunkSize, blockLoader);
 
         if (valueOpt.isPresent()) {
             RefCountedMemorySegment refSeg = valueOpt.get().block();
@@ -565,6 +572,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             path,
             arena,
             blockCache,
+            blockLoader,
             slices,
             inAccessMemorySegments,
             sliceOffset,
@@ -631,6 +639,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             Path path,
             Arena arena,
             BlockCache<RefCountedMemorySegment> blockCache,
+            BlockLoader<RefCountedMemorySegment> blockLoader,
             MemorySegment[] segments,
             RefCountedMemorySegment[] inAccessMemorySegments,
             long offset,
@@ -646,6 +655,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 path,
                 arena,
                 blockCache,
+                blockLoader,
                 segments,
                 inAccessMemorySegments,
                 length,

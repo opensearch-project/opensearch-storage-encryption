@@ -244,7 +244,7 @@ public class MemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
      * Warm up the pool by pre-allocating segments up to target count
      */
     @Override
-    public void warmUp(int targetSegments) {
+    public void warmUp(long targetSegments) {
         targetSegments = Math.min(targetSegments, maxSegments);
 
         if (allocatedSegments >= targetSegments)

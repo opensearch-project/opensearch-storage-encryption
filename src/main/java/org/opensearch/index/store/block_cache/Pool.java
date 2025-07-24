@@ -21,7 +21,7 @@ public interface Pool<T> {
 
     boolean isUnderPressure();
 
-    void warmUp(int numBlocks);
+    void warmUp(long numBlocks);
 
     void close();
 }
