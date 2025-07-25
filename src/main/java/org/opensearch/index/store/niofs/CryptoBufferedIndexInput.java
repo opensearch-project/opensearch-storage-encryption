@@ -68,8 +68,8 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         this.isClone = true;
         this.keyResolver = keyResolver;
 
-        this.cipher = AesCipherFactory.getCipher(originalCipher.getProvider());
-        AesCipherFactory.initCipher(cipher, keyResolver.getDataKey(), keyResolver.getIvBytes(), Cipher.DECRYPT_MODE, off);
+        this.cipher = AesCipherFactory.getCipher(AesCipherFactory.CipherType.CTR, originalCipher.getProvider());
+        AesCipherFactory.initCipher(AesCipherFactory.CipherType.CTR, cipher, keyResolver.getDataKey(), keyResolver.getIvBytes(), Cipher.DECRYPT_MODE, off);
     }
 
     @Override
@@ -83,9 +83,10 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
     public CryptoBufferedIndexInput clone() {
         CryptoBufferedIndexInput clone = (CryptoBufferedIndexInput) super.clone();
         clone.tmpBuffer = EMPTY_BYTEBUFFER;
-        clone.cipher = AesCipherFactory.getCipher(cipher.getProvider());
+        clone.cipher = AesCipherFactory.getCipher(AesCipherFactory.CipherType.CTR, cipher.getProvider());
         AesCipherFactory
-            .initCipher(clone.cipher, keyResolver.getDataKey(), keyResolver.getIvBytes(), Cipher.DECRYPT_MODE, getFilePointer() + off);
+            .initCipher(AesCipherFactory.CipherType.CTR, clone.cipher, keyResolver.getDataKey(),
+                    keyResolver.getIvBytes(), Cipher.DECRYPT_MODE, getFilePointer() + off);
         return clone;
     }
 
@@ -163,6 +164,6 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         if (pos > length()) {
             throw new EOFException("seek past EOF: pos=" + pos + ", length=" + length());
         }
-        AesCipherFactory.initCipher(cipher, keyResolver.getDataKey(), keyResolver.getIvBytes(), Cipher.DECRYPT_MODE, pos + off);
+        AesCipherFactory.initCipher(AesCipherFactory.CipherType.CTR, cipher, keyResolver.getDataKey(), keyResolver.getIvBytes(), Cipher.DECRYPT_MODE, pos + off);
     }
 }
