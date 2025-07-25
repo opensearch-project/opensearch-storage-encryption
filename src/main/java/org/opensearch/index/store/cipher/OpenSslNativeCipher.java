@@ -13,12 +13,12 @@ import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.Locale;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
+import static org.opensearch.index.store.cipher.AesCipherFactory.computeOffsetIV;
 
 /**
  * Provides native bindings to OpenSSL EVP_aes_256_ctr using the Java Panama FFI.
@@ -145,18 +145,6 @@ public final class OpenSslNativeCipher {
         } catch (Throwable t) {
             throw new OpenSslException("Failed to initialize OpenSSL method handles via Panama", t);
         }
-    }
-
-    public static byte[] computeOffsetIV(byte[] baseIV, long offset) {
-        byte[] ivCopy = Arrays.copyOf(baseIV, baseIV.length);
-        int blockOffset = (int) (offset / AesCipherFactory.AES_BLOCK_SIZE_BYTES);
-
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 1] = (byte) blockOffset;
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 2] = (byte) (blockOffset >>> 8);
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 3] = (byte) (blockOffset >>> 16);
-        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 4] = (byte) (blockOffset >>> 24);
-
-        return ivCopy;
     }
 
     /**

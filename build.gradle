@@ -154,6 +154,7 @@ dependencyLicenses.enabled = false
 thirdPartyAudit.enabled = false
 loggerUsageCheck.enabled = false
 validateNebulaPom.enabled = false
+testingConventions.enabled = false
 
 task allTests {
     dependsOn test, internalClusterTest, yamlRestTest

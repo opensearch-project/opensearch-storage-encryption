@@ -4,16 +4,13 @@
  */
 package org.opensearch.index.store.cipher;
 
-import java.security.InvalidAlgorithmParameterException;
-import java.security.InvalidKeyException;
-import java.security.Key;
 import java.security.NoSuchAlgorithmException;
+import java.security.NoSuchProviderException;
 import java.security.Provider;
 import java.util.Arrays;
 
 import javax.crypto.Cipher;
 import javax.crypto.NoSuchPaddingException;
-import javax.crypto.spec.IvParameterSpec;
 
 /**
  * Factory utility for creating and initializing Cipher instances
@@ -34,7 +31,8 @@ public class AesCipherFactory {
     /** Total IV array length (typically 16 bytes for AES). */
     public static final int IV_ARRAY_LENGTH = 16;
 
-    private static final byte[] ZERO_SKIP = new byte[AesCipherFactory.AES_BLOCK_SIZE_BYTES];
+    /** The algorrithm. */
+    public static final String ALGORITHM = "AES";
 
     /**
      * Returns a new Cipher instance configured for AES/CTR/NoPadding using the given provider.
@@ -51,37 +49,23 @@ public class AesCipherFactory {
         }
     }
 
-    /**
-     * Initializes a cipher for encryption or decryption, using an IV adjusted for the given position.
-     * The last 4 bytes of the IV are treated as a counter, and are adjusted to reflect the block offset.
-     * This allows for seeking into an encrypted stream without re-processing prior blocks.
-     *
-     * @param cipher The cipher instance to initialize
-     * @param key The symmetric key (e.g., AES key)
-     * @param iv The base IV, typically 16 bytes long
-     * @param opmode Cipher.ENCRYPT_MODE or Cipher.DECRYPT_MODE
-     * @param newPosition The position in the stream to begin processing from
-     * @throws RuntimeException If cipher initialization fails
-     */
-    public static void initCipher(Cipher cipher, Key key, byte[] iv, int opmode, long newPosition) {
+    public static final ThreadLocal<Cipher> CIPHER_POOL = ThreadLocal.withInitial(() -> {
         try {
-            byte[] ivCopy = Arrays.copyOf(iv, iv.length);
-            int blockOffset = (int) (newPosition / AesCipherFactory.AES_BLOCK_SIZE_BYTES);
-
-            ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 1] = (byte) blockOffset;
-            ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 2] = (byte) (blockOffset >>> 8);
-            ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 3] = (byte) (blockOffset >>> 16);
-            ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 4] = (byte) (blockOffset >>> 24);
-
-            IvParameterSpec spec = new IvParameterSpec(ivCopy);
-            cipher.init(opmode, key, spec);
-
-            // Skip over any partial block offset using dummy update
-            if (newPosition % AesCipherFactory.AES_BLOCK_SIZE_BYTES > 0) {
-                cipher.update(ZERO_SKIP, 0, (int) (newPosition % AesCipherFactory.AES_BLOCK_SIZE_BYTES));
-            }
-        } catch (InvalidAlgorithmParameterException | InvalidKeyException e) {
-            throw new RuntimeException("Failed to initialize cipher", e);
+            return Cipher.getInstance("AES/CTR/NoPadding", "SunJCE");
+        } catch (NoSuchAlgorithmException | NoSuchProviderException | NoSuchPaddingException e) {
+            throw new RuntimeException(e);
         }
+    });
+
+    public static byte[] computeOffsetIV(byte[] baseIV, long offset) {
+        byte[] ivCopy = Arrays.copyOf(baseIV, baseIV.length);
+        int blockOffset = (int) (offset / AesCipherFactory.AES_BLOCK_SIZE_BYTES);
+
+        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 1] = (byte) blockOffset;
+        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 2] = (byte) (blockOffset >>> 8);
+        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 3] = (byte) (blockOffset >>> 16);
+        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 4] = (byte) (blockOffset >>> 24);
+
+        return ivCopy;
     }
 }
