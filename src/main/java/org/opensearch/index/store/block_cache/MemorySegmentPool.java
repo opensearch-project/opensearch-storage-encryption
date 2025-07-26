@@ -280,6 +280,14 @@ public class MemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
         }
     }
 
+    @Override
+    public String poolStats() {
+        int free = cachedFreeListSize;
+        int allocated = allocatedSegments;
+        int unallocated = maxSegments - allocated;
+        return new PoolStats(maxSegments, allocated, free, unallocated).toString();
+    }
+
     /**
      * Pool statistics for monitoring
      */

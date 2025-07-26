@@ -23,5 +23,7 @@ public interface Pool<T> {
 
     void warmUp(long numBlocks);
 
+    String poolStats();
+
     void close();
 }

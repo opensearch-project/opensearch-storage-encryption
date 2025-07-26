@@ -200,7 +200,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
 
         Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> cache = Caffeine
             .newBuilder()
-            .maximumSize(8192)
+            .maximumSize(1000) // todo figure out a good config.
             .recordStats()
             .expireAfterAccess(10, TimeUnit.MINUTES)
             .executor(Runnable::run)
@@ -211,7 +211,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             })
             .build();
 
-        BlockCache<RefCountedMemorySegment> blockCache = new CaffeineBlockCache<>(cache, loader, 8192);
+        BlockCache<RefCountedMemorySegment> blockCache = new CaffeineBlockCache<>(cache, loader, 1000);
 
         return new CryptoDirectIODirectory(location, lockFactory, provider, keyIvResolver, sharedSegmentPool, blockCache, loader);
 
@@ -231,8 +231,38 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                             RESEVERED_POOL_SIZE_IN_BYTES / SEGMENT_SIZE_BYTES
                         );
                     sharedSegmentPool.warmUp((long) (maxBlocks * WARM_UP_PERCENTAGE));
+                    startTelemetry();
                 }
             }
         }
+    }
+
+    private void publishPoolStats() {
+        try {
+            LOGGER.info("{} {} \n {}", sharedSegmentPool.poolStats());
+
+        } catch (Exception e) {
+            LOGGER.warn("Failed to log cache/pool stats", e);
+        }
+    }
+
+    private void startTelemetry() {
+        Thread loggerThread = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(10_000); // 60 seconds
+                    publishPoolStats();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                } catch (Throwable t) {
+                    LOGGER.warn("Error in buffer pool stats logger", t);
+                }
+            }
+        });
+
+        loggerThread.setDaemon(true);
+        loggerThread.setName("DirectIOBufferPoolStatsLogger");
+        loggerThread.start();
     }
 }

@@ -15,10 +15,6 @@ public final class RefCountedMemorySegmentCacheValue implements BlockCacheValue<
         }
         this.refSegment = refSegment;
         this.length = refSegment.length();
-
-        // Explicitly claim ownership on behalf of the cache
-        // On eviction this reference is decremented.
-        this.refSegment.incRef();
     }
 
     public RefCountedMemorySegment getRefSegment() {
@@ -44,7 +40,7 @@ public final class RefCountedMemorySegmentCacheValue implements BlockCacheValue<
 
     @Override
     public void close() {
-        // Reader or cache is done — drop ownership
+        // Reader is done — drop ownership
         refSegment.decRef();
     }
 }

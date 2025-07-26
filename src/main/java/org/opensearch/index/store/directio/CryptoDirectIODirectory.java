@@ -63,7 +63,6 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         this.blockCache = blockCache;
         this.path = path;
         this.blockLoader = blockLoader;
-        startTelemetry();
     }
 
     @Override
@@ -183,7 +182,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                 MemorySegmentPool.PoolStats poolStats = memorySegmentPool1.getStats();
 
                 if (poolStats.pressureRatio * 100 > 60) {
-                    LOGGER.info("{} {} \n {}", poolStats.toString(), cacheStats, path);
+                    LOGGER.info("{} {} \n {}", poolStats, cacheStats, path);
                 }
             }
 
