@@ -124,7 +124,7 @@ public class PanamaNativeAccess {
 
     public static int openFile(String path) throws Throwable {
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment pathSegment = arena.allocateUtf8String(path);
+            MemorySegment pathSegment = arena.allocateFrom(path);
             return (int) OPEN.invoke(pathSegment, 0); // O_RDONLY = 0
         }
     }

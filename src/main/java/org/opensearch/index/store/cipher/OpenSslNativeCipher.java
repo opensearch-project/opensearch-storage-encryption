@@ -186,8 +186,8 @@ public final class OpenSslNativeCipher {
                 }
 
                 byte[] adjustedIV = computeOffsetIV(iv, filePosition);
-                MemorySegment keySeg = arena.allocateArray(ValueLayout.JAVA_BYTE, key);
-                MemorySegment ivSeg = arena.allocateArray(ValueLayout.JAVA_BYTE, adjustedIV);
+                MemorySegment keySeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, key);
+                MemorySegment ivSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, adjustedIV);
 
                 int rc = (int) EVP_EncryptInit_ex.invoke(ctx, cipher, MemorySegment.NULL, keySeg, ivSeg);
                 if (rc != 1) {
@@ -196,13 +196,13 @@ public final class OpenSslNativeCipher {
 
                 int skipBytes = (int) (filePosition % AES_BLOCK_SIZE);
                 if (skipBytes > 0) {
-                    MemorySegment dummyIn = arena.allocateArray(ValueLayout.JAVA_BYTE, skipBytes);
+                    MemorySegment dummyIn = arena.allocate(ValueLayout.JAVA_BYTE, skipBytes);
                     MemorySegment dummyOut = arena.allocate(skipBytes + AES_BLOCK_SIZE);
                     MemorySegment dummyLen = arena.allocate(ValueLayout.JAVA_INT);
                     EVP_EncryptUpdate.invoke(ctx, dummyOut, dummyLen, dummyIn, skipBytes);
                 }
 
-                MemorySegment inSeg = arena.allocateArray(ValueLayout.JAVA_BYTE, input);
+                MemorySegment inSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, input);
                 MemorySegment outSeg = arena.allocate(input.length + AES_BLOCK_SIZE);
                 MemorySegment outLen = arena.allocate(ValueLayout.JAVA_INT);
 
@@ -236,8 +236,8 @@ public final class OpenSslNativeCipher {
                 throw new OpenSslException("EVP_aes_256_ctr failed");
 
             byte[] adjustedIV = computeOffsetIV(iv, fileOffset);
-            MemorySegment keySeg = arena.allocateArray(ValueLayout.JAVA_BYTE, key);
-            MemorySegment ivSeg = arena.allocateArray(ValueLayout.JAVA_BYTE, adjustedIV);
+            MemorySegment keySeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, key);
+            MemorySegment ivSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, adjustedIV);
 
             int rc = (int) EVP_EncryptInit_ex.invoke(ctx, cipher, MemorySegment.NULL, keySeg, ivSeg);
             if (rc != 1)
@@ -297,8 +297,8 @@ public final class OpenSslNativeCipher {
 
                 // Compute IV with offset counter
                 byte[] adjustedIV = computeOffsetIV(iv, filePosition);
-                MemorySegment keySeg = arena.allocateArray(ValueLayout.JAVA_BYTE, key);
-                MemorySegment ivSeg = arena.allocateArray(ValueLayout.JAVA_BYTE, adjustedIV);
+                MemorySegment keySeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, key);
+                MemorySegment ivSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, adjustedIV);
 
                 int rc = (int) EVP_EncryptInit_ex.invoke(ctx, cipher, MemorySegment.NULL, keySeg, ivSeg);
                 if (rc != 1) {
@@ -308,13 +308,13 @@ public final class OpenSslNativeCipher {
                 // Skip any partial block
                 int partialOffset = (int) (filePosition % AES_BLOCK_SIZE);
                 if (partialOffset > 0) {
-                    MemorySegment dummyIn = arena.allocateArray(ValueLayout.JAVA_BYTE, partialOffset);
+                    MemorySegment dummyIn = arena.allocate(ValueLayout.JAVA_BYTE, partialOffset);
                     MemorySegment dummyOut = arena.allocate(partialOffset + AES_BLOCK_SIZE);
                     MemorySegment dummyLen = arena.allocate(ValueLayout.JAVA_INT);
                     EVP_EncryptUpdate.invoke(ctx, dummyOut, dummyLen, dummyIn, partialOffset);
                 }
 
-                MemorySegment inSeg = arena.allocateArray(ValueLayout.JAVA_BYTE, input);
+                MemorySegment inSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, input);
                 MemorySegment outSeg = arena.allocate(input.length + AES_BLOCK_SIZE);
                 MemorySegment outLen = arena.allocate(ValueLayout.JAVA_INT);
 
@@ -355,8 +355,8 @@ public final class OpenSslNativeCipher {
 
                 byte[] adjustedIV = computeOffsetIV(iv, fileOffset);
                 long tKeyIvStart = System.nanoTime();
-                MemorySegment keySeg = arena.allocateArray(ValueLayout.JAVA_BYTE, key);
-                MemorySegment ivSeg = arena.allocateArray(ValueLayout.JAVA_BYTE, adjustedIV);
+                MemorySegment keySeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, key);
+                MemorySegment ivSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, adjustedIV);
                 long tKeyIvAlloc = System.nanoTime();
 
                 int rc = (int) EVP_EncryptInit_ex.invoke(ctx, cipher, MemorySegment.NULL, keySeg, ivSeg);
@@ -366,7 +366,7 @@ public final class OpenSslNativeCipher {
 
                 int partialBlockOffset = (int) (fileOffset % AES_BLOCK_SIZE);
                 if (partialBlockOffset > 0) {
-                    MemorySegment dummyIn = arena.allocateArray(ValueLayout.JAVA_BYTE, partialBlockOffset);
+                    MemorySegment dummyIn = arena.allocate(ValueLayout.JAVA_BYTE, partialBlockOffset);
                     MemorySegment dummyOut = arena.allocate(partialBlockOffset + AES_BLOCK_SIZE);
                     MemorySegment dummyLen = arena.allocate(ValueLayout.JAVA_INT);
                     EVP_EncryptUpdate.invoke(ctx, dummyOut, dummyLen, dummyIn, partialBlockOffset);
@@ -388,12 +388,12 @@ public final class OpenSslNativeCipher {
                     .trace(
                         """
                             Decryption breakdown ({} MiB at offset {}):
-                             > ctx alloc: {} \u00b5s
-                             > cipher lookup: {} \u00b5s
-                             > key/iv alloc: {} \u00b5s
-                             > init cipher: {} \u00b5s
-                             > update decrypt: {} \u00b5s
-                             > total time: {} \u00b5s""",
+                             > ctx alloc: {} µs
+                             > cipher lookup: {} µs
+                             > key/iv alloc: {} µs
+                             > init cipher: {} µs
+                             > update decrypt: {} µs
+                             > total time: {} µs""",
                         String.format("%.2f", length / 1048576.0),
                         fileOffset,
                         (tCtxAlloc - tCtxStart) / 1_000,
@@ -426,8 +426,8 @@ public final class OpenSslNativeCipher {
                 throw new OpenSslException("EVP_aes_256_ctr failed");
 
             byte[] adjustedIV = computeOffsetIV(iv, fileOffset);
-            MemorySegment keySeg = arena.allocateArray(ValueLayout.JAVA_BYTE, key);
-            MemorySegment ivSeg = arena.allocateArray(ValueLayout.JAVA_BYTE, adjustedIV);
+            MemorySegment keySeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, key);
+            MemorySegment ivSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, adjustedIV);
 
             int rc = (int) EVP_EncryptInit_ex.invoke(ctx, cipher, MemorySegment.NULL, keySeg, ivSeg);
             if (rc != 1)
@@ -435,7 +435,7 @@ public final class OpenSslNativeCipher {
 
             int partialBlockOffset = (int) (fileOffset % AES_BLOCK_SIZE);
             if (partialBlockOffset > 0) {
-                MemorySegment dummyIn = arena.allocateArray(ValueLayout.JAVA_BYTE, partialBlockOffset);
+                MemorySegment dummyIn = arena.allocate(ValueLayout.JAVA_BYTE, partialBlockOffset);
                 MemorySegment dummyOut = arena.allocate(partialBlockOffset + AES_BLOCK_SIZE);
                 MemorySegment dummyLen = arena.allocate(ValueLayout.JAVA_INT);
                 EVP_EncryptUpdate.invoke(ctx, dummyOut, dummyLen, dummyIn, partialBlockOffset);
