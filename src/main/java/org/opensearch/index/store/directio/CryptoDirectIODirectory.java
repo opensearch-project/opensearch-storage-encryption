@@ -47,7 +47,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     private final KeyIvResolver keyIvResolver;
     private final Path path;
 
-    public static final MemorySegment UNMAPPED_SEGMENT = MemorySegment.ofArray(new byte[1]);
+    public static final MemorySegment UNMAPPED_SEGMENT = MemorySegment.ofArray(new byte[0]);
 
     public CryptoDirectIODirectory(
         Path path,
@@ -98,7 +98,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                 long remaining = size - offset;
                 long segmentSize = Math.min(chunkSize, remaining);
 
-                if (segmentSize < chunkSize) {
+                if (segmentSize < chunkSize || i == 0) {
                     MemorySegment segment = directIOReadAligned(channel, offset, segmentSize, arena);
                     DirectIOReader
                         .decryptSegment(arena, segment, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());

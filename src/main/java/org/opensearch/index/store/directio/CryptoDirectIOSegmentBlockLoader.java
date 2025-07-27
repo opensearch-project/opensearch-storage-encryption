@@ -45,7 +45,7 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<RefCountedM
         // Try to acquire a pooled segment for decrypted output
         MemorySegment pooled = segmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
         if (pooled == null) {
-            return Optional.empty(); // Pool exhausted
+            return Optional.empty(); // Pool exhausted or has a lot of contention
         }
 
         try (

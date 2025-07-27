@@ -18,6 +18,7 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
+import java.util.Objects;
 import java.util.Optional;
 
 import org.apache.logging.log4j.LogManager;
@@ -193,16 +194,23 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             if (curSegment == CryptoDirectIODirectory.UNMAPPED_SEGMENT) {
                 curSegment = loadSegment(curSegmentIndex);
             }
+
             byte v = curSegment.get(LAYOUT_BYTE, curPosition);
             curPosition++;
             return v;
         } catch (@SuppressWarnings("unused") IndexOutOfBoundsException e) {
+            // Move to next segment
             do {
                 curSegmentIndex++;
                 if (curSegmentIndex >= segments.length) {
                     throw new EOFException("read past EOF: " + this);
                 }
-                curSegment = loadSegment(curSegmentIndex);
+
+                curSegment = segments[curSegmentIndex];
+                if (curSegment == CryptoDirectIODirectory.UNMAPPED_SEGMENT) {
+                    curSegment = loadSegment(curSegmentIndex);
+                }
+
                 curPosition = 0L;
             } while (curSegment.byteSize() == 0L);
 
@@ -232,10 +240,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
 
     private void readBytesBoundary(byte[] b, int offset, int len) throws IOException {
         try {
-            if (curSegment == CryptoDirectIODirectory.UNMAPPED_SEGMENT) {
-                curSegment = loadSegment(curSegmentIndex);
-            }
-
             long curAvail = curSegment.byteSize() - curPosition;
             while (len > curAvail) {
                 MemorySegment.copy(curSegment, LAYOUT_BYTE, curPosition, b, offset, (int) curAvail);
@@ -246,7 +250,12 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                     throw new EOFException("read past EOF: " + this);
                 }
 
-                curSegment = loadSegment(curSegmentIndex);
+                curSegment = segments[curSegmentIndex];
+
+                if (curSegment == CryptoDirectIODirectory.UNMAPPED_SEGMENT) {
+                    curSegment = loadSegment(curSegmentIndex);
+                }
+
                 curPosition = 0L;
                 curAvail = curSegment.byteSize();
             }
@@ -397,16 +406,21 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
     @Override
     public void seek(long pos) throws IOException {
         ensureOpen();
-        // we use >> here to preserve negative, so we will catch AIOOBE,
-        // in case pos + offset overflows.
-
         final int si = (int) (pos >> chunkSizePower);
         try {
             if (si != curSegmentIndex) {
+                final MemorySegment seg = segments[si];
                 this.curSegmentIndex = si;
-                this.curSegment = null; // Mark as not loaded
+                this.curSegment = (seg != null) ? seg : CryptoDirectIODirectory.UNMAPPED_SEGMENT;
             }
-            this.curPosition = pos & chunkSizeMask;
+
+            final long targetPosition = pos & chunkSizeMask;
+            if (curSegment == CryptoDirectIODirectory.UNMAPPED_SEGMENT) {
+                curSegment = loadSegment(curSegmentIndex);
+            }
+
+            this.curPosition = Objects.checkIndex(targetPosition, curSegment.byteSize() + 1);
+
         } catch (IndexOutOfBoundsException e) {
             throw handlePositionalIOOBE(e, "seek", pos);
         }
