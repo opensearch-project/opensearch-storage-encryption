@@ -68,7 +68,6 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<RefCountedM
             RefCountedMemorySegment refSegment = new RefCountedMemorySegment(pooled, size, segment -> segmentPool.release(pooled));
 
             RefCountedMemorySegmentCacheValue cacheValue = new RefCountedMemorySegmentCacheValue(refSegment);
-            refSegment.decRef();
             return Optional.of(cacheValue);
 
         } catch (Throwable t) {

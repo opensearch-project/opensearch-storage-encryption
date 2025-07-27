@@ -47,6 +47,8 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     private final KeyIvResolver keyIvResolver;
     private final Path path;
 
+    public static final MemorySegment UNMAPPED_SEGMENT = MemorySegment.ofArray(new byte[1]);
+
     public CryptoDirectIODirectory(
         Path path,
         LockFactory lockFactory,
@@ -91,18 +93,20 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         try {
             // ONLY load partial chunks (typically just the last segment)
             long offset = 0;
+
             for (int i = 0; i < numChunks; i++) {
                 long remaining = size - offset;
                 long segmentSize = Math.min(chunkSize, remaining);
 
-                if (segmentSize < chunkSize || i == 0 || i == numChunks - 1) {
-                    // Partial chunk - load eagerly (small and uncacheable)
+                if (segmentSize < chunkSize) {
                     MemorySegment segment = directIOReadAligned(channel, offset, segmentSize, arena);
                     DirectIOReader
                         .decryptSegment(arena, segment, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
                     segments[i] = segment;
+                } else {
+                    segments[i] = UNMAPPED_SEGMENT;  // Lazy-loaded segment marker
                 }
-                // Full chunks remain null - loaded lazily via cache
+
                 offset += segmentSize;
             }
 
