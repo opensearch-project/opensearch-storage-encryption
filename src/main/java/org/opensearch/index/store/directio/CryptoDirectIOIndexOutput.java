@@ -49,6 +49,7 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
 
     private long filePos;
     private boolean isOpen;
+    private boolean shouldAddToBufferPool;
 
     private final ByteBuffer encryptedBuffer = ByteBuffer
         .allocateDirect(BUFFER_SIZE + DIRECT_IO_ALIGNMENT)
@@ -60,7 +61,8 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
         String name,
         KeyIvResolver keyIvResolver,
         Pool<MemorySegment> memorySegmentPool,
-        BlockCache<RefCountedMemorySegment> blockCache
+        BlockCache<RefCountedMemorySegment> blockCache,
+        boolean shouldAddToBufferPool
     )
         throws IOException {
         super("DirectIOIndexOutput(path=\"" + path + "\")", name);
@@ -74,6 +76,7 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
         this.channel = FileChannel.open(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW, getDirectOpenOption());
         this.digest = new BufferedChecksum(new CRC32());
         this.isOpen = true;
+        this.shouldAddToBufferPool = shouldAddToBufferPool;
     }
 
     @Override
@@ -140,8 +143,10 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
             MemorySegment.ofBuffer(encryptedBuffer).fill((byte) 0);
             encryptedBuffer.clear();
 
-            // Cache plaintext if it was a full aligned block
-            tryCachePlaintextBlock(plainCopy, size, filePos);
+            if (shouldAddToBufferPool) {
+                // Cache plaintext in a buffer pool.
+                tryCachePlaintextBlock(plainCopy, size, filePos);
+            }
 
             filePos += size;
             buffer.clear();

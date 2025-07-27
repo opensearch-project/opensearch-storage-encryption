@@ -150,7 +150,15 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         ensureOpen();
         Path path = directory.resolve(name);
 
-        return new CryptoDirectIOIndexOutput(path, name, this.keyIvResolver, this.memorySegmentPool, this.blockCache);
+        final boolean shouldAddToBufferPool = true;
+        return new CryptoDirectIOIndexOutput(
+            path,
+            name,
+            this.keyIvResolver,
+            this.memorySegmentPool,
+            this.blockCache,
+            shouldAddToBufferPool
+        );
     }
 
     @Override
@@ -163,7 +171,16 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         String name = getTempFileName(prefix, suffix, nextTempFileCounter.getAndIncrement());
         Path path = directory.resolve(name);
 
-        return new CryptoDirectIOIndexOutput(path, name, this.keyIvResolver, this.memorySegmentPool, this.blockCache);
+        final boolean shouldAddToBufferPool = false;
+
+        return new CryptoDirectIOIndexOutput(
+            path,
+            name,
+            this.keyIvResolver,
+            this.memorySegmentPool,
+            this.blockCache,
+            shouldAddToBufferPool
+        );
 
     }
 
