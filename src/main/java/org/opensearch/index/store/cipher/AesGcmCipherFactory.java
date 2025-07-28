@@ -18,6 +18,9 @@ import java.security.NoSuchAlgorithmException;
 import java.security.Provider;
 
 public class AesGcmCipherFactory {
+
+    public static final int GCM_TAG_LENGTH = 16;
+
     /**
      * Returns a new Cipher instance configured for AES/GCM/NoPadding using the given provider.
      *
@@ -45,6 +48,11 @@ public class AesGcmCipherFactory {
      */
     public static void initGCMCipher(Cipher cipher, Key key, byte[] iv, int opmode, long newPosition) {
         try {
+            // Verify we're using AES-256 (32-byte key)
+            if (key.getEncoded().length != 32) {
+                throw new RuntimeException("Expected AES-256 key (32 bytes), got " + key.getEncoded().length + " bytes");
+            }
+            
             byte[] gcmIv = new byte[12];
             System.arraycopy(iv, 0, gcmIv, 0, 12);
             GCMParameterSpec spec = new GCMParameterSpec(128, gcmIv);

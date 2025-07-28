@@ -107,7 +107,6 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
 
         private void processAndWrite(byte[] data, int offset, int length) throws IOException {
             try {
-//                byte[] encrypted = OpenSslNativeCipher.encrypt(key.getEncoded(), iv, slice(data, offset, length), streamOffset);
                 byte[] encrypted = CryptoNativeCipher.encryptGCMJava(streamOffset, cipher, slice(data, offset, length), length);
                 out.write(encrypted);
                 streamOffset += length;
@@ -132,12 +131,14 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
             try {
                 checkClosed();
                 flushBuffer();
+                // Lucene writes footer here.
+                // this will also flush the buffer.
                 // Finalize GCM and handle any remaining encrypted bytes
                 byte[] finalData = CryptoNativeCipher.finalizeGCMJava(cipher);
                 // finalData contains [remaining_encrypted_bytes][16_byte_tag]
                 // Write any remaining encrypted bytes (excluding the tag)
-                if (finalData.length > 16) {
-                    out.write(finalData, 0, finalData.length - 16);
+                if (finalData.length > AesGcmCipherFactory.GCM_TAG_LENGTH) {
+                    out.write(finalData, 0, finalData.length - AesGcmCipherFactory.GCM_TAG_LENGTH);
                 }
                 super.close();
             } catch (IOException e) {
