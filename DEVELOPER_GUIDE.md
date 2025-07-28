@@ -130,7 +130,6 @@ add_jvm_option() {
 }
 
 # Add required JVM options
-add_jvm_option "--enable-native-access=ALL-UNNAMED"
 add_jvm_option "-XX:MaxDirectMemorySize=${JVM_DIRECT_MEM_SIZE}"
 ```
 
