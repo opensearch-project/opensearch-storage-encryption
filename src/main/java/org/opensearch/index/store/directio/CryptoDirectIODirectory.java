@@ -98,7 +98,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                 long remaining = size - offset;
                 long segmentSize = Math.min(chunkSize, remaining);
 
-                if (segmentSize < chunkSize || i == 0) {
+                if (segmentSize < chunkSize || i == 0 || i == numChunks - 1) {
                     MemorySegment segment = directIOReadAligned(channel, offset, segmentSize, arena);
                     DirectIOReader
                         .decryptSegment(arena, segment, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());

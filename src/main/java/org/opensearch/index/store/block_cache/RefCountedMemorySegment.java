@@ -39,8 +39,8 @@ public final class RefCountedMemorySegment {
         }
     }
 
-    public int getRefCount() {
-        return refCount.get();
+    public AtomicInteger getRefCount() {
+        return refCount;
     }
 
     public MemorySegment segment() {

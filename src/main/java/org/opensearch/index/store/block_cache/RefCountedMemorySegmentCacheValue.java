@@ -4,6 +4,8 @@
  */
 package org.opensearch.index.store.block_cache;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 public final class RefCountedMemorySegmentCacheValue implements BlockCacheValue<RefCountedMemorySegment> {
 
     private final RefCountedMemorySegment refSegment;
@@ -23,8 +25,14 @@ public final class RefCountedMemorySegmentCacheValue implements BlockCacheValue<
 
     @Override
     public RefCountedMemorySegment block() {
-        // Reader wants to retain usage so increment the reference for its usage.
-        refSegment.incRef();
+        AtomicInteger refCount = refSegment.getRefCount();
+        int count;
+        do {
+            count = refCount.get();
+            if (count <= 1) {
+                throw new IllegalStateException("Attempted to borrow a released or evicting segment (refCount=" + count + ")");
+            }
+        } while (!refCount.compareAndSet(count, count + 1));
         return refSegment;
     }
 
