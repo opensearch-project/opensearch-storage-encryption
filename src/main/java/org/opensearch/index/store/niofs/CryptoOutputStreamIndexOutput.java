@@ -11,7 +11,11 @@ import java.nio.file.Path;
 
 import org.apache.lucene.store.OutputStreamIndexOutput;
 import org.opensearch.common.SuppressForbidden;
-import org.opensearch.index.store.cipher.OpenSslNativeCipher;
+import org.opensearch.index.store.cipher.AesGcmCipherFactory;
+import org.opensearch.index.store.cipher.CryptoNativeCipher;
+
+import javax.crypto.Cipher;
+import java.security.Key;
 
 /**
  * An IndexOutput implementation that encrypts data before writing using native
@@ -31,29 +35,33 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
      * @param name The name of the output
      * @param path The path to write to
      * @param os The output stream
-     * @param key The AES key (must be 32 bytes for AES-256)
+     * @param key The AES key
      * @param iv The initialization vector (must be 16 bytes)
+     * @param provider The JCE provider to use
      * @throws IOException If there is an I/O error
      * @throws IllegalArgumentException If key or iv lengths are invalid
      */
-    public CryptoOutputStreamIndexOutput(String name, Path path, OutputStream os, byte[] key, byte[] iv) throws IOException {
-        super("FSIndexOutput(path=\"" + path + "\")", name, new EncryptedOutputStream(os, key, iv), CHUNK_SIZE);
+    public CryptoOutputStreamIndexOutput(String name, Path path, OutputStream os, Key key, byte[] iv, java.security.Provider provider) throws IOException {
+        super("FSIndexOutput(path=\"" + path + "\")", name, new EncryptedOutputStream(os, key, iv, provider), CHUNK_SIZE);
     }
 
     private static class EncryptedOutputStream extends FilterOutputStream {
 
-        private final byte[] key;
+        private final Key key;
         private final byte[] iv;
         private final byte[] buffer;
+        private final Cipher cipher;
         private int bufferPosition = 0;
         private long streamOffset = 0;
         private boolean isClosed = false;
 
-        EncryptedOutputStream(OutputStream os, byte[] key, byte[] iv) {
+        EncryptedOutputStream(OutputStream os, Key key, byte[] iv, java.security.Provider provider) {
             super(os);
             this.key = key;
             this.iv = iv;
             this.buffer = new byte[BUFFER_SIZE];
+            this.cipher = AesGcmCipherFactory.getCipher(provider);
+            AesGcmCipherFactory.initGCMCipher(this.cipher, key, iv, Cipher.ENCRYPT_MODE, streamOffset);
         }
 
         @Override
@@ -99,7 +107,8 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
 
         private void processAndWrite(byte[] data, int offset, int length) throws IOException {
             try {
-                byte[] encrypted = OpenSslNativeCipher.encrypt(key, iv, slice(data, offset, length), streamOffset);
+//                byte[] encrypted = OpenSslNativeCipher.encrypt(key.getEncoded(), iv, slice(data, offset, length), streamOffset);
+                byte[] encrypted = CryptoNativeCipher.encryptGCMJava(streamOffset, cipher, slice(data, offset, length), length);
                 out.write(encrypted);
                 streamOffset += length;
             } catch (Throwable t) {
@@ -123,8 +132,13 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
             try {
                 checkClosed();
                 flushBuffer();
-                // Lucene writes footer here.
-                // this will also flush the buffer.
+                // Finalize GCM and handle any remaining encrypted bytes
+                byte[] finalData = CryptoNativeCipher.finalizeGCMJava(cipher);
+                // finalData contains [remaining_encrypted_bytes][16_byte_tag]
+                // Write any remaining encrypted bytes (excluding the tag)
+                if (finalData.length > 16) {
+                    out.write(finalData, 0, finalData.length - 16);
+                }
                 super.close();
             } catch (IOException e) {
                 exception = e;

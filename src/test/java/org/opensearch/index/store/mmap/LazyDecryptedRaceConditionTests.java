@@ -85,24 +85,13 @@ public class LazyDecryptedRaceConditionTests {
      * This matches the complex IV manipulation and block alignment.
      */
     private byte[] encryptData(byte[] plaintext, byte[] key, byte[] iv) throws Exception {
-        javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("AES/CTR/NoPadding", "SunJCE");
+        javax.crypto.Cipher cipher = org.opensearch.index.store.cipher.AesCipherFactory.CIPHER_POOL.get();
         javax.crypto.spec.SecretKeySpec keySpec = new javax.crypto.spec.SecretKeySpec(key, "AES");
 
-        // Use the same IV manipulation as MemorySegmentDecryptor
-        byte[] ivCopy = Arrays.copyOf(iv, iv.length);
-        long fileOffset = 0; // We're encrypting from the beginning
-        int blockOffset = (int) (fileOffset / 16); // AES_BLOCK_SIZE_BYTES = 16
-
-        // Same IV manipulation as in MemorySegmentDecryptor
-        ivCopy[15] = (byte) blockOffset;        // IV_ARRAY_LENGTH - 1
-        ivCopy[14] = (byte) (blockOffset >>> 8); // IV_ARRAY_LENGTH - 2
-        ivCopy[13] = (byte) (blockOffset >>> 16); // IV_ARRAY_LENGTH - 3
-        ivCopy[12] = (byte) (blockOffset >>> 24); // IV_ARRAY_LENGTH - 4
-
+        byte[] ivCopy = org.opensearch.index.store.cipher.AesCipherFactory.computeOffsetIV(iv, 0);
         cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, keySpec, new javax.crypto.spec.IvParameterSpec(ivCopy));
 
-        // For simplicity, encrypt the whole block at once for this test
-        return cipher.doFinal(plaintext);
+        return cipher.update(plaintext);
     }
 
     @After

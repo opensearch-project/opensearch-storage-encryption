@@ -60,7 +60,7 @@ public class AesCipherFactory {
     public static byte[] computeOffsetIV(byte[] baseIV, long offset) {
         byte[] ivCopy = Arrays.copyOf(baseIV, baseIV.length);
         int blockOffset = (int) (offset / AesCipherFactory.AES_BLOCK_SIZE_BYTES);
-
+        blockOffset += 2;
         ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 1] = (byte) blockOffset;
         ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 2] = (byte) (blockOffset >>> 8);
         ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 3] = (byte) (blockOffset >>> 16);
