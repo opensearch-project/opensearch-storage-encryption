@@ -86,7 +86,6 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         int numChunks = (int) ((size + chunkSize - 1) >>> chunkSizePower);
 
         MemorySegment[] segments = new MemorySegment[numChunks];
-        RefCountedMemorySegment[] inAccessMemorySegments = new RefCountedMemorySegment[numChunks];
 
         boolean success = false;
         FileChannel channel = FileChannel.open(file, StandardOpenOption.READ, getDirectOpenOption());
@@ -119,7 +118,6 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                     blockCache,
                     blockLoader,
                     segments,
-                    inAccessMemorySegments,
                     size,
                     chunkSizePower,
                     keyIvResolver.getDataKey().getEncoded(),
