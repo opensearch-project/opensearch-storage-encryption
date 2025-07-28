@@ -58,7 +58,7 @@ public class AesCipherFactory {
     });
 
     /**
-     * Computes an offset-adjusted IV for CTR mode encryption/decryption at a specific file position.
+     * Computes an offset-adjusted IV for CTR mode decryption at a specific file position.
      * This allows seeking into an encrypted stream without re-processing prior blocks.
      *
      * <p>The method calculates which AES block corresponds to the given byte offset and updates
@@ -79,12 +79,39 @@ public class AesCipherFactory {
      * @return a new IV with the counter field adjusted for the specified offset
      * @throws IllegalArgumentException if baseIV is null or has invalid length
      */
-    public static byte[] computeOffsetIV(byte[] baseIV, long offset) {
+    public static byte[] computeOffsetIVForAesGcmEncrypted(byte[] baseIV, long offset) {
         byte[] ivCopy = Arrays.copyOf(baseIV, baseIV.length);
         int blockOffset = (int) (offset / AesCipherFactory.AES_BLOCK_SIZE_BYTES);
 
         // Add 2 for GCM compatibility: counter 0 (reserved) + counter 1 (auth) + data counters start at 2
         blockOffset += 2;
+
+        // Set the 4-byte counter in big-endian format (last 4 bytes of IV)
+        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 1] = (byte) blockOffset;
+        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 2] = (byte) (blockOffset >>> 8);
+        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 3] = (byte) (blockOffset >>> 16);
+        ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 4] = (byte) (blockOffset >>> 24);
+
+        return ivCopy;
+    }
+
+    /**
+     * Computes an offset-adjusted IV for pure CTR mode encryption/decryption at a specific file position.
+     * This method generates IVs for data that was originally encrypted using standard CTR mode without
+     * GCM compatibility adjustments.
+     *
+     * <p>The method calculates which AES block corresponds to the given byte offset and updates
+     * the last 4 bytes of the IV with the exact block counter value (starting from 0). This is used
+     * for decrypting data that was encrypted with standard CTR mode where counters begin at 0.
+     *
+     * @param baseIV the base initialization vector (typically 16 bytes)
+     * @param offset the byte offset in the file/stream to compute the IV for
+     * @return a new IV with the counter field adjusted for the specified offset (starting from counter 0)
+     * @throws IllegalArgumentException if baseIV is null or has invalid length
+     */
+    public static byte[] computeOffsetIVForAesCtrEncrypted(byte[] baseIV, long offset) {
+        byte[] ivCopy = Arrays.copyOf(baseIV, baseIV.length);
+        int blockOffset = (int) (offset / AesCipherFactory.AES_BLOCK_SIZE_BYTES);
 
         // Set the 4-byte counter in big-endian format (last 4 bytes of IV)
         ivCopy[AesCipherFactory.IV_ARRAY_LENGTH - 1] = (byte) blockOffset;

@@ -18,7 +18,7 @@ import java.util.Locale;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
-import static org.opensearch.index.store.cipher.AesCipherFactory.computeOffsetIV;
+import static org.opensearch.index.store.cipher.AesCipherFactory.computeOffsetIVForAesGcmEncrypted;
 
 /**
  * Provides native bindings to OpenSSL EVP_aes_256_ctr using the Java Panama FFI.
@@ -185,7 +185,7 @@ public final class OpenSslNativeCipher {
                     throw new OpenSslException("EVP_aes_256_ctr failed");
                 }
 
-                byte[] adjustedIV = computeOffsetIV(iv, filePosition);
+                byte[] adjustedIV = computeOffsetIVForAesGcmEncrypted(iv, filePosition);
                 MemorySegment keySeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, key);
                 MemorySegment ivSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, adjustedIV);
 
@@ -235,7 +235,7 @@ public final class OpenSslNativeCipher {
             if (cipher.address() == 0)
                 throw new OpenSslException("EVP_aes_256_ctr failed");
 
-            byte[] adjustedIV = computeOffsetIV(iv, fileOffset);
+            byte[] adjustedIV = computeOffsetIVForAesGcmEncrypted(iv, fileOffset);
             MemorySegment keySeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, key);
             MemorySegment ivSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, adjustedIV);
 
@@ -296,7 +296,7 @@ public final class OpenSslNativeCipher {
                 }
 
                 // Compute IV with offset counter
-                byte[] adjustedIV = computeOffsetIV(iv, filePosition);
+                byte[] adjustedIV = computeOffsetIVForAesGcmEncrypted(iv, filePosition);
                 MemorySegment keySeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, key);
                 MemorySegment ivSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, adjustedIV);
 
@@ -353,7 +353,7 @@ public final class OpenSslNativeCipher {
                 if (cipher.address() == 0)
                     throw new OpenSslException("EVP_aes_256_ctr failed");
 
-                byte[] adjustedIV = computeOffsetIV(iv, fileOffset);
+                byte[] adjustedIV = computeOffsetIVForAesGcmEncrypted(iv, fileOffset);
                 long tKeyIvStart = System.nanoTime();
                 MemorySegment keySeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, key);
                 MemorySegment ivSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, adjustedIV);
@@ -425,7 +425,7 @@ public final class OpenSslNativeCipher {
             if (cipher.address() == 0)
                 throw new OpenSslException("EVP_aes_256_ctr failed");
 
-            byte[] adjustedIV = computeOffsetIV(iv, fileOffset);
+            byte[] adjustedIV = computeOffsetIVForAesGcmEncrypted(iv, fileOffset);
             MemorySegment keySeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, key);
             MemorySegment ivSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, adjustedIV);
 

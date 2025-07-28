@@ -123,7 +123,7 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         try {
             Cipher cipher = AesCipherFactory.CIPHER_POOL.get();
 
-            byte[] ivCopy = AesCipherFactory.computeOffsetIV(keyResolver.getIvBytes(), position);
+            byte[] ivCopy = AesCipherFactory.computeOffsetIVForAesGcmEncrypted(keyResolver.getIvBytes(), position);
 
             cipher.init(Cipher.DECRYPT_MODE, this.keySpec, new IvParameterSpec(ivCopy));
 

@@ -34,7 +34,7 @@ public class MemorySegmentDecryptor {
         // Get thread-local cipher
         Cipher cipher = CIPHER_POOL.get();
         SecretKeySpec keySpec = new SecretKeySpec(key, AesCipherFactory.ALGORITHM);
-        byte[] ivCopy = AesCipherFactory.computeOffsetIV(iv, fileOffset);
+        byte[] ivCopy = AesCipherFactory.computeOffsetIVForAesGcmEncrypted(iv, fileOffset);
 
         cipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(ivCopy));
 
@@ -75,7 +75,7 @@ public class MemorySegmentDecryptor {
     public static void decryptInPlace(long addr, long length, byte[] key, byte[] iv, long fileOffset) throws Exception {
         Cipher cipher = CIPHER_POOL.get();
         SecretKeySpec keySpec = new SecretKeySpec(key, AesCipherFactory.ALGORITHM);
-        byte[] ivCopy = AesCipherFactory.computeOffsetIV(iv, fileOffset);
+        byte[] ivCopy = AesCipherFactory.computeOffsetIVForAesGcmEncrypted(iv, fileOffset);
 
         cipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(ivCopy));
 
@@ -116,7 +116,7 @@ public class MemorySegmentDecryptor {
     public static void decryptSegment(MemorySegment segment, long fileOffset, byte[] key, byte[] iv, int segmentSize) throws Exception {
         Cipher cipher = CIPHER_POOL.get();
         SecretKeySpec keySpec = new SecretKeySpec(key, AesCipherFactory.ALGORITHM);
-        byte[] ivCopy = AesCipherFactory.computeOffsetIV(iv, fileOffset);
+        byte[] ivCopy = AesCipherFactory.computeOffsetIVForAesGcmEncrypted(iv, fileOffset);
 
         cipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(ivCopy));
 

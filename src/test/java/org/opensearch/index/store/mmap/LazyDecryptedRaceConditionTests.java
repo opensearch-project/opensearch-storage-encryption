@@ -88,7 +88,7 @@ public class LazyDecryptedRaceConditionTests {
         javax.crypto.Cipher cipher = org.opensearch.index.store.cipher.AesCipherFactory.CIPHER_POOL.get();
         javax.crypto.spec.SecretKeySpec keySpec = new javax.crypto.spec.SecretKeySpec(key, "AES");
 
-        byte[] ivCopy = org.opensearch.index.store.cipher.AesCipherFactory.computeOffsetIV(iv, 0);
+        byte[] ivCopy = org.opensearch.index.store.cipher.AesCipherFactory.computeOffsetIVForAesGcmEncrypted(iv, 0);
         cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, keySpec, new javax.crypto.spec.IvParameterSpec(ivCopy));
 
         return cipher.update(plaintext);
