@@ -18,14 +18,12 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
-import org.apache.lucene.util.ArrayUtil;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
@@ -48,7 +46,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
     final FileChannel channel;
     final Arena arena;
     final MemorySegment[] segments;
-    final AtomicReference<RefCountedMemorySegment>[] inAccessMemorySegments;
+    final RefCountedMemorySegment[] refSegments;
     final Path path;
     final BlockCache<RefCountedMemorySegment> blockCache;
     final BlockLoader<RefCountedMemorySegment> blockLoader;
@@ -60,6 +58,8 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
     MemorySegment curSegment; // redundant for speed: segments[curSegmentIndex], also marker if closed!
     long curPosition; // relative to curSegment, not globally
 
+    volatile boolean isOpen = true;
+
     public static CryptoDirectIOMemoryIndexInput newInstance(
         String resourceDescription,
         FileChannel channel,
@@ -68,20 +68,12 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         BlockCache<RefCountedMemorySegment> blockCache,
         BlockLoader<RefCountedMemorySegment> blockLoader,
         MemorySegment[] segments,
+        RefCountedMemorySegment[] refSegments,
         long length,
         int chunkSizePower,
         byte[] key,
         byte[] iv
     ) {
-
-        @SuppressWarnings("unchecked")
-        AtomicReference<RefCountedMemorySegment>[] inAccessMemorySegments =
-            (AtomicReference<RefCountedMemorySegment>[]) new AtomicReference[segments.length];
-
-        for (int i = 0; i < segments.length; i++) {
-            inAccessMemorySegments[i] = new AtomicReference<>();
-        }
-
         return new MultiSegmentImpl(
             resourceDescription,
             channel,
@@ -90,7 +82,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             blockCache,
             blockLoader,
             segments,
-            inAccessMemorySegments,
+            refSegments,
             0,
             length,
             chunkSizePower,
@@ -107,7 +99,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         BlockCache<RefCountedMemorySegment> blockCache,
         BlockLoader<RefCountedMemorySegment> blockLoader,
         MemorySegment[] segments,
-        AtomicReference<RefCountedMemorySegment>[] inAccessMemorySegments,
+        RefCountedMemorySegment[] refSegments,
         long length,
         int chunkSizePower,
         byte[] key,
@@ -121,17 +113,17 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         this.blockLoader = blockLoader;
         this.path = path;
         this.segments = segments;
-        this.inAccessMemorySegments = inAccessMemorySegments;
+        this.refSegments = refSegments;
         this.length = length;
         this.chunkSizePower = chunkSizePower;
         this.chunkSizeMask = (1L << chunkSizePower) - 1L;
-        this.curSegment = segments[0];
+        this.curSegment = segments[0]; // always loaded.
         this.key = key;
         this.iv = iv;
     }
 
-    void ensureOpen() {
-        if (curSegment == null) {
+    void ensureOpen() throws AlreadyClosedException {
+        if (!isOpen) {
             throw alreadyClosed(null);
         }
     }
@@ -150,33 +142,29 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         return new AlreadyClosedException("Already closed: " + this);
     }
 
-    private MemorySegment loadSegment(int segmentIndex) throws IOException {
+    private synchronized MemorySegment loadSegment(int segmentIndex) throws IOException {
         ensureOpen();
 
         MemorySegment segment = segments[segmentIndex];
-        if (segment != null && segment != CryptoDirectIODirectory.UNMAPPED_SEGMENT) {
+
+        if (segment != null) {
             return segment; // Already loaded
         }
 
         final int chunkSize = 1 << chunkSizePower;
         final long offset = (long) segmentIndex * chunkSize;
         final BlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, offset);
-        final AtomicReference<RefCountedMemorySegment> slot = inAccessMemorySegments[segmentIndex];
 
         // Attempt to atomically load from block cache
         try {
             Optional<BlockCacheValue<RefCountedMemorySegment>> valueOpt = blockCache.getOrLoad(cacheKey, chunkSize, blockLoader);
-
             if (valueOpt.isPresent()) {
                 try {
                     RefCountedMemorySegment refSeg = valueOpt.get().block(); // acquires ref
-                    if (slot.compareAndSet(null, refSeg)) {
-                        segments[segmentIndex] = refSeg.segment(); // only winner sets it
-                    } else {
-                        refSeg.decRef(); // loser releases it
-                    }
+                    segments[segmentIndex] = refSeg.segment();
+                    refSegments[segmentIndex] = refSeg;
 
-                    return segments[segmentIndex]; // consistent either way
+                    return segments[segmentIndex];
                 } catch (IllegalStateException e) {
                     LOGGER.warn("Cache segment at {} was evicted during load; falling back to disk", cacheKey);
                 }
@@ -191,7 +179,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             DirectIOReader.decryptSegment(arena, loaded, offset, key, iv);
             segments[segmentIndex] = loaded;
             return loaded;
-
         } catch (ClosedChannelException e) {
             throw new AlreadyClosedException("FileChannel already closed for: " + path, e);
         } catch (Throwable t) {
@@ -214,11 +201,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                     throw new EOFException("read past EOF: " + this);
                 }
 
-                curSegment = segments[curSegmentIndex];
-                if (curSegment == CryptoDirectIODirectory.UNMAPPED_SEGMENT) {
-                    curSegment = loadSegment(curSegmentIndex);
-                }
-
+                curSegment = loadSegment(curSegmentIndex);
                 curPosition = 0L;
             } while (curSegment.byteSize() == 0L);
 
@@ -226,7 +209,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             curPosition++;
             return v;
         } catch (NullPointerException | IllegalStateException e) {
-            LOGGER.info("====Hit an error====={}", curSegment, curSegmentIndex, e);
             throw alreadyClosed(e);
         }
     }
@@ -390,17 +372,14 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         final int si = (int) (pos >> chunkSizePower);
         try {
             if (si != curSegmentIndex) {
-                final MemorySegment seg = segments[si];
+                final MemorySegment seg = loadSegment(si);
                 this.curSegmentIndex = si;
-                this.curSegment = (seg != null) ? seg : CryptoDirectIODirectory.UNMAPPED_SEGMENT;
+                this.curSegment = seg;
             }
 
             final long targetPosition = pos & chunkSizeMask;
-
             curSegment = loadSegment(curSegmentIndex);
-
             this.curPosition = Objects.checkIndex(targetPosition, curSegment.byteSize() + 1);
-
         } catch (IndexOutOfBoundsException e) {
             throw handlePositionalIOOBE(e, "seek", pos);
         }
@@ -409,8 +388,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
     // used only by random access methods to handle reads across boundaries
     private void setPos(long pos, int si) throws IOException {
         try {
-            MemorySegment segment = segments[si];
-            segment = loadSegment(si);
+            MemorySegment segment = loadSegment(si);
             this.curPosition = pos & chunkSizeMask;
             this.curSegmentIndex = si;
             this.curSegment = segment;
@@ -425,9 +403,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
     public byte readByte(long pos) throws IOException {
         try {
             final int si = (int) (pos >> chunkSizePower);
-            MemorySegment segment = segments[si];
-            segment = loadSegment(si);
-
+            MemorySegment segment = loadSegment(si);
             return segment.get(LAYOUT_BYTE, pos & chunkSizeMask);
         } catch (IndexOutOfBoundsException ioobe) {
             throw handlePositionalIOOBE(ioobe, "read", pos);
@@ -440,7 +416,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
     public short readShort(long pos) throws IOException {
         final int si = (int) (pos >> chunkSizePower);
         try {
-            MemorySegment segment = (segments[si] != null) ? segments[si] : loadSegment(si);
+            MemorySegment segment = loadSegment(si);
             return segment.get(LAYOUT_LE_SHORT, pos & chunkSizeMask);
         } catch (@SuppressWarnings("unused") IndexOutOfBoundsException ioobe) {
             // either it's a boundary, or read past EOF, fall back:
@@ -455,8 +431,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
     public int readInt(long pos) throws IOException {
         final int si = (int) (pos >> chunkSizePower);
         try {
-            MemorySegment segment = segments[si];
-            segment = loadSegment(si);
+            MemorySegment segment = loadSegment(si);
             return segment.get(LAYOUT_LE_INT, pos & chunkSizeMask);
         } catch (@SuppressWarnings("unused") IndexOutOfBoundsException ioobe) {
             // either it's a boundary, or read past EOF, fall back:
@@ -471,8 +446,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
     public long readLong(long pos) throws IOException {
         final int si = (int) (pos >> chunkSizePower);
         try {
-            MemorySegment segment = segments[si];
-            segment = loadSegment(si);
+            MemorySegment segment = loadSegment(si);
             return segment.get(LAYOUT_LE_LONG, pos & chunkSizeMask);
         } catch (@SuppressWarnings("unused") IndexOutOfBoundsException ioobe) {
             // either it's a boundary, or read past EOF, fall back:
@@ -531,38 +505,39 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         final int startIndex = (int) (offset >>> chunkSizePower);
         final int endIndex = (int) (sliceEnd >>> chunkSizePower);
 
-        // we always allocate one more slice, the last one may be a 0 byte one after truncating with
-        // asSlice():
-        final MemorySegment slices[] = ArrayUtil.copyOfSubArray(segments, startIndex, endIndex + 1);
+        final int sliceCount = endIndex - startIndex + 1;
+        final MemorySegment[] slices = new MemorySegment[sliceCount];
 
-        for (int i = 0; i < slices.length; i++) {
+        for (int i = 0; i < sliceCount; i++) {
             int originalIndex = startIndex + i;
             try {
-                slices[i] = loadSegment(originalIndex);
+                MemorySegment loaded = loadSegment(originalIndex);
+
+                // If it's the last segment and needs truncation
+                if (i == sliceCount - 1) {
+                    loaded = loaded.asSlice(0, sliceEnd & chunkSizeMask);
+                }
+                slices[i] = loaded;
             } catch (IOException e) {
                 throw new RuntimeException(
-                    String.format("Failed to load segment %d via DirectIO (range: %d-%d)", i, startIndex, endIndex),
+                    String.format("Failed to load segment %d via DirectIO (range: %d-%d)", originalIndex, startIndex, endIndex),
                     e
                 );
             }
         }
 
-        slices[slices.length - 1] = slices[slices.length - 1].asSlice(0L, sliceEnd & chunkSizeMask);
-
-        offset = offset & chunkSizeMask;
-
+        final long sliceOffset = offset & chunkSizeMask;
         final String newResourceDescription = getFullSliceDescription(sliceDescription);
-        long sliceOffset = offset & chunkSizeMask;
 
         return new MultiSegmentImpl(
             newResourceDescription,
-            null,  // still needed for lazy load
+            null,  // channel
             path,
-            null,
+            null,  // arena
             blockCache,
             blockLoader,
             slices,
-            null,
+            null, // reference segment tracking null for slices.
             sliceOffset,
             length,
             chunkSizePower,
@@ -573,10 +548,11 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
 
     @Override
     public final void close() throws IOException {
-        if (curSegment == null) {
-            return;
+        if (!isOpen) {
+            return; // Already closed
         }
 
+        // Close file channel if this is the master input
         if (channel != null) {
             try {
                 channel.close();
@@ -585,24 +561,9 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             }
         }
 
-        if (inAccessMemorySegments != null) {
-            for (int i = 0; i < inAccessMemorySegments.length; i++) {
-                RefCountedMemorySegment refSeg = inAccessMemorySegments[i].get();
-                if (refSeg != null) {
-                    try {
-                        refSeg.decRef();
-                    } catch (Exception e) {
-                        LOGGER.warn("Failed to decRef segment[{}]: {}", i, e.toString());
-                    }
-                }
-            }
-        }
-
-        // the master IndexInput has an Arena and is able
-        // to release all resources (unmap segments) - a
-        // side effect is that other threads still using clones
-        // will throw IllegalStateException
+        // Only the main input owns the Arena and references
         if (arena != null) {
+            // Now try to close the Arena
             while (arena.scope().isAlive()) {
                 try {
                     arena.close();
@@ -613,9 +574,23 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             }
         }
 
-        // make sure all accesses to this IndexInput instance throw NPE:
+        if (refSegments != null) {
+            for (RefCountedMemorySegment ref : refSegments) {
+                if (ref != null)
+                    try {
+                        ref.decRef();
+                    } catch (Exception e) {
+                        LOGGER.warn("Failed to decRef {}", e.toString());
+                        throw e;
+                    }
+            }
+        }
+
+        // Null everything out for safety
         curSegment = null;
         Arrays.fill(segments, null);
+
+        isOpen = false;
     }
 
     /** This class adds offset support to MemorySegmentIndexInput, which is needed for slices. */
@@ -630,7 +605,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             BlockCache<RefCountedMemorySegment> blockCache,
             BlockLoader<RefCountedMemorySegment> blockLoader,
             MemorySegment[] segments,
-            AtomicReference<RefCountedMemorySegment>[] inAccessMemorySegments,
+            RefCountedMemorySegment[] refSegments,
             long offset,
             long length,
             int chunkSizePower,
@@ -645,7 +620,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 blockCache,
                 blockLoader,
                 segments,
-                inAccessMemorySegments,
+                refSegments,
                 length,
                 chunkSizePower,
                 key,
