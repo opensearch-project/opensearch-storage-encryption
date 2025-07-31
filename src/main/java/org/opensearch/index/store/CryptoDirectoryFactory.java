@@ -251,9 +251,11 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         * -----
         * - Tune `maximumSize` and eviction policy based on benchmark results and memory pressure.
         */
+
+        // todo: int maxEntries = PER_DIR_CACHE_SIZE / SEGMENT_SIZE_BYTES;
         Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> cache = Caffeine
             .newBuilder()
-            .maximumSize(1000) // todo figure out a good config.
+            .maximumSize(8192) // todo figure out a good config.
             .recordStats()
             .expireAfterAccess(10, TimeUnit.MINUTES)
             .executor(Runnable::run)
@@ -264,7 +266,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             })
             .build();
 
-        BlockCache<RefCountedMemorySegment> blockCache = new CaffeineBlockCache<>(cache, loader, 1000);
+        BlockCache<RefCountedMemorySegment> blockCache = new CaffeineBlockCache<>(cache, loader, 8192);
 
         return new CryptoDirectIODirectory(location, lockFactory, provider, keyIvResolver, sharedSegmentPool, blockCache, loader);
 

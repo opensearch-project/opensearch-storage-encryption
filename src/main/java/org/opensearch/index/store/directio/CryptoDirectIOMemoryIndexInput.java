@@ -4,7 +4,8 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIOReader.directIOReadAligned;
+import static org.opensearch.index.store.directio.DirectIOReader.bufferedRead;
+import static org.opensearch.index.store.directio.DirectIOReader.decryptSegment;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -155,14 +156,14 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         final long offset = (long) segmentIndex * chunkSize;
         final BlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, offset);
 
-        // Attempt to atomically load from block cache
+        // Attempt to load from block cache
         try {
-            Optional<BlockCacheValue<RefCountedMemorySegment>> valueOpt = blockCache.getOrLoad(cacheKey, chunkSize, blockLoader);
+            Optional<BlockCacheValue<RefCountedMemorySegment>> valueOpt = blockCache.get(cacheKey);
             if (valueOpt.isPresent()) {
                 try {
                     RefCountedMemorySegment refSeg = valueOpt.get().block(); // acquires ref
                     segments[segmentIndex] = refSeg.segment();
-                    refSegments[segmentIndex] = refSeg;
+                    refSegments[segmentIndex] = refSeg; // hold one reference.
 
                     return segments[segmentIndex];
                 } catch (IllegalStateException e) {
@@ -173,11 +174,12 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             LOGGER.debug("Failed to access cache for segment at offset {}: {}", offset, e);
         }
 
-        // Fallback: read and decrypt directly from disk
+        // Fallback: read and decrypt directly via buffer io channel.
         try {
-            MemorySegment loaded = directIOReadAligned(channel, offset, chunkSize, arena);
-            DirectIOReader.decryptSegment(arena, loaded, offset, key, iv);
+            MemorySegment loaded = bufferedRead(channel, offset, chunkSize, arena);
+            decryptSegment(arena, loaded, offset, key, iv);
             segments[segmentIndex] = loaded;
+
             return loaded;
         } catch (ClosedChannelException e) {
             throw new AlreadyClosedException("FileChannel already closed for: " + path, e);

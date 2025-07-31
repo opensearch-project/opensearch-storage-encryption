@@ -237,7 +237,7 @@ public class MemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
      */
     @Override
     public boolean isUnderPressure() {
-        return allocatedSegments > (maxSegments * 0.8) && cachedFreeListSize < (maxSegments * 0.1);
+        return allocatedSegments > (maxSegments * 0.9) && cachedFreeListSize < (maxSegments * 0.1);
     }
 
     /**

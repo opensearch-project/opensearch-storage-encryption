@@ -148,6 +148,16 @@ public class DirectIOReader {
         return finalSegment;
     }
 
+    public static MemorySegment bufferedRead(FileChannel channel, long offset, long size, Arena arena) throws IOException {
+        ByteBuffer buf = ByteBuffer.allocate((int) size);
+        int read = channel.read(buf, offset);
+        if (read != size) {
+            throw new IOException("Failed to fully read chunk via buffered I/O. expected=" + size + " read=" + read);
+        }
+        buf.flip();
+        return MemorySegment.ofBuffer(buf).reinterpret(size, arena, null);
+    }
+
     public static void decryptSegment(Arena arena, MemorySegment segment, long segmentOffsetInFile, byte[] key, byte[] iv)
         throws Throwable {
         final long size = segment.byteSize();

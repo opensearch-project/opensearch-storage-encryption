@@ -12,7 +12,7 @@ public interface BlockCache<T> {
     /**
      * Returns the block if cached, or null if absent.
      */
-    BlockCacheValue<T> get(BlockCacheKey key);
+    Optional<BlockCacheValue<T>> get(BlockCacheKey key);
 
     /**
      * Returns the block, loading it via `BlockLoader` if absent.

@@ -24,8 +24,8 @@ public final class CaffeineBlockCache<T> implements BlockCache<T> {
     }
 
     @Override
-    public BlockCacheValue<T> get(BlockCacheKey key) {
-        return cache.get(key, k -> null); // will count as a miss if key is absent
+    public Optional<BlockCacheValue<T>> get(BlockCacheKey key) {
+        return Optional.ofNullable(cache.asMap().get(key));
     }
 
     /**

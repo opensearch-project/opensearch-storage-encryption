@@ -4,9 +4,10 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIOReader.directIOReadAligned;
+import static org.opensearch.index.store.directio.DirectIOReader.bufferedRead;
+import static org.opensearch.index.store.directio.DirectIOReader.decryptSegment;
 import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CHUNK_SIZE_POWER;
+import static org.opensearch.index.store.directio.DirectIoConfigs.SEGMENT_SIZE_POWER;
 
 import java.io.IOException;
 import java.lang.foreign.Arena;
@@ -79,15 +80,15 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         boolean confined = context == IOContext.READONCE;
         Arena arena = confined ? Arena.ofConfined() : Arena.ofShared();
 
-        int chunkSizePower = CHUNK_SIZE_POWER;
-        long chunkSize = 1L << chunkSizePower;
-        int numChunks = (int) ((size + chunkSize - 1) >>> chunkSizePower);
+        long chunkSize = 1L << SEGMENT_SIZE_POWER;
+        int numChunks = (int) ((size + chunkSize - 1) >>> SEGMENT_SIZE_POWER);
 
         MemorySegment[] segments = new MemorySegment[numChunks];
         RefCountedMemorySegment[] refSegments = new RefCountedMemorySegment[numChunks];
 
         boolean success = false;
-        FileChannel channel = FileChannel.open(file, StandardOpenOption.READ, getDirectOpenOption());
+        FileChannel bufferIOChannel = FileChannel.open(file, StandardOpenOption.READ, getDirectOpenOption());
+
         try {
             long offset = 0;
 
@@ -96,18 +97,18 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                 long segmentSize = Math.min(chunkSize, remaining);
 
                 if (segmentSize < chunkSize || i == 0 || i == numChunks - 1) {
-                    MemorySegment segment = directIOReadAligned(channel, offset, segmentSize, arena);
-                    DirectIOReader
-                        .decryptSegment(arena, segment, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
+                    MemorySegment segment = bufferedRead(bufferIOChannel, offset, segmentSize, arena);
+                    decryptSegment(arena, segment, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
                     segments[i] = segment;
                 }
+
                 offset += segmentSize;
             }
 
             IndexInput in = CryptoDirectIOMemoryIndexInput
                 .newInstance(
                     "CryptoMemorySegmentIndexInput(path=\"" + file + "\")",
-                    channel,
+                    bufferIOChannel,
                     file,
                     arena,
                     blockCache,
@@ -115,7 +116,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                     segments,
                     refSegments,
                     size,
-                    chunkSizePower,
+                    SEGMENT_SIZE_POWER,
                     keyIvResolver.getDataKey().getEncoded(),
                     keyIvResolver.getIvBytes()
                 );
@@ -129,7 +130,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         } finally {
             if (!success) {
                 try {
-                    channel.close();
+                    bufferIOChannel.close();
                 } catch (IOException e) {
                     LOGGER.warn("Failed to close channel on error", e);
                 }

@@ -60,7 +60,7 @@ public final class RefCountedMemorySegment {
      * Increments the reference count.
      * Should be called whenever a new consumer starts using the segment.
      *
-     * @throws IllegalStateException if the segment has already been released (refCount <= 0)
+     * @throws IllegalStateException if the segment has already been released
      */
     public void incRef() {
         int count = refCount.incrementAndGet();
