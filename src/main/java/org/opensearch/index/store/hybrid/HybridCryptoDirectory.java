@@ -16,8 +16,10 @@ import org.apache.lucene.store.FileSwitchDirectory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IOContext.Context;
 import org.apache.lucene.store.IndexInput;
+import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.common.util.io.IOUtils;
+import org.opensearch.index.store.directio.CryptoDirectIODirectory;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.mmap.EagerDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.mmap.LazyDecryptedCryptoMMapDirectory;
@@ -28,6 +30,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
 
     private final LazyDecryptedCryptoMMapDirectory lazyDecryptedCryptoMMapDirectoryDelegate;
     private final EagerDecryptedCryptoMMapDirectory eagerDecryptedCryptoMMapDirectory;
+    private final CryptoDirectIODirectory cryptoDirectIODirectory;
 
     // File size thresholds for special files only
     private static final long MEDIUM_FILE_THRESHOLD = 10 * 1024 * 1024; // 10MB
@@ -38,7 +41,8 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
     public HybridCryptoDirectory(
         LockFactory lockFactory,
         LazyDecryptedCryptoMMapDirectory delegate,
-        EagerDecryptedCryptoMMapDirectory eagerDecryptedCryptoMMapDirectory1,
+        EagerDecryptedCryptoMMapDirectory eagerDecryptedCryptoMMapDirectory,
+        CryptoDirectIODirectory cryptoDirectIODirectory,
         Provider provider,
         KeyIvResolver keyIvResolver,
         Set<String> nioExtensions
@@ -46,8 +50,9 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         throws IOException {
         super(lockFactory, delegate.getDirectory(), provider, keyIvResolver);
         this.lazyDecryptedCryptoMMapDirectoryDelegate = delegate;
-        this.eagerDecryptedCryptoMMapDirectory = eagerDecryptedCryptoMMapDirectory1;
-        this.specialExtensions = Set.of("kdd", "kdi", "kdm", "tip", "tim", "tmd", "cfs", "doc", "dvd", "nvd", "psm", "fdm");
+        this.eagerDecryptedCryptoMMapDirectory = eagerDecryptedCryptoMMapDirectory;
+        this.cryptoDirectIODirectory = cryptoDirectIODirectory;
+        this.specialExtensions = Set.of("kdd", "kdi", "kdm", "tip", "tim", "tmd", "doc", "dvd", "nvd", "psm", "fdm");
     }
 
     @Override
@@ -62,8 +67,45 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         ensureOpen();
         ensureCanRead(name);
 
+        // MERGE context: Always use NIOFS for sequential, one-time access
+        if (context.context() == Context.MERGE) {
+            LOGGER.info("Routing {} to NIOFS for merge operation", name);
+            return super.openInput(name, context);
+        }
+
+        // FLUSH context: New segment creation - consider future access patterns
+        if (context.context() == Context.FLUSH) {
+            LOGGER.info("Routing for flush operation", name);
+
+            Path file = getDirectory().resolve(name);
+            long fileSize = Files.size(file);
+
+            // For files that will be accessed randomly after flush, prepare them for MMap
+            // Exception: large files should avoid memory pressure during flush
+            if (("kdd".equals(extension) || "cfs".equals(extension)) && fileSize > MEDIUM_FILE_THRESHOLD) {
+                LOGGER.debug("Routing large {} to NIOFS during flush to avoid memory pressure", name);
+                return super.openInput(name, context);
+            }
+        }
+
         // Special routing for key file types
-        return routeSpecialFile(name, extension, context);
+        // return routeSpecialFile(name, extension, context);
+
+        return cryptoDirectIODirectory.openInput(name, context);
+    }
+
+    @Override
+    public IndexOutput createOutput(String name, IOContext context) throws IOException {
+        String extension = FileSwitchDirectory.getExtension(name);
+
+        if (!specialExtensions.contains(extension)) {
+            return super.createOutput(name, context);
+        }
+
+        ensureOpen();
+        ensureCanRead(name);
+
+        return cryptoDirectIODirectory.createOutput(name, context);
     }
 
     private IndexInput routeSpecialFile(String name, String extension, IOContext context) throws IOException {
