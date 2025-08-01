@@ -4,12 +4,11 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIOReader.bufferedRead;
-import static org.opensearch.index.store.directio.DirectIOReader.decryptSegment;
 import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
 import static org.opensearch.index.store.directio.DirectIoConfigs.SEGMENT_SIZE_POWER;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.nio.channels.FileChannel;
@@ -87,7 +86,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         RefCountedMemorySegment[] refSegments = new RefCountedMemorySegment[numChunks];
 
         boolean success = false;
-        FileChannel bufferIOChannel = FileChannel.open(file, StandardOpenOption.READ, getDirectOpenOption());
+        FileChannel fc = FileChannel.open(file, StandardOpenOption.READ, getDirectOpenOption());
 
         try {
             long offset = 0;
@@ -97,8 +96,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                 long segmentSize = Math.min(chunkSize, remaining);
 
                 if (segmentSize < chunkSize || i == 0 || i == numChunks - 1) {
-                    MemorySegment segment = bufferedRead(bufferIOChannel, offset, segmentSize, arena);
-                    decryptSegment(arena, segment, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
+                    MemorySegment segment = DirectIOReader.directIOReadAligned(fc, offset, segmentSize, arena);
                     segments[i] = segment;
                 }
 
@@ -108,7 +106,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
             IndexInput in = CryptoDirectIOMemoryIndexInput
                 .newInstance(
                     "CryptoMemorySegmentIndexInput(path=\"" + file + "\")",
-                    bufferIOChannel,
+                    fc,
                     file,
                     arena,
                     blockCache,
@@ -130,7 +128,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         } finally {
             if (!success) {
                 try {
-                    bufferIOChannel.close();
+                    fc.close();
                 } catch (IOException e) {
                     LOGGER.warn("Failed to close channel on error", e);
                 }
@@ -148,16 +146,21 @@ public final class CryptoDirectIODirectory extends FSDirectory {
 
         ensureOpen();
         Path path = directory.resolve(name);
+        OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
         final boolean shouldAddToBufferPool = true;
-        return new CryptoDirectIOIndexOutput(
-            path,
+
+        return new BufferIOWithCaching(
             name,
-            this.keyIvResolver,
+            path,
+            fos,
+            this.keyIvResolver.getDataKey().getEncoded(),
+            keyIvResolver.getIvBytes(),
             this.memorySegmentPool,
             this.blockCache,
             shouldAddToBufferPool
         );
+
     }
 
     @Override
@@ -169,18 +172,19 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         ensureOpen();
         String name = getTempFileName(prefix, suffix, nextTempFileCounter.getAndIncrement());
         Path path = directory.resolve(name);
-
+        OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
         final boolean shouldAddToBufferPool = false;
 
-        return new CryptoDirectIOIndexOutput(
-            path,
+        return new BufferIOWithCaching(
             name,
-            this.keyIvResolver,
+            path,
+            fos,
+            this.keyIvResolver.getDataKey().getEncoded(),
+            keyIvResolver.getIvBytes(),
             this.memorySegmentPool,
             this.blockCache,
             shouldAddToBufferPool
         );
-
     }
 
     @Override

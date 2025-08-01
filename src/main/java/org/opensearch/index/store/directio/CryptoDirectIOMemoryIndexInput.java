@@ -4,17 +4,14 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIOReader.bufferedRead;
-import static org.opensearch.index.store.directio.DirectIOReader.decryptSegment;
-
 import java.io.EOFException;
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
-import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
+import java.nio.channels.FileChannel.MapMode;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Objects;
@@ -33,7 +30,7 @@ import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 
 @SuppressWarnings("preview")
 public class CryptoDirectIOMemoryIndexInput extends IndexInput implements RandomAccessInput {
-    private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOIndexOutput.class);
+    private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOMemoryIndexInput.class);
 
     static final ValueLayout.OfByte LAYOUT_BYTE = ValueLayout.JAVA_BYTE;
     static final ValueLayout.OfShort LAYOUT_LE_SHORT = ValueLayout.JAVA_SHORT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
@@ -143,15 +140,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         return new AlreadyClosedException("Already closed: " + this);
     }
 
-    private synchronized MemorySegment loadSegment(int segmentIndex) throws IOException {
-        ensureOpen();
-
-        MemorySegment segment = segments[segmentIndex];
-
-        if (segment != null) {
-            return segment; // Already loaded
-        }
-
+    private MemorySegment loadSegmentV2(int segmentIndex) throws IOException {
         final int chunkSize = 1 << chunkSizePower;
         final long offset = (long) segmentIndex * chunkSize;
         final BlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, offset);
@@ -174,18 +163,31 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             LOGGER.debug("Failed to access cache for segment at offset {}: {}", offset, e);
         }
 
-        // Fallback: read and decrypt directly via buffer io channel.
-        try {
-            MemorySegment loaded = bufferedRead(channel, offset, chunkSize, arena);
-            decryptSegment(arena, loaded, offset, key, iv);
-            segments[segmentIndex] = loaded;
+        return segments[segmentIndex];
+    }
 
-            return loaded;
-        } catch (ClosedChannelException e) {
-            throw new AlreadyClosedException("FileChannel already closed for: " + path, e);
-        } catch (Throwable t) {
-            throw new IOException("Failed to load and decrypt segment at offset: " + offset, t);
+    private MemorySegment loadSegment(int segmentIndex) throws IOException {
+        ensureOpen();
+
+        MemorySegment segment = segments[segmentIndex];
+
+        if (segment != null) {
+            return segment; // Already loaded
         }
+
+        segment = loadSegmentV2(segmentIndex);
+
+        // mmap it..
+        // to trigger a read-ahead.
+        if (segment == null) {
+            final int chunkSize = 1 << chunkSizePower;
+            final long offset = (long) segmentIndex * chunkSize;
+            segment = channel.map(MapMode.READ_ONLY, offset, chunkSize, arena);
+
+            segments[segmentIndex] = segment;
+        }
+
+        return segment;
     }
 
     @Override
@@ -202,7 +204,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 if (curSegmentIndex >= segments.length) {
                     throw new EOFException("read past EOF: " + this);
                 }
-
                 curSegment = loadSegment(curSegmentIndex);
                 curPosition = 0L;
             } while (curSegment.byteSize() == 0L);

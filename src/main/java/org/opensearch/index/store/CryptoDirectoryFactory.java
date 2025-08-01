@@ -255,9 +255,9 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         // todo: int maxEntries = PER_DIR_CACHE_SIZE / SEGMENT_SIZE_BYTES;
         Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> cache = Caffeine
             .newBuilder()
-            .maximumSize(8192) // todo figure out a good config.
+            .maximumSize(65536) // todo figure out a good config.
             .recordStats()
-            .expireAfterAccess(10, TimeUnit.MINUTES)
+            .expireAfterAccess(15, TimeUnit.MINUTES)
             .executor(Runnable::run)
             .removalListener((BlockCacheKey key, BlockCacheValue<RefCountedMemorySegment> value, RemovalCause cause) -> {
                 if (value != null) {
@@ -266,7 +266,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             })
             .build();
 
-        BlockCache<RefCountedMemorySegment> blockCache = new CaffeineBlockCache<>(cache, loader, 8192);
+        BlockCache<RefCountedMemorySegment> blockCache = new CaffeineBlockCache<>(cache, loader, 65536);
 
         return new CryptoDirectIODirectory(location, lockFactory, provider, keyIvResolver, sharedSegmentPool, blockCache, loader);
 

@@ -67,27 +67,6 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         ensureOpen();
         ensureCanRead(name);
 
-        // MERGE context: Always use NIOFS for sequential, one-time access
-        if (context.context() == Context.MERGE) {
-            LOGGER.info("Routing {} to NIOFS for merge operation", name);
-            return super.openInput(name, context);
-        }
-
-        // FLUSH context: New segment creation - consider future access patterns
-        if (context.context() == Context.FLUSH) {
-            LOGGER.info("Routing for flush operation", name);
-
-            Path file = getDirectory().resolve(name);
-            long fileSize = Files.size(file);
-
-            // For files that will be accessed randomly after flush, prepare them for MMap
-            // Exception: large files should avoid memory pressure during flush
-            if (("kdd".equals(extension) || "cfs".equals(extension)) && fileSize > MEDIUM_FILE_THRESHOLD) {
-                LOGGER.debug("Routing large {} to NIOFS during flush to avoid memory pressure", name);
-                return super.openInput(name, context);
-            }
-        }
-
         // Special routing for key file types
         // return routeSpecialFile(name, extension, context);
 
