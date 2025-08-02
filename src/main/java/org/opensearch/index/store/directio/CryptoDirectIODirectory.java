@@ -4,8 +4,8 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
-import static org.opensearch.index.store.directio.DirectIoConfigs.SEGMENT_SIZE_POWER;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
+import static org.opensearch.index.store.directio.DirectIoConfigs.MMAP_SEGMENT_POWER;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -29,7 +29,6 @@ import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockLoader;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
-import org.opensearch.index.store.block_cache.MemorySegmentPool;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.iv.KeyIvResolver;
@@ -69,6 +68,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     public IndexInput openInput(String name, IOContext context) throws IOException {
         ensureOpen();
         ensureCanRead(name);
+        // startCacheStatsTelemetry();
 
         Path file = getDirectory().resolve(name);
         long size = Files.size(file);
@@ -79,34 +79,38 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         boolean confined = context == IOContext.READONCE;
         Arena arena = confined ? Arena.ofConfined() : Arena.ofShared();
 
-        long chunkSize = 1L << SEGMENT_SIZE_POWER;
-        int numChunks = (int) ((size + chunkSize - 1) >>> SEGMENT_SIZE_POWER);
+        long mmapChunkSize = 1L << MMAP_SEGMENT_POWER;       // large file in order of GBs
+        long cacheBlockSize = 1L << CACHE_BLOCK_SIZE_POWER;  // e.g. small blocks in order of 8-64KB.
 
-        MemorySegment[] segments = new MemorySegment[numChunks];
-        RefCountedMemorySegment[] refSegments = new RefCountedMemorySegment[numChunks];
+        // Number of cache-aligned blocks in the file
+        int numCacheBlocks = (int) ((size + cacheBlockSize - 1) / cacheBlockSize);
 
-        boolean success = false;
-        FileChannel fc = FileChannel.open(file, StandardOpenOption.READ, getDirectOpenOption());
+        MemorySegment[] segments = new MemorySegment[numCacheBlocks];
+        RefCountedMemorySegment[] refSegments = new RefCountedMemorySegment[numCacheBlocks];
 
-        try {
-            long offset = 0;
+        try (FileChannel fc = FileChannel.open(file, StandardOpenOption.READ)) {
+            long fileOffset = 0;
+            int blockIndex = 0;
 
-            for (int i = 0; i < numChunks; i++) {
-                long remaining = size - offset;
-                long segmentSize = Math.min(chunkSize, remaining);
+            // Map the file in large chunks and slice into sizes of cache blocks
+            while (fileOffset < size) {
+                long remaining = size - fileOffset;
+                long mmapSize = Math.min(mmapChunkSize, remaining);
 
-                if (segmentSize < chunkSize || i == 0 || i == numChunks - 1) {
-                    MemorySegment segment = DirectIOReader.directIOReadAligned(fc, offset, segmentSize, arena);
-                    segments[i] = segment;
+                MemorySegment bigSegment = fc.map(FileChannel.MapMode.READ_ONLY, fileOffset, mmapSize, arena);
+
+                for (long chunkOffset = 0; chunkOffset < mmapSize && fileOffset + chunkOffset < size; chunkOffset += cacheBlockSize) {
+                    long blockSize = Math.min(cacheBlockSize, mmapSize - chunkOffset);
+                    segments[blockIndex++] = bigSegment.asSlice(chunkOffset, blockSize);
                 }
 
-                offset += segmentSize;
+                fileOffset += mmapSize;
             }
 
-            IndexInput in = CryptoDirectIOMemoryIndexInput
+            return CryptoDirectIOMemoryIndexInputV2
                 .newInstance(
                     "CryptoMemorySegmentIndexInput(path=\"" + file + "\")",
-                    fc,
+                    fc,  // ownership transferred to IndexInput
                     file,
                     arena,
                     blockCache,
@@ -114,32 +118,21 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                     segments,
                     refSegments,
                     size,
-                    SEGMENT_SIZE_POWER,
+                    CACHE_BLOCK_SIZE_POWER,
                     keyIvResolver.getDataKey().getEncoded(),
                     keyIvResolver.getIvBytes()
                 );
 
-            success = true;
-            return in;
-
         } catch (Throwable t) {
+            // Ensure arena is freed if anything fails
+            arena.close();
             LOGGER.error("DirectIO failed for file: {}", file, t);
             throw new IOException("Failed to open DirectIO file: " + file, t);
-        } finally {
-            if (!success) {
-                try {
-                    fc.close();
-                } catch (IOException e) {
-                    LOGGER.warn("Failed to close channel on error", e);
-                }
-                arena.close();
-            }
         }
     }
 
     @Override
     public IndexOutput createOutput(String name, IOContext context) throws IOException {
-
         if (name.contains("segments_") || name.endsWith(".si")) {
             return super.createOutput(name, context);
         }
@@ -196,14 +189,9 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     private void logCacheAndPoolStats() {
         try {
 
-            if (blockCache instanceof CaffeineBlockCache && memorySegmentPool instanceof MemorySegmentPool memorySegmentPool1) {
+            if (blockCache instanceof CaffeineBlockCache) {
                 String cacheStats = ((CaffeineBlockCache<?>) blockCache).cacheStats();
-
-                MemorySegmentPool.PoolStats poolStats = memorySegmentPool1.getStats();
-
-                if (poolStats.pressureRatio * 100 > 60) {
-                    LOGGER.info("{} {} \n {}", poolStats, cacheStats, path);
-                }
+                LOGGER.info("{}", cacheStats);
             }
 
         } catch (Exception e) {
@@ -211,17 +199,17 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         }
     }
 
-    private void startTelemetry() {
+    private void startCacheStatsTelemetry() {
         Thread loggerThread = new Thread(() -> {
             while (true) {
                 try {
-                    Thread.sleep(60_000); // 60 seconds
+                    Thread.sleep(30_000); // 60 seconds
                     logCacheAndPoolStats();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return;
                 } catch (Throwable t) {
-                    LOGGER.warn("Error in buffer pool stats logger", t);
+                    LOGGER.warn("Error in collecting cache stats", t);
                 }
             }
         });

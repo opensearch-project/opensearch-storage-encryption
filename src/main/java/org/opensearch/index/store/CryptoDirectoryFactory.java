@@ -4,8 +4,8 @@
  */
 package org.opensearch.index.store;
 
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
 import static org.opensearch.index.store.directio.DirectIoConfigs.RESEVERED_POOL_SIZE_IN_BYTES;
-import static org.opensearch.index.store.directio.DirectIoConfigs.SEGMENT_SIZE_BYTES;
 import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
 
 import java.io.IOException;
@@ -255,7 +255,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         // todo: int maxEntries = PER_DIR_CACHE_SIZE / SEGMENT_SIZE_BYTES;
         Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> cache = Caffeine
             .newBuilder()
-            .maximumSize(65536) // todo figure out a good config.
+            .maximumSize(16384) // todo figure out a good config.
             .recordStats()
             .expireAfterAccess(15, TimeUnit.MINUTES)
             .executor(Runnable::run)
@@ -266,7 +266,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             })
             .build();
 
-        BlockCache<RefCountedMemorySegment> blockCache = new CaffeineBlockCache<>(cache, loader, 65536);
+        BlockCache<RefCountedMemorySegment> blockCache = new CaffeineBlockCache<>(cache, loader, 16384);
 
         return new CryptoDirectIODirectory(location, lockFactory, provider, keyIvResolver, sharedSegmentPool, blockCache, loader);
 
@@ -276,17 +276,17 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         if (sharedSegmentPool == null) {
             synchronized (initLock) {
                 if (sharedSegmentPool == null) {
-                    long maxBlocks = RESEVERED_POOL_SIZE_IN_BYTES / SEGMENT_SIZE_BYTES;
-                    sharedSegmentPool = new MemorySegmentPool(RESEVERED_POOL_SIZE_IN_BYTES, SEGMENT_SIZE_BYTES);
+                    long maxBlocks = RESEVERED_POOL_SIZE_IN_BYTES / CACHE_BLOCK_SIZE;
+                    sharedSegmentPool = new MemorySegmentPool(RESEVERED_POOL_SIZE_IN_BYTES, CACHE_BLOCK_SIZE);
                     LOGGER
                         .info(
                             "Creating pool with sizeBytes={}, segmentSize={}, totalSegments={}",
                             RESEVERED_POOL_SIZE_IN_BYTES,
-                            SEGMENT_SIZE_BYTES,
-                            RESEVERED_POOL_SIZE_IN_BYTES / SEGMENT_SIZE_BYTES
+                            CACHE_BLOCK_SIZE,
+                            RESEVERED_POOL_SIZE_IN_BYTES / CACHE_BLOCK_SIZE
                         );
                     sharedSegmentPool.warmUp((long) (maxBlocks * WARM_UP_PERCENTAGE));
-                    startTelemetry();
+                    // startTelemetry();
                 }
             }
         }

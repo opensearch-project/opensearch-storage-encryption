@@ -4,22 +4,17 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.SEGMENT_SIZE_BYTES;
-
 import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
-import java.util.concurrent.TimeUnit;
 
 import org.apache.lucene.store.OutputStreamIndexOutput;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
-import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
-import org.opensearch.index.store.block_cache.RefCountedMemorySegmentCacheValue;
 
 /**
  * An IndexOutput implementation that encrypts data before writing using native
@@ -31,7 +26,7 @@ import org.opensearch.index.store.block_cache.RefCountedMemorySegmentCacheValue;
 @SuppressForbidden(reason = "temporary bypass")
 public final class BufferIOWithCaching extends OutputStreamIndexOutput {
 
-    private static final int CHUNK_SIZE = SEGMENT_SIZE_BYTES;
+    private static final int CHUNK_SIZE = 8_192;
     private static final int BUFFER_SIZE = 65_536;
 
     /**
@@ -140,46 +135,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
 
         private void processAndWrite(Path path, byte[] data, int arrayOffset, int length) throws IOException {
             out.write(data, arrayOffset, length);
-
-            if (shouldAddToBufferPool) {
-                tryCachePlaintextBlock(path, data, arrayOffset, length, streamOffset);
-            }
-
             streamOffset += length;
-        }
-
-        private void tryCachePlaintextBlock(Path path, byte[] data, int arrayOffset, int size, long fileOffset) {
-            if (size < SEGMENT_SIZE_BYTES) {
-                return;
-            }
-
-            if (memorySegmentPool.isUnderPressure()) {
-                return;
-            }
-
-            try {
-                MemorySegment pooled = memorySegmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
-                if (pooled == null) {
-                    return;
-                }
-
-                // Copy directly from byte array to pooled MemorySegment - eliminates intermediate allocations
-                MemorySegment.copy(MemorySegment.ofArray(data), arrayOffset, pooled, 0, SEGMENT_SIZE_BYTES);
-
-                // Insert into block cache
-                BlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, fileOffset);
-                RefCountedMemorySegment refSegment = new RefCountedMemorySegment(
-                    pooled,
-                    SEGMENT_SIZE_BYTES,
-                    seg -> memorySegmentPool.release(pooled)
-                );
-                blockCache.put(cacheKey, new RefCountedMemorySegmentCacheValue(refSegment));
-
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-            } catch (IllegalStateException e) {
-                // optional: LOGGER.debug("Failed to cache block at {}: {}", fileOffset, e.toString());
-            }
         }
 
         @Override

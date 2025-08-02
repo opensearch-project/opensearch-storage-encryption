@@ -60,7 +60,7 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<RefCountedM
             }
 
             // Decrypt in-place
-            DirectIOReader.decryptSegment(arena, encrypted, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
+            // DirectIOReader.decryptSegment(arena, encrypted, offset, keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
 
             // Copy decrypted bytes into pooled segment
             MemorySegment.copy(encrypted, 0, pooled, 0, size);
@@ -72,7 +72,7 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<RefCountedM
 
         } catch (Throwable t) {
             segmentPool.release(pooled);
-            LOGGER.warn("Failed to load or decrypt block at offset {} from file {}: {}", offset, key.filePath(), t.toString());
+            LOGGER.debug("Failed to load or decrypt block at offset {} from file {}: {}", offset, key.filePath(), t.toString());
             return Optional.empty();
         }
     }
