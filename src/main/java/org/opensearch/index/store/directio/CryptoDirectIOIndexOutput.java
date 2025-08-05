@@ -4,10 +4,6 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
-import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
-import static org.opensearch.index.store.directio.DirectIoConfigs.INDEX_OUTPUT_BUFFER_SIZE_POWER;
-
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
@@ -25,6 +21,9 @@ import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
+import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
+import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
+import static org.opensearch.index.store.directio.DirectIoConfigs.INDEX_OUTPUT_BUFFER_SIZE_POWER;
 import org.opensearch.index.store.iv.KeyIvResolver;
 
 @SuppressWarnings("preview")
@@ -34,15 +33,11 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
 
     private static final int BUFFER_SIZE = (1 << INDEX_OUTPUT_BUFFER_SIZE_POWER);
 
-    private final Pool<MemorySegment> memorySegmentPool;
-    private final BlockCache<RefCountedMemorySegment> blockCache;
     private final FileChannel directIOchannel;
-    private final FileChannel bufferIOchannel;
     private final KeyIvResolver keyIvResolver;
     private final ByteBuffer buffer;
     private final Checksum digest;
     private final Path path;
-    private final boolean shouldAddToBufferPool;
 
     private long filePos;
     private boolean isOpen;
@@ -63,15 +58,11 @@ public class CryptoDirectIOIndexOutput extends IndexOutput {
         throws IOException {
         super("DirectIOIndexOutput(path=\"" + path + "\")", name);
         this.keyIvResolver = keyIvResolver;
-        this.memorySegmentPool = memorySegmentPool;
-        this.blockCache = blockCache;
         this.path = path;
         this.buffer = ByteBuffer.allocateDirect(BUFFER_SIZE + DIRECT_IO_ALIGNMENT - 1).alignedSlice(DIRECT_IO_ALIGNMENT);
         this.directIOchannel = FileChannel.open(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW, getDirectOpenOption());
-        this.bufferIOchannel = FileChannel.open(path, StandardOpenOption.WRITE);
         this.digest = new BufferedChecksum(new CRC32());
         this.isOpen = true;
-        this.shouldAddToBufferPool = shouldAddToBufferPool;
     }
 
     @Override

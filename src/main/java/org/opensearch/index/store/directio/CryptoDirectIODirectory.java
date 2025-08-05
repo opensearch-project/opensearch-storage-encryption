@@ -4,9 +4,6 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
-import static org.opensearch.index.store.directio.DirectIoConfigs.MMAP_SEGMENT_POWER;
-
 import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.foreign.Arena;
@@ -31,6 +28,8 @@ import org.opensearch.index.store.block_cache.BlockLoader;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
+import static org.opensearch.index.store.directio.DirectIoConfigs.MMAP_SEGMENT_POWER;
 import org.opensearch.index.store.iv.KeyIvResolver;
 
 @SuppressWarnings("preview")
@@ -44,7 +43,6 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     private final BlockLoader<RefCountedMemorySegment> blockLoader;
 
     private final KeyIvResolver keyIvResolver;
-    private final Path path;
 
     public CryptoDirectIODirectory(
         Path path,
@@ -60,7 +58,6 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         this.keyIvResolver = keyIvResolver;
         this.memorySegmentPool = memorySegmentPool;
         this.blockCache = blockCache;
-        this.path = path;
         this.blockLoader = blockLoader;
     }
 
@@ -107,7 +104,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                 fileOffset += mmapSize;
             }
 
-            return CryptoDirectIOMemoryIndexInputV2
+            return CryptoDirectIOMemoryIndexInput
                 .newInstance(
                     "CryptoMemorySegmentIndexInput(path=\"" + file + "\")",
                     fc,  // ownership transferred to IndexInput
