@@ -64,13 +64,4 @@ public class CryptoChannelFactory implements ChannelFactory {
             return baseChannel;
         }
     }
-
-    /**
-     * Gets the key IV resolver used by this factory.
-     *
-     * @return the key IV resolver
-     */
-    public KeyIvResolver getKeyIvResolver() {
-        return keyIvResolver;
-    }
 }

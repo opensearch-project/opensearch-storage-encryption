@@ -116,20 +116,11 @@ public class CryptoTranslogEncryptionTests {
         logger.info("File size: {} bytes", fileContent.length);
         logger.info("File content (first 200 chars): {}", fileContentString.substring(0, Math.min(200, fileContentString.length())));
 
-        assertFalse(
-            "Sensitive data found in plain text! File content: " + fileContentString,
-            fileContentString.contains("192.168.1.1")
-        );
+        assertFalse("Sensitive data found in plain text! File content: " + fileContentString, fileContentString.contains("192.168.1.1"));
 
-        assertFalse(
-            "Sensitive data found in plain text! File content: " + fileContentString,
-            fileContentString.contains("/secret/data")
-        );
+        assertFalse("Sensitive data found in plain text! File content: " + fileContentString, fileContentString.contains("/secret/data"));
 
-        assertFalse(
-            "JSON structure found in plain text! File content: " + fileContentString,
-            fileContentString.contains("\"clientip\"")
-        );
+        assertFalse("JSON structure found in plain text! File content: " + fileContentString, fileContentString.contains("\"clientip\""));
 
         // Verify header is still readable (should be unencrypted)
         assertTrue("Header should contain translog UUID", fileContentString.contains(testTranslogUUID));

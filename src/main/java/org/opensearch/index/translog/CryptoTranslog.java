@@ -93,24 +93,15 @@ public class CryptoTranslog extends LocalTranslog {
     private static ChannelFactory createCryptoChannelFactory(KeyIvResolver keyIvResolver, String translogUUID) throws IOException {
         try {
             CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyIvResolver, translogUUID);
-            LogManager.getLogger(CryptoTranslog.class).debug("CryptoChannelFactory initialized for translog: {}", translogUUID);
+            logger.debug("CryptoChannelFactory initialized for translog: {}", translogUUID);
             return channelFactory;
         } catch (Exception e) {
-            LogManager.getLogger(CryptoTranslog.class).error("Failed to initialize CryptoChannelFactory: {}", e.getMessage(), e);
+            logger.error("Failed to initialize CryptoChannelFactory: {}", e.getMessage(), e);
             throw new IOException(
                 "Failed to initialize crypto channel factory for translog encryption. " + "Cannot proceed without encryption!",
                 e
             );
         }
-    }
-
-    /**
-     * Gets the key IV resolver used for encryption.
-     *
-     * @return the key IV resolver
-     */
-    public KeyIvResolver getKeyIvResolver() {
-        return keyIvResolver;
     }
 
     /**
