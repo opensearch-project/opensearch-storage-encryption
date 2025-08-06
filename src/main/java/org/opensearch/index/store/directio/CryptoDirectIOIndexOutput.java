@@ -4,6 +4,10 @@
  */
 package org.opensearch.index.store.directio;
 
+import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
+import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
+import static org.opensearch.index.store.directio.DirectIoConfigs.INDEX_OUTPUT_BUFFER_SIZE_POWER;
+
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
@@ -21,9 +25,6 @@ import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
-import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
-import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
-import static org.opensearch.index.store.directio.DirectIoConfigs.INDEX_OUTPUT_BUFFER_SIZE_POWER;
 import org.opensearch.index.store.iv.KeyIvResolver;
 
 @SuppressWarnings("preview")

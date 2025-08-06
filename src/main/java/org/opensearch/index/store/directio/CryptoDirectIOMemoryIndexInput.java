@@ -4,6 +4,9 @@
  */
 package org.opensearch.index.store.directio;
 
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+
 import java.io.EOFException;
 import java.io.IOException;
 import java.lang.foreign.Arena;
@@ -27,8 +30,8 @@ import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.BlockLoader;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import org.opensearch.index.store.read_ahead.ReadaheadContext;
+import org.opensearch.index.store.read_ahead.ReadaheadManager;
 
 @SuppressForbidden(reason = "temporary bypass")
 @SuppressWarnings("preview")
@@ -53,6 +56,8 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
     final Path path;
     final BlockCache<RefCountedMemorySegment> blockCache;
     final BlockLoader<RefCountedMemorySegment> blockLoader;
+    final ReadaheadManager readaheadManager;
+    final ReadaheadContext readaheadContext;
     final String resourceDescription;
     final byte[] key;
     final byte[] iv;
@@ -70,6 +75,8 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         Arena arena,
         BlockCache<RefCountedMemorySegment> blockCache,
         BlockLoader<RefCountedMemorySegment> blockLoader,
+        ReadaheadManager readAheadManager,
+        ReadaheadContext readAheadContext,
         MemorySegment[] segments,
         RefCountedMemorySegment[] refSegments,
         long length,
@@ -88,6 +95,8 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 arena,
                 blockCache,
                 blockLoader,
+                readAheadManager,
+                readAheadContext,
                 segments[0],
                 refSegments,
                 0L,
@@ -104,6 +113,8 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 arena,
                 blockCache,
                 blockLoader,
+                readAheadManager,
+                readAheadContext,
                 segments,
                 refSegments,
                 0L,
@@ -124,6 +135,8 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         Arena arena,
         BlockCache<RefCountedMemorySegment> blockCache,
         BlockLoader<RefCountedMemorySegment> blockLoader,
+        ReadaheadManager readaheadManager,
+        ReadaheadContext readaheadContext,
         MemorySegment[] segments,
         RefCountedMemorySegment[] refSegments,
         long absoluteBaseOffset,
@@ -138,6 +151,8 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         this.resourceDescription = resourceDescription;
         this.blockCache = blockCache;
         this.blockLoader = blockLoader;
+        this.readaheadManager = readaheadManager;
+        this.readaheadContext = readaheadContext;
         this.path = path;
         this.segments = segments;
         this.refSegments = refSegments;
@@ -180,40 +195,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         return new AlreadyClosedException("Already closed: " + this);
     }
 
-    private void fillBlockCacheForRange(long fileOffset, long lengthNeeded) throws IOException {
-        if (lengthNeeded == 0)
-            return;
-
-        long alignedBlockStart = fileOffset & ~CACHE_BLOCK_MASK;
-        long requestEnd = fileOffset + lengthNeeded;
-        long alignedBlockEnd = ((requestEnd + CACHE_BLOCK_SIZE - 1) & ~CACHE_BLOCK_MASK);
-
-        int blocksProcessed = 0;
-        long startTime = System.nanoTime();
-
-        for (long blockOffset = alignedBlockStart; blockOffset < alignedBlockEnd; blockOffset += CACHE_BLOCK_SIZE) {
-            DirectIOBlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, blockOffset);
-
-            try {
-                blockCache.getOrLoad(cacheKey, CACHE_BLOCK_SIZE, blockLoader);
-                blocksProcessed++;
-            } catch (IOException e) {
-                LOGGER.error("Failed to access cache for block at offset {}: {}", blockOffset, e);
-            }
-        }
-
-        long durationMicros = (System.nanoTime() - startTime) / 1_000;
-        LOGGER
-            .info(
-                "Cache fill for {} (offset={}, length={}): blocks={}, took={} us",
-                path.getFileName(),
-                fileOffset,
-                lengthNeeded,
-                blocksProcessed,
-                durationMicros
-            );
-    }
-
     // for positioning/seeking (no data needed)
     protected MemorySegment loadSegment(int segmentIndex) throws IOException {
         ensureOpen();
@@ -221,37 +202,48 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         return segments[segmentIndex];
     }
 
-    protected MemorySegment loadSegment(int segmentIndex, long fileOffset, int lengthNeeded) throws IOException {
+    private MemorySegment loadSegment(int segmentIndex, long fileOffset, int lengthNeeded) throws IOException {
         ensureOpen();
 
+        // For small reads, just use mmap segment. we can also think of pppulating the cache
+        // even for small reads, only if it doesn't add immense pressure to the cache and the pool.
         if (lengthNeeded < CACHE_BLOCK_SIZE) {
-            // Small read - always use mmap
             return segments[segmentIndex];
-        } else {
-            // Check if this segment was already upgraded to cached version
-            if (refSegments[segmentIndex] != null) {
-                // Already cached - no lookup needed!
-                return segments[segmentIndex];
-            }
-
-            // Large read - cache-first strategy
-            if (blockCache != null) {
-                long alignedBlockStart = fileOffset & ~CACHE_BLOCK_MASK;
-                DirectIOBlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, alignedBlockStart);
-
-                Optional<BlockCacheValue<RefCountedMemorySegment>> cached = blockCache.get(cacheKey);
-
-                if (cached.isPresent()) {
-                    RefCountedMemorySegment refSeg = cached.get().block();
-                    segments[segmentIndex] = refSeg.segment();
-                    refSegments[segmentIndex] = refSeg;  // Mark as upgraded
-
-                    return segments[segmentIndex];
-                }
-            }
-
-            return segments[segmentIndex];  // fallback to mmap
         }
+
+        // already cached
+        if (refSegments[segmentIndex] != null) {
+            return segments[segmentIndex];
+        }
+
+        // Align file offset to cache block boundary
+        long alignedBlockStart = fileOffset & ~CACHE_BLOCK_MASK;
+
+        boolean cacheMiss = true;
+        if (blockCache != null) {
+            DirectIOBlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, alignedBlockStart);
+            Optional<BlockCacheValue<RefCountedMemorySegment>> cached = blockCache.get(cacheKey);
+
+            if (cached.isPresent()) {
+                RefCountedMemorySegment refSeg = cached.get().block();
+                segments[segmentIndex] = refSeg.segment();
+                refSegments[segmentIndex] = refSeg;
+                cacheMiss = false;
+            }
+        }
+
+        // // Notify readahead manager for fetching next block.
+        if (readaheadManager != null && readaheadContext != null) {
+            readaheadManager.onSegmentAccess(readaheadContext, alignedBlockStart, cacheMiss);
+        }
+
+        // todo: add back the mmaped segment to cache.
+        // Note we cannot copy this memory segment into the index input
+        // arena pool because it may end up leaking decryoted bytes in swap space.
+        // todo: Implement an expanding segment pool to be able to acquire more segments
+        // on memory pressure from this addition. If a segment acquire fails from the pool,
+        // we will need to directly decrypt bytes for the read.
+        return segments[segmentIndex];
     }
 
     @Override
@@ -662,6 +654,8 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 null,  // arena
                 blockCache,
                 blockLoader,
+                readaheadManager,
+                readaheadContext,
                 slices[0].asSlice(segmentOffset, length),
                 null, // reference segment tracking null for slices.
                 sliceAbsoluteOffset,
@@ -679,6 +673,8 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 null,  // arena
                 blockCache,
                 blockLoader,
+                readaheadManager,
+                readaheadContext,
                 slices,
                 null, // reference segment tracking null for slices.
                 segmentOffset,
@@ -704,6 +700,15 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 channel.close();
             } catch (IOException e) {
                 LOGGER.warn("Failed to close FileChannel for {}", path, e);
+            }
+        }
+
+        // Close readahead context if this is the master input
+        if (readaheadManager != null && readaheadContext != null && channel != null) {
+            try {
+                readaheadManager.cancel(readaheadContext);
+            } catch (Exception e) {
+                LOGGER.warn("Failed to cancel readahead context for {}", path, e);
             }
         }
 
@@ -751,6 +756,8 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             Arena arena,
             BlockCache<RefCountedMemorySegment> blockCache,
             BlockLoader<RefCountedMemorySegment> blockLoader,
+            ReadaheadManager readaheadManager,
+            ReadaheadContext readaheadContext,
             MemorySegment segment,
             RefCountedMemorySegment[] refSegments,
             long absoluteBaseOffset,    // absolute file offset of first segment
@@ -766,6 +773,8 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 arena,
                 blockCache,
                 blockLoader,
+                readaheadManager,
+                readaheadContext,
                 new MemorySegment[] { segment },
                 refSegments,
                 absoluteBaseOffset,
@@ -863,6 +872,8 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             Arena arena,
             BlockCache<RefCountedMemorySegment> blockCache,
             BlockLoader<RefCountedMemorySegment> blockLoader,
+            ReadaheadManager readaheadManager,
+            ReadaheadContext readaheadContext,
             MemorySegment[] segments,
             RefCountedMemorySegment[] refSegments,
             long offset,
@@ -879,6 +890,8 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 arena,
                 blockCache,
                 blockLoader,
+                readaheadManager,
+                readaheadContext,
                 segments,
                 refSegments,
                 absoluteBaseOffset,

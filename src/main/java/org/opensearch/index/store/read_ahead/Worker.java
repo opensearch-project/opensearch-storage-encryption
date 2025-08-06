@@ -13,7 +13,7 @@ import java.nio.file.Path;
  * Implementations schedule block prefetching for sequential I/O
  * and deduplicate in-flight requests to avoid redundant reads.
  */
-public interface ReadaheadWorker extends Closeable {
+public interface Worker extends Closeable {
 
     /**
      * Schedule a prefetch request for a block if not already in flight.

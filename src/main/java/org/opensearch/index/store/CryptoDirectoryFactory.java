@@ -51,6 +51,10 @@ import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.mmap.EagerDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.mmap.LazyDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
+import org.opensearch.index.store.read_ahead.ReadaheadManager;
+import org.opensearch.index.store.read_ahead.Worker;
+import org.opensearch.index.store.read_ahead.impl.QueuingWorker;
+import org.opensearch.index.store.read_ahead.impl.ReadaheadManagerImpl;
 import org.opensearch.plugins.IndexStorePlugin;
 
 import com.github.benmanes.caffeine.cache.Cache;
@@ -231,7 +235,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         *     → Its associated segment is not released immediately if refCount > 1.
         *     → Only when all holders release the segment (refCount → 0), the memory is returned.
         *
-        * Subtle Implication:
+        * Implication:
         * --------------------
         * - This design decouples **cache visibility** from **memory lifetime**.
         *   Even if a segment is evicted from cache, it may continue to live
@@ -268,8 +272,22 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
 
         BlockCache<RefCountedMemorySegment> blockCache = new CaffeineBlockCache<>(cache, loader, 16384);
 
-        return new CryptoDirectIODirectory(location, lockFactory, provider, keyIvResolver, sharedSegmentPool, blockCache, loader);
+        // Initialize ReadAhead
+        int queueCapacity = 4096;
+        int threads = Math.max(4, Runtime.getRuntime().availableProcessors() / 4);
+        Worker readaheadWorker = new QueuingWorker(queueCapacity, threads, blockCache, loader, (int) CACHE_BLOCK_SIZE);
+        ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readaheadWorker);
 
+        return new CryptoDirectIODirectory(
+            location,
+            lockFactory,
+            provider,
+            keyIvResolver,
+            sharedSegmentPool,
+            blockCache,
+            loader,
+            readAheadManager
+        );
     }
 
     private void ensureSharedPoolInitialized() {
