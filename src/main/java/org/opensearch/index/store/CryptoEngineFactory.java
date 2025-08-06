@@ -8,6 +8,7 @@ import java.io.IOException;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.lucene.store.FSDirectory;
 import org.opensearch.index.engine.Engine;
 import org.opensearch.index.engine.EngineConfig;
 import org.opensearch.index.engine.EngineFactory;
@@ -90,7 +91,7 @@ public class CryptoEngineFactory implements EngineFactory {
 
         // Use the translog location for key storage
         java.nio.file.Path translogPath = config.getTranslogConfig().getTranslogPath();
-        org.apache.lucene.store.Directory keyDirectory = new org.apache.lucene.store.NIOFSDirectory(translogPath);
+        org.apache.lucene.store.Directory keyDirectory = FSDirectory.open(translogPath);
 
         // Create crypto directory factory to get the key provider
         CryptoDirectoryFactory directoryFactory = new CryptoDirectoryFactory();

@@ -52,4 +52,30 @@ public class CryptoTranslogFactory implements TranslogFactory {
 
         return cryptoTranslog;
     }
+
+    @Override
+    public Translog newTranslog(
+        TranslogConfig config,
+        String translogUUID,
+        TranslogDeletionPolicy deletionPolicy,
+        LongSupplier globalCheckpointSupplier,
+        LongSupplier primaryTermSupplier,
+        LongConsumer persistedSequenceNumberConsumer,
+        BooleanSupplier startedPrimarySupplier,
+        TranslogOperationHelper translogOperationHelper
+    ) throws IOException {
+
+        CryptoTranslog cryptoTranslog = new CryptoTranslog(
+            config,
+            translogUUID,
+            deletionPolicy,
+            globalCheckpointSupplier,
+            primaryTermSupplier,
+            persistedSequenceNumberConsumer,
+            translogOperationHelper,
+            keyIvResolver
+        );
+
+        return cryptoTranslog;
+    }
 }

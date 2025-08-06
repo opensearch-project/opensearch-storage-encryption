@@ -8,8 +8,6 @@ import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
-import java.util.Arrays;
-import java.util.HashSet;
 import java.util.Set;
 
 import org.opensearch.index.store.iv.KeyIvResolver;
@@ -48,20 +46,13 @@ public class CryptoChannelFactory implements ChannelFactory {
 
     @Override
     public FileChannel open(Path path, OpenOption... options) throws IOException {
-        // Create the base FileChannel
         FileChannel baseChannel = FileChannel.open(path, options);
 
-        // Determine if this file should be encrypted
-        String fileName = path.getFileName().toString();
-        boolean shouldEncrypt = fileName.endsWith(".tlog");
-
-        if (shouldEncrypt) {
-            // Wrap with crypto functionality using unified key resolver and exact UUID
-            Set<OpenOption> optionsSet = new HashSet<>(Arrays.asList(options));
-            return new CryptoFileChannelWrapper(baseChannel, keyIvResolver, path, optionsSet, translogUUID);
-        } else {
-            // Return unwrapped channel for non-encrypted files
+        if (!path.getFileName().toString().endsWith(".tlog")) {
             return baseChannel;
         }
+
+        Set<OpenOption> optionsSet = Set.of(options);
+        return new CryptoFileChannelWrapper(baseChannel, keyIvResolver, path, optionsSet, translogUUID);
     }
 }
