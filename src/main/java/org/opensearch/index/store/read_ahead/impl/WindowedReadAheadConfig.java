@@ -14,14 +14,14 @@ package org.opensearch.index.store.read_ahead.impl;
  *  - Random access streak threshold to shrink window
  *
  */
-public final class AdaptiveReadaheadConfig {
+public final class WindowedReadAheadConfig {
 
     private final int initialWindow;
     private final int maxWindowSegments;
     private final int hitStreakThreshold;
     private final int shrinkOnRandomThreshold;
 
-    private AdaptiveReadaheadConfig(Builder builder) {
+    private WindowedReadAheadConfig(Builder builder) {
         this.initialWindow = builder.initialWindow;
         this.maxWindowSegments = builder.maxWindowSegments;
         this.hitStreakThreshold = builder.hitStreakThreshold;
@@ -57,7 +57,7 @@ public final class AdaptiveReadaheadConfig {
     }
 
     /**
-     * Builder pattern for {@link AdaptiveReadaheadConfig}.
+     * Builder pattern for {@link WindowedReadAheadConfig}.
      */
     public static class Builder {
 
@@ -113,12 +113,12 @@ public final class AdaptiveReadaheadConfig {
         }
 
         /**
-         * Builds the {@link AdaptiveReadaheadConfig} instance.
+         * Builds the {@link WindowedReadAheadConfig} instance.
          *
          * @return a new AdaptiveReadaheadConfig
          */
-        public AdaptiveReadaheadConfig build() {
-            return new AdaptiveReadaheadConfig(this);
+        public WindowedReadAheadConfig build() {
+            return new WindowedReadAheadConfig(this);
         }
     }
 }

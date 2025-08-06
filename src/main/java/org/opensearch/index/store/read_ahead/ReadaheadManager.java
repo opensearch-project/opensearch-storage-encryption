@@ -7,39 +7,18 @@ package org.opensearch.index.store.read_ahead;
 import java.io.Closeable;
 import java.nio.file.Path;
 
-/**
- * High-level facade for managing readahead operations for DirectIO IndexInputs.
- * <p>
- * Coordinates:
- * <ul>
- *     <li>Per-stream {@link ReadaheadContext}</li>
- *     <li>Adaptive windowing policy</li>
- *     <li>Async scheduling to a {@link ReadaheadWorker}</li>
- * </ul>
- *
- * Typical flow:
- * <pre>
- *   ReadaheadContext ctx = manager.register(path, segmentSize);
- *
- *   // on each segment load in IndexInput:
- *   manager.onSegmentAccess(ctx, segmentIndex, cacheMiss);
- *
- *   // on close:
- *   manager.cancel(ctx);
- * </pre>
- */
 public interface ReadaheadManager extends Closeable {
 
-    ReadaheadContext register(Path path, int segmentSize, int segmentSizePower, long fileLength);
+    ReadaheadContext register(Path path, long fileLength);
 
     /**
      * Notify that a segment was accessed, possibly triggering readahead.
      *
      * @param context       per-index input context
-     * @param segmentIndex  the segment index that was accessed
+     * @param startFileOffset  the fileoffset from where we start reading.
      * @param cacheMiss     true if the block was not in cache (enables RA)
      */
-    void onSegmentAccess(ReadaheadContext context, int segmentIndex, boolean cacheMiss);
+    void onSegmentAccess(ReadaheadContext context, long startFileOffset, boolean cacheMiss);
 
     /**
      * Cancel all readahead for a given stream context.
