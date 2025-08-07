@@ -4,10 +4,11 @@
  */
 package org.opensearch.index.store.niofs;
 
+import static org.hamcrest.Matchers.is;
+
 import java.util.Arrays;
 import java.util.Collection;
 
-import static org.hamcrest.Matchers.is;
 import org.opensearch.action.admin.indices.delete.DeleteIndexRequest;
 import org.opensearch.action.search.SearchResponse;
 import org.opensearch.common.settings.Settings;
@@ -20,7 +21,6 @@ import org.opensearch.index.store.MockCryptoKeyProviderPlugin;
 import org.opensearch.index.store.MockCryptoPlugin;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.test.OpenSearchIntegTestCase;
-
 
 public class CryptoDirectoryIntegTestCases extends OpenSearchIntegTestCase {
 

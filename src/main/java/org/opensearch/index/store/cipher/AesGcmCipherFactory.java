@@ -1,21 +1,18 @@
 /*
+ * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
- *
- * The OpenSearch Contributors require contributions made to
- * this file be licensed under the Apache-2.0 license or a
- * compatible open source license.
  */
-
 package org.opensearch.index.store.cipher;
 
-import javax.crypto.Cipher;
-import javax.crypto.NoSuchPaddingException;
-import javax.crypto.spec.GCMParameterSpec;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
 import java.security.Key;
 import java.security.NoSuchAlgorithmException;
 import java.security.Provider;
+
+import javax.crypto.Cipher;
+import javax.crypto.NoSuchPaddingException;
+import javax.crypto.spec.GCMParameterSpec;
 
 public class AesGcmCipherFactory {
 
@@ -126,7 +123,7 @@ public class AesGcmCipherFactory {
             System.arraycopy(iv, 0, gcmIv, 0, 12);
             GCMParameterSpec spec = new GCMParameterSpec(128, gcmIv);
             cipher.init(Cipher.ENCRYPT_MODE, key, spec);
-            
+
             return cipher.doFinal(input, 0, length);
         } catch (Exception e) {
             throw new JavaCryptoException("GCM encryption with tag failed", e);
@@ -153,7 +150,7 @@ public class AesGcmCipherFactory {
             System.arraycopy(iv, 0, gcmIv, 0, 12);
             GCMParameterSpec spec = new GCMParameterSpec(128, gcmIv);
             cipher.init(Cipher.DECRYPT_MODE, key, spec);
-            
+
             return cipher.doFinal(ciphertext);
         } catch (Exception e) {
             throw new JavaCryptoException("GCM decryption with tag verification failed", e);
