@@ -16,6 +16,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.Provider;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.logging.log4j.LogManager;
@@ -66,13 +67,13 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         this.blockCache = blockCache;
         this.blockLoader = blockLoader;
         this.readAheadManager = readAheadManager;
+        startCacheStatsTelemetry();
     }
 
     @Override
     public IndexInput openInput(String name, IOContext context) throws IOException {
         ensureOpen();
         ensureCanRead(name);
-        // startCacheStatsTelemetry();
 
         Path file = getDirectory().resolve(name);
         long size = Files.size(file);
@@ -186,6 +187,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
             this.blockCache,
             shouldAddToBufferPool
         );
+
     }
 
     @Override
@@ -211,7 +213,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         Thread loggerThread = new Thread(() -> {
             while (true) {
                 try {
-                    Thread.sleep(60_000); // 60 seconds
+                    Thread.sleep(Duration.ofMinutes(3));
                     logCacheAndPoolStats();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();

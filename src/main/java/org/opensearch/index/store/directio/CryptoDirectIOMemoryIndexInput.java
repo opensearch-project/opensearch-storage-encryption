@@ -6,6 +6,7 @@ package org.opensearch.index.store.directio;
 
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -211,30 +212,87 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             return segments[segmentIndex];
         }
 
-        // already cached
+        final long maxSegmentIndex = length >>> CACHE_BLOCK_SIZE_POWER;
+
+        // Use mmap for footers
+        if (segmentIndex >= (maxSegmentIndex - 4)) {
+            return segments[segmentIndex];
+        }
+
+        // Use mmap for headers
+        if (segmentIndex < 4) {
+            return segments[segmentIndex];
+        }
+
+        // Already cached
         if (refSegments[segmentIndex] != null) {
             return segments[segmentIndex];
         }
 
         // Align file offset to cache block boundary
-        long alignedBlockStart = fileOffset & ~CACHE_BLOCK_MASK;
+        final long alignedBlockStart = fileOffset & ~CACHE_BLOCK_MASK;
+        final long segIdx = alignedBlockStart >>> CACHE_BLOCK_SIZE_POWER;
+
+        final int winSnapshot = (readaheadContext != null ? readaheadContext.policy().currentWindow() : -1);
+        LOGGER
+            .trace(
+                "FG_ACCESS thread={} path={} reqOff={} alignedOff={} segIdx={} win={} blockSize={} len={}",
+                Thread.currentThread().getName(),
+                path,
+                fileOffset,
+                alignedBlockStart,
+                segIdx,
+                winSnapshot,
+                CACHE_BLOCK_SIZE,
+                lengthNeeded
+            );
 
         boolean cacheMiss = true;
+
+        // Notify readahead manager for fetching next block (use aligned offset)
+        if (readaheadManager != null && readaheadContext != null) {
+            readaheadManager.onSegmentAccess(readaheadContext, alignedBlockStart, cacheMiss);
+        }
+
         if (blockCache != null) {
-            DirectIOBlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, alignedBlockStart);
-            Optional<BlockCacheValue<RefCountedMemorySegment>> cached = blockCache.get(cacheKey);
+            final DirectIOBlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, alignedBlockStart);
+            final Optional<BlockCacheValue<RefCountedMemorySegment>> cached = blockCache.get(cacheKey);
 
             if (cached.isPresent()) {
-                RefCountedMemorySegment refSeg = cached.get().block();
+                if (LOGGER.isDebugEnabled()) {
+                    LOGGER
+                        .debug(
+                            "CACHE_HIT thread={} path={} reqOff={} alignedOff={} segIdx={} blockSize={} len={}",
+                            Thread.currentThread().getName(),
+                            path,
+                            fileOffset,
+                            alignedBlockStart,
+                            segIdx,
+                            CACHE_BLOCK_SIZE,
+                            lengthNeeded
+                        );
+                }
+                final RefCountedMemorySegment refSeg = cached.get().block();
                 segments[segmentIndex] = refSeg.segment();
                 refSegments[segmentIndex] = refSeg;
                 cacheMiss = false;
-            }
-        }
+            } else {
+                if (LOGGER.isDebugEnabled()) {
+                    LOGGER
+                        .debug(
+                            "CACHE_MISS thread={} path={} reqOff={} alignedOff={} segIdx={} win={} blockSize={} len={}",
+                            Thread.currentThread().getName(),
+                            path,
+                            fileOffset,
+                            alignedBlockStart,
+                            segIdx,
+                            winSnapshot,
+                            CACHE_BLOCK_SIZE,
+                            lengthNeeded
+                        );
 
-        // // Notify readahead manager for fetching next block.
-        if (readaheadManager != null && readaheadContext != null) {
-            readaheadManager.onSegmentAccess(readaheadContext, alignedBlockStart, cacheMiss);
+                }
+            }
         }
 
         // todo: add back the mmaped segment to cache.
@@ -265,6 +323,8 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 curSegment = loadSegment(curSegmentIndex, fileOffset, 1);
                 curPosition = 0L;
             } while (curSegment.byteSize() == 0L);
+            long fileOffset = getAbsoluteBaseOffset();
+            curSegment = loadSegment(curSegmentIndex, fileOffset, 1);
             final byte v = curSegment.get(LAYOUT_BYTE, curPosition);
             curPosition++;
             return v;

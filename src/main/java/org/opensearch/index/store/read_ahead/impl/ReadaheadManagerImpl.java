@@ -39,10 +39,10 @@ public class ReadaheadManagerImpl implements ReadaheadManager {
         }
 
         WindowedReadAheadConfig config = new WindowedReadAheadConfig.Builder()
-            .initialWindow(1)
-            .maxWindowSegments(8)
-            .hitStreakThreshold(5)
-            .shrinkOnRandomThreshold(3)
+            .initialWindow(4)          // 4 × 16KB = 64KB; lead ≈ 2 segs ahead
+            .maxWindowSegments(16)     // up to 256KB when access proves sequential
+            .hitStreakThreshold(4)     // 4 consecutive hits → pause readahead
+            .shrinkOnRandomThreshold(2)// 2 “jumps” → shrink window
             .build();
 
         this.context = WindowedReadAheadContext.build(path, fileLength, worker, config);

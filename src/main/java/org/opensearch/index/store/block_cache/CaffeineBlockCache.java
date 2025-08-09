@@ -6,6 +6,7 @@ package org.opensearch.index.store.block_cache;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.file.NoSuchFileException;
 import java.util.Optional;
 
 import org.opensearch.common.SuppressForbidden;
@@ -75,6 +76,7 @@ public final class CaffeineBlockCache<T> implements BlockCache<T> {
 
     private BlockCacheValue<T> handleLoadException(BlockCacheKey key, Exception e) {
         switch (e) {
+            case NoSuchFileException nsfe -> throw new UncheckedIOException(nsfe);
             case IOException io -> throw new UncheckedIOException(io);
             case RuntimeException rte -> throw rte;
             default -> throw new RuntimeException("Unexpected exception during block load for key: " + key, e);
@@ -111,4 +113,5 @@ public final class CaffeineBlockCache<T> implements BlockCache<T> {
                 stats.averageLoadPenalty() / 1_000_000.0  // Convert to ms
             );
     }
+
 }
