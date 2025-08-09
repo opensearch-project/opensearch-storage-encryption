@@ -4,7 +4,10 @@
  */
 package org.opensearch.index.store;
 
+import static org.opensearch.index.store.directio.DirectIoConfigs.BLOCK_EXPIRY_AFTER_ACCESS_MINS;
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.MAX_CACHE_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.READ_AHEAD_QUEUE_SIZE;
 import static org.opensearch.index.store.directio.DirectIoConfigs.RESEVERED_POOL_SIZE_IN_BYTES;
 import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
 
@@ -256,12 +259,11 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         * - Tune `maximumSize` and eviction policy based on benchmark results and memory pressure.
         */
 
-        // todo: int maxEntries = PER_DIR_CACHE_SIZE / SEGMENT_SIZE_BYTES;
         Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> cache = Caffeine
             .newBuilder()
-            .maximumSize(16384) // todo figure out a good config.
+            .maximumSize(MAX_CACHE_SIZE)
             .recordStats()
-            .expireAfterAccess(15, TimeUnit.MINUTES)
+            .expireAfterAccess(BLOCK_EXPIRY_AFTER_ACCESS_MINS, TimeUnit.MINUTES)
             .executor(Runnable::run)
             .removalListener((BlockCacheKey key, BlockCacheValue<RefCountedMemorySegment> value, RemovalCause cause) -> {
                 if (value != null) {
@@ -270,12 +272,10 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             })
             .build();
 
-        BlockCache<RefCountedMemorySegment> blockCache = new CaffeineBlockCache<>(cache, loader, 16384);
+        BlockCache<RefCountedMemorySegment> blockCache = new CaffeineBlockCache<>(cache, loader, MAX_CACHE_SIZE);
 
-        // Initialize ReadAhead
-        int queueCapacity = 4096;
         int threads = Math.max(4, Runtime.getRuntime().availableProcessors() / 4);
-        Worker readaheadWorker = new QueuingWorker(queueCapacity, threads, blockCache, loader, (int) CACHE_BLOCK_SIZE);
+        Worker readaheadWorker = new QueuingWorker(READ_AHEAD_QUEUE_SIZE, threads, blockCache, loader, (int) CACHE_BLOCK_SIZE);
         ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readaheadWorker);
 
         return new CryptoDirectIODirectory(

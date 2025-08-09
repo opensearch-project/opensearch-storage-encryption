@@ -61,6 +61,11 @@ public interface ReadaheadContext extends Closeable {
      */
     boolean isReadAheadEnabled();
 
+    /**
+    * Cancel any pending async prefetch for this stream.
+    */
+    ReadaheadPolicy policy();
+
     @Override
     void close();
 }

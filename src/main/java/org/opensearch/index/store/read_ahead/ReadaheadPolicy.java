@@ -23,6 +23,11 @@ public interface ReadaheadPolicy {
     int initialWindow();
 
     /**
+    * @return current readahead window (in segments)
+    */
+    int currentWindow();
+
+    /**
      * @return max readahead window (in segments)
      */
     int maxWindow();

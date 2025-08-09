@@ -9,6 +9,7 @@ import static org.opensearch.index.store.directio.DirectIOReader.directIOReadAli
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.nio.channels.FileChannel;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.StandardOpenOption;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
@@ -70,10 +71,13 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<RefCountedM
             RefCountedMemorySegmentCacheValue cacheValue = new RefCountedMemorySegmentCacheValue(refSegment);
             return Optional.of(cacheValue);
 
-        } catch (Throwable t) {
+        } catch (NoSuchFileException ex) {
             segmentPool.release(pooled);
-            LOGGER.debug("Failed to load or decrypt block at offset {} from file {}: {}", offset, key.filePath(), t.toString());
-            return Optional.empty();
+            throw ex;
+        } catch (Exception ex) {
+            segmentPool.release(pooled);
+            LOGGER.error("Failed to load or decrypt block at offset {} from file {}: {}", offset, key.filePath(), ex.toString());
+            throw ex;
         }
     }
 }

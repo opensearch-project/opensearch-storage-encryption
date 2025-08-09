@@ -4,122 +4,133 @@
  */
 package org.opensearch.index.store.read_ahead.impl;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
+
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.opensearch.index.store.read_ahead.ReadaheadPolicy;
 
-/**
- * Adaptive ReadaheadPolicy implementation with windowing strategy.
- *
- * Window Management:
- *   ┌─────────────────────────────────────────────────────────┐
- *   │ Sequential Access Pattern:                              │
- *   │   Read(100) → Read(104) → Read(108) → Read(112)        │
- *   │   Window:  1 →     1    →     2    →     4              │
- *   └─────────────────────────────────────────────────────────┘
- *
- *   ┌─────────────────────────────────────────────────────────┐
- *   │ Random Access Pattern:                                  │
- *   │   Read(100) → Read(200) → Read(50) → Read(300)         │
- *   │   Window:  1 →     1    →    1    →    1/2              │
- *   └─────────────────────────────────────────────────────────┘
- *
- * Strategy:
- * - Grows window exponentially after 2+ (smoothing) sequential accesses
- * - Shrinks window by half after N random accesses
- * - Forward strides (gaps) are treated as sequential
- *
- * Inspired by Linux readahead_state.
- */
-public class WindowedReadaheadPolicy implements ReadaheadPolicy {
+/** Atomic, Linux-like adaptive readahead policy (marker + lead). */
+public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
 
-    private final int initialWindow;
-    private final int maxWindow;
-    private final int shrinkOnRandomThreshold;
+    private final int initialWindow;           // segments
+    private final int maxWindow;               // segments
+    private final int shrinkOnRandomThreshold; // steps before halving window
+    private final int minLead;                 // minimum lead in segments
 
-    // Expected next byte offset in the file of the last segment that was accessed.
-    private long lastOffset = -1;
-    private int sequentialStreak = 0;
-    private int randomStreak = 0;
+    // All mutable fields are inside this immutable snapshot
+    private static final class State {
+        final long lastOffset;  // -1 if uninit
+        final long lastSeg;     // -1 if uninit
+        final long markerSeg;   // -1 if uninit
+        final int window;
+        final int seqStreak;
+        final int rndStreak;
 
-    private int currentWindow;
+        State(long lastOffset, long lastSeg, long markerSeg, int window, int seqStreak, int rndStreak) {
+            this.lastOffset = lastOffset;
+            this.lastSeg = lastSeg;
+            this.markerSeg = markerSeg;
+            this.window = window;
+            this.seqStreak = seqStreak;
+            this.rndStreak = rndStreak;
+        }
 
-    /**
-     * @param initialWindow initial readahead window (segments)
-     * @param maxWindow max readahead window (segments)
-     * @param shrinkOnRandomThreshold number of random accesses before shrinking window
-     */
+        static State init(int initWin) {
+            return new State(-1L, -1L, -1L, initWin, 0, 0);
+        }
+    }
+
+    private final AtomicReference<State> ref;
+
     public WindowedReadaheadPolicy(int initialWindow, int maxWindow, int shrinkOnRandomThreshold) {
-        if (initialWindow < 1) {
+        this(initialWindow, maxWindow, shrinkOnRandomThreshold, 1);
+    }
+
+    public WindowedReadaheadPolicy(int initialWindow, int maxWindow, int shrinkOnRandomThreshold, int minLead) {
+        if (initialWindow < 1)
             throw new IllegalArgumentException("initialWindow must be >= 1");
-        }
-        if (maxWindow < initialWindow) {
+        if (maxWindow < initialWindow)
             throw new IllegalArgumentException("maxWindow must be >= initialWindow");
-        }
-        if (shrinkOnRandomThreshold < 1) {
+        if (shrinkOnRandomThreshold < 1)
             throw new IllegalArgumentException("shrinkOnRandomThreshold must be >= 1");
-        }
+        if (minLead < 1)
+            throw new IllegalArgumentException("minLead must be >= 1");
         this.initialWindow = initialWindow;
         this.maxWindow = maxWindow;
-        this.currentWindow = initialWindow;
         this.shrinkOnRandomThreshold = shrinkOnRandomThreshold;
+        this.minLead = minLead;
+        this.ref = new AtomicReference<>(State.init(initialWindow));
+    }
+
+    // Compute lead based on a window value.
+    private int leadFor(int window) {
+        int lead = Math.max(minLead, window / 2);
+        return Math.max(1, lead);
     }
 
     @Override
-    public synchronized boolean shouldTrigger(long currentOffset) {
-        // First access: trigger an immediate readahead to hide first read latency
-        if (lastOffset == -1) {
-            lastOffset = currentOffset;
-            sequentialStreak = 0;
-            randomStreak = 0;
-            currentWindow = initialWindow;
-            return true; // Trigger first readahead immediately
-        }
+    public boolean shouldTrigger(long currentOffset) {
+        final long currSeg = currentOffset >>> CACHE_BLOCK_SIZE_POWER;
 
-        long expectedNext = lastOffset + CACHE_BLOCK_SIZE;
-        boolean trigger;
+        while (true) {
+            final State s = ref.get();
 
-        /*
-         * Forward Progress Detection:
-         *
-         *   lastOffset    expectedNext     currentOffset
-         *       |             |                |
-         *   ────┼─────────────┼────────────────┼─────► file
-         *      100           104              108
-         *
-         * Case 1: currentOffset >= expectedNext  → Sequential/Forward stride
-         * Case 2: currentOffset <  expectedNext  → Random/Backwards access
-         *
-         * This treats any forward progress (including gaps) as sequential
-         * while detecting true backwards/random access patterns.
-         */
-        if (currentOffset >= expectedNext) {
-            sequentialStreak++;
-            randomStreak = 0; // reset random access counter
-
-            trigger = true; // always trigger readahead on forward progress
-
-            // Conservative window growth strategy:
-            // Only grow after 2+ sequential accesses to avoid over-prefetching
-            if (sequentialStreak >= 2) {
-                currentWindow = Math.min(currentWindow * 2, maxWindow);
-            }
-        } else {
-            // Random/Backwards access; reset sequential counter.
-            sequentialStreak = 0;
-            randomStreak++;
-
-            // Shrink window after repeated random accesses
-            // Keep counting to allow further shrinking if pattern continues
-            if (randomStreak >= shrinkOnRandomThreshold) {
-                currentWindow = Math.max(1, currentWindow / 2);
+            // First access → prime + plant marker and trigger
+            if (s.lastOffset == -1L) {
+                final int win = initialWindow;
+                final long marker = currSeg + leadFor(win);
+                final State ns = new State(currentOffset, currSeg, marker, win, 0, 0);
+                if (ref.compareAndSet(s, ns))
+                    return true;
+                continue;
             }
 
-            trigger = false; // disable readahead for random access patterns
-        }
+            final boolean forward = currSeg >= s.lastSeg;
+            boolean trigger = false;
 
-        lastOffset = currentOffset;
-        return trigger;
+            int win = s.window;
+            int seq = s.seqStreak;
+            int rnd = s.rndStreak;
+            long marker = s.markerSeg;
+
+            if (forward) {
+                if (currSeg >= s.markerSeg) {
+                    // crossed marker → trigger + ramp
+                    trigger = true;
+                    seq = seq + 1;
+                    rnd = 0;
+                    if (seq >= 2) {
+                        win = Math.min(win << 1, maxWindow);
+                    }
+                    marker = currSeg + leadFor(win);
+                }
+            } else {
+                // random/backwards → shrink after threshold, reposition marker
+                trigger = false;
+                seq = 0;
+                rnd = rnd + 1;
+                if (rnd >= shrinkOnRandomThreshold) {
+                    win = Math.max(1, win >>> 1);
+                    rnd = 0; // optional: reset after shrink
+                }
+                marker = currSeg + Math.max(1, Math.min(leadFor(win), win));
+            }
+
+            final State ns = new State(currentOffset, currSeg, marker, win, seq, rnd);
+            if (ref.compareAndSet(s, ns)) {
+                return trigger;
+            }
+        }
+    }
+
+    @Override
+    public int currentWindow() {
+        return ref.get().window;
+    }
+
+    public int leadSegments() {
+        return leadFor(ref.get().window);
     }
 
     @Override
@@ -132,20 +143,19 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
         return maxWindow;
     }
 
-    /**
-     * @return current adaptive readahead window in segments
-     */
-    public synchronized int currentWindow() {
-        return currentWindow;
+    public void onQueuePressureMedium() {
+        ref.updateAndGet(s -> new State(s.lastOffset, s.lastSeg, s.markerSeg, Math.max(1, s.window >>> 1), s.seqStreak, s.rndStreak));
     }
 
-    /**
-     * Reset state, e.g., after a large random seek or reset.
-     */
-    public synchronized void reset() {
-        this.lastOffset = -1;
-        this.sequentialStreak = 0;
-        this.currentWindow = initialWindow;
-        this.randomStreak = 0;
+    public void onQueuePressureHigh() {
+        ref.updateAndGet(s -> new State(s.lastOffset, s.lastSeg, s.markerSeg, 1, s.seqStreak, s.rndStreak));
+    }
+
+    public void onQueueSaturated() {
+        onQueuePressureMedium();
+    }
+
+    public void reset() {
+        ref.set(State.init(initialWindow));
     }
 }
