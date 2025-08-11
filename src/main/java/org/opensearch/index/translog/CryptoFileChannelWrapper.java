@@ -18,8 +18,6 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.opensearch.index.store.iv.KeyIvResolver;
 
 /**
@@ -39,8 +37,6 @@ import org.opensearch.index.store.iv.KeyIvResolver;
  * @opensearch.internal
  */
 public class CryptoFileChannelWrapper extends FileChannel {
-
-    private static final Logger logger = LogManager.getLogger(CryptoFileChannelWrapper.class);
 
     private final FileChannel delegate;
     private final TranslogChunkManager chunkManager;

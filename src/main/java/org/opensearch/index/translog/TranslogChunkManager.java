@@ -9,6 +9,9 @@ import static org.opensearch.index.store.cipher.AesCipherFactory.computeOffsetIV
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.channels.NonReadableChannelException;
+import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 import java.security.Key;
 
@@ -155,7 +158,7 @@ public class TranslogChunkManager {
             delegate.read(testBuffer, diskPosition);
             return true;
 
-        } catch (java.nio.channels.NonReadableChannelException e) {
+        } catch (NonReadableChannelException e) {
             // Channel is write-only
             return false;
         } catch (IOException e) {
@@ -325,7 +328,7 @@ public class TranslogChunkManager {
      * @return the number of bytes transferred
      * @throws IOException if transfer fails
      */
-    public long transferFromChunks(long position, long count, java.nio.channels.WritableByteChannel target) throws IOException {
+    public long transferFromChunks(long position, long count, WritableByteChannel target) throws IOException {
         long transferred = 0;
         long remaining = count;
         ByteBuffer buffer = ByteBuffer.allocate(GCM_CHUNK_SIZE);
@@ -363,7 +366,7 @@ public class TranslogChunkManager {
      * @return the number of bytes transferred
      * @throws IOException if transfer fails
      */
-    public long transferToChunks(java.nio.channels.ReadableByteChannel src, long position, long count) throws IOException {
+    public long transferToChunks(ReadableByteChannel src, long position, long count) throws IOException {
         long transferred = 0;
         long remaining = count;
         ByteBuffer buffer = ByteBuffer.allocate(GCM_CHUNK_SIZE);

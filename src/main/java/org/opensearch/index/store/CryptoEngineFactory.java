@@ -5,14 +5,18 @@
 package org.opensearch.index.store;
 
 import java.io.IOException;
+import java.nio.file.Path;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
+import org.opensearch.index.codec.CodecService;
 import org.opensearch.index.engine.Engine;
 import org.opensearch.index.engine.EngineConfig;
 import org.opensearch.index.engine.EngineFactory;
 import org.opensearch.index.engine.InternalEngine;
+import org.opensearch.index.store.iv.DefaultKeyIvResolver;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.translog.CryptoTranslogFactory;
 
@@ -90,14 +94,14 @@ public class CryptoEngineFactory implements EngineFactory {
         // Create a separate key resolver for translog files
 
         // Use the translog location for key storage
-        java.nio.file.Path translogPath = config.getTranslogConfig().getTranslogPath();
-        org.apache.lucene.store.Directory keyDirectory = FSDirectory.open(translogPath);
+        Path translogPath = config.getTranslogConfig().getTranslogPath();
+        Directory keyDirectory = FSDirectory.open(translogPath);
 
         // Create crypto directory factory to get the key provider
         CryptoDirectoryFactory directoryFactory = new CryptoDirectoryFactory();
 
         // Create a dedicated key resolver for translog
-        return new org.opensearch.index.store.iv.DefaultKeyIvResolver(
+        return new DefaultKeyIvResolver(
             keyDirectory,
             config.getIndexSettings().getValue(CryptoDirectoryFactory.INDEX_CRYPTO_PROVIDER_SETTING),
             directoryFactory.getKeyProvider(config.getIndexSettings())
@@ -109,14 +113,10 @@ public class CryptoEngineFactory implements EngineFactory {
      * Since EngineConfig doesn't expose CodecService directly, we create a new one
      * using the same IndexSettings.
      */
-    private org.opensearch.index.codec.CodecService getCodecService(EngineConfig config) {
+    private CodecService getCodecService(EngineConfig config) {
         // Create a CodecService using the same IndexSettings as the original config
         // We pass null for MapperService and use a simple logger since we're just
         // preserving the existing codec behavior
-        return new org.opensearch.index.codec.CodecService(
-            null,
-            config.getIndexSettings(),
-            org.apache.logging.log4j.LogManager.getLogger(CryptoEngineFactory.class)
-        );
+        return new CodecService(null, config.getIndexSettings(), logger);
     }
 }

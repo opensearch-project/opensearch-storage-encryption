@@ -5,6 +5,7 @@
 package org.opensearch.index.store;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -42,7 +43,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
      */
     @Override
     public Map<String, DirectoryFactory> getDirectoryFactories() {
-        return java.util.Collections.singletonMap("cryptofs", new CryptoDirectoryFactory());
+        return Collections.singletonMap("cryptofs", new CryptoDirectoryFactory());
     }
 
     /**
