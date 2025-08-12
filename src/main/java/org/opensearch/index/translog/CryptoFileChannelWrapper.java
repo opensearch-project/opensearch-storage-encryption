@@ -18,6 +18,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
+import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.iv.KeyIvResolver;
 
 /**
@@ -36,6 +37,7 @@ import org.opensearch.index.store.iv.KeyIvResolver;
  *
  * @opensearch.internal
  */
+@SuppressForbidden(reason = "FileChannel operations required for encrypted translog implementation")
 public class CryptoFileChannelWrapper extends FileChannel {
 
     private final FileChannel delegate;

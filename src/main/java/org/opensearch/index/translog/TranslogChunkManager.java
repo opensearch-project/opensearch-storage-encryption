@@ -12,12 +12,14 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.NonReadableChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.Key;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.CodecUtil;
+import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.cipher.AesGcmCipherFactory;
 import org.opensearch.index.store.iv.KeyIvResolver;
 
@@ -30,6 +32,7 @@ import org.opensearch.index.store.iv.KeyIvResolver;
  *
  * @opensearch.internal
  */
+@SuppressForbidden(reason = "Channel operations required for chunk-based encryption")
 public class TranslogChunkManager {
 
     private static final Logger logger = LogManager.getLogger(TranslogChunkManager.class);
@@ -116,7 +119,7 @@ public class TranslogChunkManager {
      */
     private static int calculateTranslogHeaderSize(String translogUUID) {
         // Replicate: headerSizeInBytes(CURRENT_VERSION, new BytesRef(translogUUID).length)
-        int uuidLength = translogUUID.getBytes().length;
+        int uuidLength = translogUUID.getBytes(StandardCharsets.UTF_8).length;
 
         // Replicate the internal calculation
         int size = CodecUtil.headerLength(TRANSLOG_CODEC); // Lucene codec header

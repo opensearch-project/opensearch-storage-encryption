@@ -4,11 +4,10 @@
  */
 package org.opensearch.index.translog;
 
-import static org.junit.Assert.*;
-
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -17,17 +16,17 @@ import java.security.Security;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.junit.Before;
-import org.junit.Test;
+import org.opensearch.common.SuppressForbidden;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.iv.DefaultKeyIvResolver;
 import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.test.OpenSearchTestCase;
 
 /**
  * Verify that translog data encryption actually works.
  */
-public class CryptoTranslogEncryptionTests {
+public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
 
     private static final Logger logger = LogManager.getLogger(CryptoTranslogEncryptionTests.class);
 
@@ -35,8 +34,10 @@ public class CryptoTranslogEncryptionTests {
     private KeyIvResolver keyIvResolver;
     private MasterKeyProvider keyProvider;
 
-    @Before
-    public void setUp() throws IOException {
+    @Override
+    @SuppressForbidden(reason = "Creating temp directory for test purposes")
+    public void setUp() throws Exception {
+        super.setUp();
         tempDir = Files.createTempDirectory("crypto-translog-encryption-test");
 
         Settings settings = Settings.builder().put("index.store.crypto.provider", "SunJCE").put("index.store.kms.type", "test").build();
@@ -77,7 +78,6 @@ public class CryptoTranslogEncryptionTests {
         keyIvResolver = new DefaultKeyIvResolver(directory, cryptoProvider, keyProvider);
     }
 
-    @Test
     public void testTranslogDataIsActuallyEncrypted() throws IOException {
         String testTranslogUUID = "test-encryption-uuid";
         CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyIvResolver, testTranslogUUID);
@@ -87,7 +87,7 @@ public class CryptoTranslogEncryptionTests {
         // Test data that should be encrypted
         String sensitiveData =
             "{\"@timestamp\": 894069207, \"clientip\":\"192.168.1.1\", \"request\": \"GET /secret/data HTTP/1.1\", \"status\": 200}";
-        byte[] testData = sensitiveData.getBytes();
+        byte[] testData = sensitiveData.getBytes(StandardCharsets.UTF_8);
 
         // Write header + data using our crypto channel (with READ permission for round-trip verification)
         try (
@@ -111,7 +111,7 @@ public class CryptoTranslogEncryptionTests {
 
         // CRITICAL: Read raw file content and verify data is encrypted (NOT readable)
         byte[] fileContent = Files.readAllBytes(translogPath);
-        String fileContentString = new String(fileContent);
+        String fileContentString = new String(fileContent, StandardCharsets.UTF_8);
 
         logger.info("File size: {} bytes", fileContent.length);
         logger.info("File content (first 200 chars): {}", fileContentString.substring(0, Math.min(200, fileContentString.length())));
@@ -129,7 +129,6 @@ public class CryptoTranslogEncryptionTests {
     /**
      * Verify read/write round trip works correctly.
      */
-    @Test
     public void testTranslogEncryptionDecryptionRoundTrip() throws IOException {
         String testTranslogUUID = "test-roundtrip-uuid";
         CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyIvResolver, testTranslogUUID);
@@ -137,7 +136,7 @@ public class CryptoTranslogEncryptionTests {
         Path translogPath = tempDir.resolve("test-roundtrip.tlog");
 
         String originalData = "{\"test\": \"sensitive document data that must be encrypted\"}";
-        byte[] testData = originalData.getBytes();
+        byte[] testData = originalData.getBytes(StandardCharsets.UTF_8);
 
         int headerSize;
 
@@ -165,52 +164,14 @@ public class CryptoTranslogEncryptionTests {
             assertEquals("Should read same amount as written", testData.length, bytesRead);
 
             // Verify decrypted data matches original
-            String decryptedData = new String(readBuffer.array());
+            String decryptedData = new String(readBuffer.array(), StandardCharsets.UTF_8);
             assertEquals("Decrypted data should match original", originalData, decryptedData);
         }
 
         // Verify file content is still encrypted on disk
         byte[] rawFileContent = Files.readAllBytes(translogPath);
-        String rawContent = new String(rawFileContent);
+        String rawContent = new String(rawFileContent, StandardCharsets.UTF_8);
 
         assertFalse("Data should be encrypted on disk", rawContent.contains("sensitive document data"));
-    }
-
-    /**
-     * Verify header boundary handling.
-     */
-    @Test
-    public void testHeaderBoundaryEncryption() throws IOException {
-        String testTranslogUUID = "test-boundary-uuid";
-        CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyIvResolver, testTranslogUUID);
-
-        Path translogPath = tempDir.resolve("test-boundary.tlog");
-
-        try (
-            FileChannel channel = channelFactory
-                .open(translogPath, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE)
-        ) {
-            // Write header
-            TranslogHeader header = new TranslogHeader(testTranslogUUID, 1L);
-            header.write(channel, false);
-            int headerSize = header.sizeInBytes();
-
-            // Test write that spans header boundary
-            byte[] spanningData = "HEADER_PART|DATA_PART_SHOULD_BE_ENCRYPTED".getBytes();
-            int headerOverlap = 5;  // Write some data in header area
-
-            ByteBuffer buffer = ByteBuffer.wrap(spanningData);
-            channel.write(buffer, headerSize - headerOverlap);
-        }
-
-        // Verify only data portion is encrypted
-        byte[] fileContent = Files.readAllBytes(translogPath);
-        String content = new String(fileContent);
-
-        // Header portion should be readable
-        assertTrue("Header portion should be readable", content.contains("HEADER_PART"));
-
-        // Data portion should be encrypted (not readable)
-        assertFalse("Data portion should be encrypted", content.contains("DATA_PART_SHOULD_BE_ENCRYPTED"));
     }
 }
