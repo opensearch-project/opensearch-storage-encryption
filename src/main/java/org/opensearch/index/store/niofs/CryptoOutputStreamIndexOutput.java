@@ -8,13 +8,13 @@ import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.Path;
+import java.security.Key;
+
+import javax.crypto.Cipher;
 
 import org.apache.lucene.store.OutputStreamIndexOutput;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.cipher.AesGcmCipherFactory;
-
-import javax.crypto.Cipher;
-import java.security.Key;
 
 /**
  * An IndexOutput implementation that encrypts data before writing using native
@@ -40,7 +40,8 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
      * @throws IOException If there is an I/O error
      * @throws IllegalArgumentException If key or iv lengths are invalid
      */
-    public CryptoOutputStreamIndexOutput(String name, Path path, OutputStream os, Key key, byte[] iv, java.security.Provider provider) throws IOException {
+    public CryptoOutputStreamIndexOutput(String name, Path path, OutputStream os, Key key, byte[] iv, java.security.Provider provider)
+        throws IOException {
         super("FSIndexOutput(path=\"" + path + "\")", name, new EncryptedOutputStream(os, key, iv, provider), CHUNK_SIZE);
     }
 
@@ -106,7 +107,8 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
 
         private void processAndWrite(byte[] data, int offset, int length) throws IOException {
             try {
-                byte[] encrypted = org.opensearch.index.store.cipher.AesGcmCipherFactory.encryptWithoutTag(streamOffset, cipher, slice(data, offset, length), length);
+                byte[] encrypted = org.opensearch.index.store.cipher.AesGcmCipherFactory
+                    .encryptWithoutTag(streamOffset, cipher, slice(data, offset, length), length);
                 out.write(encrypted);
                 streamOffset += length;
             } catch (Throwable t) {
