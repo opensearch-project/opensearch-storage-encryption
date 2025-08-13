@@ -35,6 +35,8 @@ import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
+import org.opensearch.index.store.read_ahead.Worker;
+import org.opensearch.index.store.read_ahead.impl.ReadaheadManagerImpl;
 
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "uses custom DirectIO")
@@ -45,9 +47,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     private final Pool<MemorySegment> memorySegmentPool;
     private final BlockCache<RefCountedMemorySegment> blockCache;
     private final BlockLoader<RefCountedMemorySegment> blockLoader;
-
-    private final ReadaheadManager readAheadManager;
-
+    private final Worker readAheadworker;
     private final KeyIvResolver keyIvResolver;
 
     public CryptoDirectIODirectory(
@@ -58,7 +58,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         Pool<MemorySegment> memorySegmentPool,
         BlockCache<RefCountedMemorySegment> blockCache,
         BlockLoader<RefCountedMemorySegment> blockLoader,
-        ReadaheadManager readAheadManager
+        Worker worker
     )
         throws IOException {
         super(path, lockFactory);
@@ -66,7 +66,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         this.memorySegmentPool = memorySegmentPool;
         this.blockCache = blockCache;
         this.blockLoader = blockLoader;
-        this.readAheadManager = readAheadManager;
+        this.readAheadworker = worker;
         startCacheStatsTelemetry();
     }
 
@@ -92,7 +92,9 @@ public final class CryptoDirectIODirectory extends FSDirectory {
 
         MemorySegment[] segments = new MemorySegment[numCacheBlocks];
         RefCountedMemorySegment[] refSegments = new RefCountedMemorySegment[numCacheBlocks];
-        // Create a new ReadAheadContext for this specific file
+
+        ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker);
+        // Create a new ReadAheadContext for this index input.
         ReadaheadContext readAheadContext = readAheadManager.register(file, size);
 
         try (FileChannel fc = FileChannel.open(file, StandardOpenOption.READ)) {
@@ -193,6 +195,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     @Override
     public synchronized void close() throws IOException {
         isOpen = false;
+        readAheadworker.close();
         deletePendingFiles();
     }
 

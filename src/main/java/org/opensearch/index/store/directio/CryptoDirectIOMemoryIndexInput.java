@@ -257,7 +257,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         if (blockCache != null) {
             final DirectIOBlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, alignedBlockStart);
             final Optional<BlockCacheValue<RefCountedMemorySegment>> cached = blockCache.get(cacheKey);
-
             if (cached.isPresent()) {
                 if (LOGGER.isDebugEnabled()) {
                     LOGGER
@@ -764,7 +763,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         }
 
         // Close readahead context if this is the master input
-        if (readaheadManager != null && readaheadContext != null && channel != null) {
+        if (readaheadManager != null && readaheadContext != null) {
             try {
                 readaheadManager.cancel(readaheadContext);
             } catch (Exception e) {
