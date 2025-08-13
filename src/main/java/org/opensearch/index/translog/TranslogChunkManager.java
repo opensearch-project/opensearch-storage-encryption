@@ -50,11 +50,6 @@ public class TranslogChunkManager {
     // Header size - calculated exactly using TranslogHeader.headerSizeInBytes()
     private volatile int actualHeaderSize = -1;
 
-    // TranslogHeader constants replicated to avoid cross-classloader access
-    private static final String TRANSLOG_CODEC = "translog";
-    private static final int VERSION_PRIMARY_TERM = 3;
-    private static final int CURRENT_VERSION = VERSION_PRIMARY_TERM;
-
     /**
      * Helper class for chunk position mapping
      */
@@ -118,15 +113,13 @@ public class TranslogChunkManager {
      * @return the header size in bytes
      */
     private static int calculateTranslogHeaderSize(String translogUUID) {
-        // Replicate: headerSizeInBytes(CURRENT_VERSION, new BytesRef(translogUUID).length)
         int uuidLength = translogUUID.getBytes(StandardCharsets.UTF_8).length;
 
-        // Replicate the internal calculation
-        int size = CodecUtil.headerLength(TRANSLOG_CODEC); // Lucene codec header
+        // Calculate header size using official TranslogHeader constants
+        int size = CodecUtil.headerLength(TranslogHeader.TRANSLOG_CODEC); // Lucene codec header
         size += Integer.BYTES + uuidLength; // uuid length field + uuid bytes
 
-        // VERSION_PRIMARY_TERM = 3, CURRENT_VERSION = 3
-        if (CURRENT_VERSION >= VERSION_PRIMARY_TERM) {
+        if (TranslogHeader.CURRENT_VERSION >= TranslogHeader.VERSION_PRIMARY_TERM) {
             size += Long.BYTES;    // primary term
             size += Integer.BYTES; // checksum
         }

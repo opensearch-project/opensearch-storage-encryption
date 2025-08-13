@@ -11,7 +11,6 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
-import org.opensearch.index.codec.CodecService;
 import org.opensearch.index.engine.Engine;
 import org.opensearch.index.engine.EngineConfig;
 import org.opensearch.index.engine.EngineFactory;
@@ -47,37 +46,9 @@ public class CryptoEngineFactory implements EngineFactory {
 
             // Create new engine config by copying all fields from existing config
             // but replace the translog factory with our crypto version
-            EngineConfig cryptoConfig = new EngineConfig.Builder()
-                .shardId(config.getShardId())
-                .threadPool(config.getThreadPool())
-                .indexSettings(config.getIndexSettings())
-                .warmer(config.getWarmer())
-                .store(config.getStore())
-                .mergePolicy(config.getMergePolicy())
-                .analyzer(config.getAnalyzer())
-                .similarity(config.getSimilarity())
-                .codecService(getCodecService(config))
-                .eventListener(config.getEventListener())
-                .queryCache(config.getQueryCache())
-                .queryCachingPolicy(config.getQueryCachingPolicy())
-                .translogConfig(config.getTranslogConfig())
-                .translogDeletionPolicyFactory(config.getCustomTranslogDeletionPolicyFactory())
-                .flushMergesAfter(config.getFlushMergesAfter())
-                .externalRefreshListener(config.getExternalRefreshListener())
-                .internalRefreshListener(config.getInternalRefreshListener())
-                .indexSort(config.getIndexSort())
-                .circuitBreakerService(config.getCircuitBreakerService())
-                .globalCheckpointSupplier(config.getGlobalCheckpointSupplier())
-                .retentionLeasesSupplier(config.retentionLeasesSupplier())
-                .primaryTermSupplier(config.getPrimaryTermSupplier())
-                .tombstoneDocSupplier(config.getTombstoneDocSupplier())
-                .readOnlyReplica(config.isReadOnlyReplica())
-                .startedPrimarySupplier(config.getStartedPrimarySupplier())
+            EngineConfig cryptoConfig = config
+                .toBuilder()
                 .translogFactory(cryptoTranslogFactory)  // <- Replace with our crypto factory
-                .leafSorter(config.getLeafSorter())
-                .documentMapperForTypeSupplier(config.getDocumentMapperForTypeSupplier())
-                .indexReaderWarmer(config.getIndexReaderWarmer())
-                .clusterApplierService(config.getClusterApplierService())
                 .build();
 
             // Return the default engine with crypto-enabled translog
@@ -108,15 +79,4 @@ public class CryptoEngineFactory implements EngineFactory {
         );
     }
 
-    /**
-     * Helper method to create a CodecService from existing EngineConfig.
-     * Since EngineConfig doesn't expose CodecService directly, we create a new one
-     * using the same IndexSettings.
-     */
-    private CodecService getCodecService(EngineConfig config) {
-        // Create a CodecService using the same IndexSettings as the original config
-        // We pass null for MapperService and use a simple logger since we're just
-        // preserving the existing codec behavior
-        return new CodecService(null, config.getIndexSettings(), logger);
-    }
 }
