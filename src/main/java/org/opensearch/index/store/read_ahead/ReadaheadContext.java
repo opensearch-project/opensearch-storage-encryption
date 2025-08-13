@@ -44,7 +44,7 @@ public interface ReadaheadContext extends Closeable {
      */
     void onSegmentAccess(long fileOffset, boolean cacheMiss);
 
-    void triggerReadahead(long fileOffset, long startSegmentIndex);
+    void triggerReadahead(long fileOffset);
 
     /**
      * Reset the readahead state (e.g., after a large random seek or stream reset).

@@ -6,119 +6,149 @@ package org.opensearch.index.store.read_ahead.impl;
 
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
 
+import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.index.store.read_ahead.ReadaheadPolicy;
 
-/** Atomic, Linux-like adaptive readahead policy (marker + lead). */
+/**
+ * Linux-style adaptive readahead (marker + lead).
+ *
+ * Rules (roughly mirroring the kernel logic):
+ *  - First access: seed window=initial, place marker = curr + lead(window), trigger.
+ *  - Sequential (curr == last + 1):
+ *      * If we crossed marker → trigger and grow window (min(2x, max)).
+ *      * Advance marker = curr + lead(window).
+ *  - Small forward gap (0 less gap less equal smallGapThresh) → treat as seq-ish, shrink a bit, re-place marker.
+ *  - Large forward jump OR any backward jump → reset to initial window, re-place marker; no trigger now.
+ *  - Lead is derived from window (conservative: win/2; mildly aggressive: win/3 or win/4).
+ */
 public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
+    private static final Logger LOGGER = LogManager.getLogger(WindowedReadaheadPolicy.class);
 
-    private final int initialWindow;           // segments
-    private final int maxWindow;               // segments
-    private final int shrinkOnRandomThreshold; // steps before halving window
-    private final int minLead;                 // minimum lead in segments
+    private final Path path;
+    private final int initialWindow;       // segments
+    private final int maxWindow;           // segments
+    private final int minLead;             // segments (>=1)
 
-    // All mutable fields are inside this immutable snapshot
+    // How tolerant we are to small forward gaps before treating as random.
+    // Linux will sometimes be forgiving of small gaps; we use a fraction of current window.
+    private final int smallGapDivisor;     // e.g. 4 → allow gap up to win/4 as "seq-ish"
+
     private static final class State {
-        final long lastOffset;  // -1 if uninit
-        final long lastSeg;     // -1 if uninit
-        final long markerSeg;   // -1 if uninit
-        final int window;
-        final int seqStreak;
-        final int rndStreak;
+        final long lastSeg;    // -1 if uninit
+        final long markerSeg;  // next trigger point (reader crosses => trigger)
+        final int window;     // current window (segments)
 
-        State(long lastOffset, long lastSeg, long markerSeg, int window, int seqStreak, int rndStreak) {
-            this.lastOffset = lastOffset;
+        State(long lastSeg, long markerSeg, int window) {
             this.lastSeg = lastSeg;
             this.markerSeg = markerSeg;
             this.window = window;
-            this.seqStreak = seqStreak;
-            this.rndStreak = rndStreak;
         }
 
         static State init(int initWin) {
-            return new State(-1L, -1L, -1L, initWin, 0, 0);
+            return new State(-1L, -1L, initWin);
         }
     }
 
     private final AtomicReference<State> ref;
 
-    public WindowedReadaheadPolicy(int initialWindow, int maxWindow, int shrinkOnRandomThreshold) {
-        this(initialWindow, maxWindow, shrinkOnRandomThreshold, 1);
+    public WindowedReadaheadPolicy(
+        Path path,
+        int initialWindow,
+        int maxWindow,
+        int shrinkOnRandomThreshold /*unused now but kept for ctor compat*/
+    ) {
+        this(path, initialWindow, maxWindow, /*minLead*/1, /*smallGapDivisor*/4);
     }
 
-    public WindowedReadaheadPolicy(int initialWindow, int maxWindow, int shrinkOnRandomThreshold, int minLead) {
+    public WindowedReadaheadPolicy(Path path, int initialWindow, int maxWindow, int minLead, int smallGapDivisor) {
         if (initialWindow < 1)
             throw new IllegalArgumentException("initialWindow must be >= 1");
         if (maxWindow < initialWindow)
             throw new IllegalArgumentException("maxWindow must be >= initialWindow");
-        if (shrinkOnRandomThreshold < 1)
-            throw new IllegalArgumentException("shrinkOnRandomThreshold must be >= 1");
         if (minLead < 1)
             throw new IllegalArgumentException("minLead must be >= 1");
+        if (smallGapDivisor < 2)
+            throw new IllegalArgumentException("smallGapDivisor must be >= 2");
+
+        this.path = path;
         this.initialWindow = initialWindow;
         this.maxWindow = maxWindow;
-        this.shrinkOnRandomThreshold = shrinkOnRandomThreshold;
         this.minLead = minLead;
+        this.smallGapDivisor = smallGapDivisor;
         this.ref = new AtomicReference<>(State.init(initialWindow));
     }
 
-    // Compute lead based on a window value.
     private int leadFor(int window) {
-        int lead = Math.max(minLead, window / 2);
-        return Math.max(1, lead);
+        return Math.max(minLead, window / 3);
     }
 
     @Override
     public boolean shouldTrigger(long currentOffset) {
         final long currSeg = currentOffset >>> CACHE_BLOCK_SIZE_POWER;
 
-        while (true) {
+        for (;;) {
             final State s = ref.get();
 
-            // First access → prime + plant marker and trigger
-            if (s.lastOffset == -1L) {
+            // First access — trigger and seed state
+            if (s.lastSeg == -1L) {
                 final int win = initialWindow;
                 final long marker = currSeg + leadFor(win);
-                final State ns = new State(currentOffset, currSeg, marker, win, 0, 0);
-                if (ref.compareAndSet(s, ns))
+                if (ref.compareAndSet(s, new State(currSeg, marker, win))) {
+                    LOGGER.trace("Path={}, Trigger={}, currSeg={}, newMarker={}, win={}", path, true, currSeg, marker, win);
                     return true;
+                }
                 continue;
             }
 
-            final boolean forward = currSeg >= s.lastSeg;
+            final long gap = currSeg - s.lastSeg; // signed
+            int newWin = s.window;
+            long proposedMarker = s.markerSeg; // keep as-is unless we trigger/cross
             boolean trigger = false;
 
-            int win = s.window;
-            int seq = s.seqStreak;
-            int rnd = s.rndStreak;
-            long marker = s.markerSeg;
+            final int seqGapBuffer = Math.max(2, Math.min(s.window / 2, 4));
+            final boolean isSequential = gap >= 1 && gap <= seqGapBuffer;
 
-            if (forward) {
-                if (currSeg >= s.markerSeg) {
-                    // crossed marker → trigger + ramp
+            if (isSequential) {
+                // Sequential forward → always trigger, grow window
+                trigger = true;
+                newWin = Math.min(s.window << 1, maxWindow);
+            } else if (gap > seqGapBuffer) {
+                // Forward jump
+                final int smallGap = Math.max(1, s.window / smallGapDivisor);
+                if (gap <= smallGap) {
+                    // Small jump that crosses marker → trigger, cautiously shrink window
                     trigger = true;
-                    seq = seq + 1;
-                    rnd = 0;
-                    if (seq >= 2) {
-                        win = Math.min(win << 1, maxWindow);
-                    }
-                    marker = currSeg + leadFor(win);
+                    newWin = Math.max(1, s.window >>> 1); // shrink window
+                } else {
+                    // Large jump or didn't cross marker → reset window, do not trigger
+                    trigger = false;
+                    newWin = initialWindow;
                 }
-            } else {
-                // random/backwards → shrink after threshold, reposition marker
+            } else if (gap == 0) {
                 trigger = false;
-                seq = 0;
-                rnd = rnd + 1;
-                if (rnd >= shrinkOnRandomThreshold) {
-                    win = Math.max(1, win >>> 1);
-                    rnd = 0; // optional: reset after shrink
-                }
-                marker = currSeg + Math.max(1, Math.min(leadFor(win), win));
+            } else {
+                // Backward/same → reset window, don't trigger
+                trigger = false;
+                newWin = initialWindow;
             }
 
-            final State ns = new State(currentOffset, currSeg, marker, win, seq, rnd);
-            if (ref.compareAndSet(s, ns)) {
+            final State next = new State(currSeg, proposedMarker, newWin);
+            if (ref.compareAndSet(s, next)) {
+                LOGGER
+                    .debug(
+                        "Path={}, Gap={}, isSequential={}, Trigger={}, currSeg={}, newMarker={}, win={}",
+                        path,
+                        gap,
+                        isSequential,
+                        trigger,
+                        currSeg,
+                        proposedMarker,
+                        newWin
+                    );
                 return trigger;
             }
         }
@@ -129,6 +159,11 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
         return ref.get().window;
     }
 
+    public long currentMarker() {
+        return ref.get().markerSeg;
+    }
+
+    /** Expose current lead for callers that want to pass a near-threshold to the worker. */
     public int leadSegments() {
         return leadFor(ref.get().window);
     }
@@ -143,12 +178,13 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
         return maxWindow;
     }
 
+    /** Queue backpressure hooks (optional, simple + Linux-ish “be humble under pressure”). */
     public void onQueuePressureMedium() {
-        ref.updateAndGet(s -> new State(s.lastOffset, s.lastSeg, s.markerSeg, Math.max(1, s.window >>> 1), s.seqStreak, s.rndStreak));
+        ref.updateAndGet(s -> new State(s.lastSeg, s.markerSeg, Math.max(1, s.window >>> 1)));
     }
 
     public void onQueuePressureHigh() {
-        ref.updateAndGet(s -> new State(s.lastOffset, s.lastSeg, s.markerSeg, 1, s.seqStreak, s.rndStreak));
+        ref.updateAndGet(s -> new State(s.lastSeg, s.markerSeg, initialWindow));
     }
 
     public void onQueueSaturated() {

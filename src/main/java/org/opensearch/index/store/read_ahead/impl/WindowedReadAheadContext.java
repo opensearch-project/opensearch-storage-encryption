@@ -9,7 +9,6 @@ import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SI
 
 import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -31,10 +30,9 @@ public class WindowedReadAheadContext implements ReadaheadContext {
     private boolean readaheadEnabled = true;
 
     // Scheduling state (per file)
-    private final AtomicLong lastScheduledSegment = new AtomicLong(-1L);
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
-    public WindowedReadAheadContext(Path path, long fileLength, Worker worker, int hitStreakThreshold, WindowedReadaheadPolicy policy) {
+    private WindowedReadAheadContext(Path path, long fileLength, Worker worker, int hitStreakThreshold, WindowedReadaheadPolicy policy) {
         this.path = path;
         this.fileLength = fileLength;
         this.worker = worker;
@@ -43,7 +41,8 @@ public class WindowedReadAheadContext implements ReadaheadContext {
     }
 
     public static WindowedReadAheadContext build(Path path, long fileLength, Worker worker, WindowedReadAheadConfig config) {
-        WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(
+        var policy = new WindowedReadaheadPolicy(
+            path,
             config.initialWindow(),
             config.maxWindowSegments(),
             config.shrinkOnRandomThreshold()
@@ -61,124 +60,82 @@ public class WindowedReadAheadContext implements ReadaheadContext {
             qw.updateMinUsefulOffset(path, fileOffset);
         }
 
-        if (LOGGER.isTraceEnabled()) {
-            final long seg = fileOffset >>> CACHE_BLOCK_SIZE_POWER; // fileOffset should be aligned by caller
-            final int winSnapshot = policy.currentWindow();
-            final int leadSnapshot = Math.max(1, winSnapshot / 2);
-            LOGGER
-                .trace(
-                    "FG_ACCESS path={} off={} seg={} miss={} win={} lead={} lastSched={}",
-                    path,
-                    fileOffset,
-                    seg,
-                    cacheMiss,
-                    winSnapshot,
-                    leadSnapshot,
-                    lastScheduledSegment.get()
-                );
-        }
-
-        // Simple cache-awareness: disable readahead after a run of hits
+        // Simple cache-awareness with light hysteresis
         if (cacheMiss) {
             readaheadEnabled = true;
             cacheHitStreak = 0;
-        } else {
+        } else if (readaheadEnabled) {
             if (++cacheHitStreak >= hitStreakThreshold) {
                 readaheadEnabled = false;
+                cacheHitStreak = 0; // reset for next enable phase
             }
         }
 
         if (!readaheadEnabled)
             return;
 
-        // Window policy decides if we should trigger for this offset
-        if (!policy.shouldTrigger(fileOffset))
+        if (!policy.shouldTrigger(fileOffset)) {
             return;
+        }
 
-        final int window = policy.currentWindow();
-        final long currentSeg = fileOffset >>> CACHE_BLOCK_SIZE_POWER;
-
-        // Choose a small lookahead within the window so we don't start exactly at the current seg
-        final int lead = Math.max(1, window / 2);
-
-        // Don’t re-schedule segments we already asked for
-        final long startSegmentIndex = Math.max(currentSeg + lead, lastScheduledSegment.get() + 1);
-
-        triggerReadahead(fileOffset, startSegmentIndex, window);
+        trigger(fileOffset);
     }
 
-    private void triggerReadahead(long fileOffset, long startSegmentIndex, int windowSegments) {
+    private void trigger(long anchorFileOffset) {
         if (closed.get() || worker == null)
             return;
 
-        final long maxSegmentIndex = fileLength >>> CACHE_BLOCK_SIZE_POWER;
+        final long currSeg = anchorFileOffset >>> CACHE_BLOCK_SIZE_POWER;
+        final long startSeg = currSeg + 2;
 
-        // Skip very end-of-file to avoid tiny trailing reads
-        if (startSegmentIndex >= (maxSegmentIndex - 2)) {
-            if (LOGGER.isTraceEnabled()) {
-                LOGGER.trace("Skipping readahead near EOF: startSeg={} maxSeg={}", startSegmentIndex, maxSegmentIndex);
-            }
+        final long lastSeg = (fileLength - 1) >>> CACHE_BLOCK_SIZE_POWER;
+        final long safeEndSeg = Math.max(0, lastSeg - 3); // Skip footers (last 4 segments)
+
+        final long windowSegs = policy.currentWindow();
+        // Clamp end: no more than windowSegs, and not past safeEndSeg
+        final long endExclusive = Math.min(startSeg + windowSegs, safeEndSeg + 1);
+
+        if (startSeg >= endExclusive) {
             return;
         }
 
-        final long endSegmentIndex = Math.min(startSegmentIndex + windowSegments, maxSegmentIndex + 1);
-
         int scheduled = 0;
-        int skippedAlreadyScheduled = 0;
-        boolean stoppedByQueue = false;
+        long firstAccepted = -1L, firstRejected = -1L;
 
-        for (long seg = startSegmentIndex; seg < endSegmentIndex; seg++) {
-            if (seg <= lastScheduledSegment.get()) {
-                skippedAlreadyScheduled++;
-                continue;
-            }
-
-            final long segmentOffset = seg << CACHE_BLOCK_SIZE_POWER;
-            if (segmentOffset >= fileLength)
+        for (long seg = startSeg; seg < endExclusive; seg++) {
+            final long off = seg << CACHE_BLOCK_SIZE_POWER;
+            final long remaining = fileLength - off;
+            if (remaining <= 0) {
                 break;
-
-            final long remaining = fileLength - segmentOffset;
-            final int length = (int) Math.min(CACHE_BLOCK_SIZE, remaining);
-
-            if (LOGGER.isTraceEnabled()) {
-                LOGGER
-                    .trace(
-                        "RA_TRY path={} startSeg={} seg={} off={} win={} len={} lastSched={}",
-                        path,
-                        startSegmentIndex,
-                        seg,
-                        segmentOffset,
-                        windowSegments,
-                        length,
-                        lastScheduledSegment.get()
-                    );
             }
 
-            final boolean accepted = worker.schedule(path, segmentOffset, length);
+            final int len = (int) Math.min(CACHE_BLOCK_SIZE, remaining);
 
-            if (accepted) {
-                lastScheduledSegment.lazySet(seg);
+            if (worker.schedule(path, off, len)) {
+                if (firstAccepted == -1L)
+                    firstAccepted = seg;
                 scheduled++;
             } else {
-                stoppedByQueue = true;
+                firstRejected = seg; // queue backpressure
+                LOGGER
+                    .info("There is backpressure path={} length={} startSeg={} endExclusive={}", path, fileLength, startSeg, endExclusive);
                 break;
             }
         }
 
-        if (LOGGER.isTraceEnabled()) {
-            LOGGER
-                .trace(
-                    "RA_TRIGGER path={} win={} startSeg={} endSeg={} scheduled={} skipped_due_to_lastSched={} stoppedByQueue={} lastSched={}",
-                    path,
-                    windowSegments,
-                    startSegmentIndex,
-                    (endSegmentIndex - 1),
-                    scheduled,
-                    skippedAlreadyScheduled,
-                    stoppedByQueue,
-                    lastScheduledSegment.get()
-                );
-        }
+        LOGGER
+            .debug(
+                "RA_TRIGGER path={} anchorOff={} startSeg={} endExclusive={} windowSegs={} scheduled={} firstAccepted={} firstRejected={}",
+                path,
+                anchorFileOffset,
+                startSeg,
+                endExclusive,
+                windowSegs,
+                scheduled,
+                firstAccepted,
+                firstRejected
+            );
+
     }
 
     @Override
@@ -187,8 +144,8 @@ public class WindowedReadAheadContext implements ReadaheadContext {
     }
 
     @Override
-    public synchronized void triggerReadahead(long fileOffset, long startSegmentIndex) {
-        triggerReadahead(fileOffset, startSegmentIndex, policy.currentWindow());
+    public synchronized void triggerReadahead(long fileOffset) {
+        trigger(fileOffset);
     }
 
     @Override
@@ -196,7 +153,6 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         policy.reset();
         cacheHitStreak = 0;
         readaheadEnabled = true;
-        lastScheduledSegment.set(-1L);
     }
 
     @Override

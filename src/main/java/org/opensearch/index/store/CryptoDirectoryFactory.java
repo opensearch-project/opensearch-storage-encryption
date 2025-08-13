@@ -54,10 +54,8 @@ import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.mmap.EagerDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.mmap.LazyDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
-import org.opensearch.index.store.read_ahead.ReadaheadManager;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.index.store.read_ahead.impl.QueuingWorker;
-import org.opensearch.index.store.read_ahead.impl.ReadaheadManagerImpl;
 import org.opensearch.plugins.IndexStorePlugin;
 
 import com.github.benmanes.caffeine.cache.Cache;
@@ -276,7 +274,6 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
 
         int threads = Math.max(4, Runtime.getRuntime().availableProcessors() / 4);
         Worker readaheadWorker = new QueuingWorker(READ_AHEAD_QUEUE_SIZE, threads, blockCache, loader, (int) CACHE_BLOCK_SIZE);
-        ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readaheadWorker);
 
         return new CryptoDirectIODirectory(
             location,
@@ -286,7 +283,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             sharedSegmentPool,
             blockCache,
             loader,
-            readAheadManager
+            readaheadWorker
         );
     }
 
