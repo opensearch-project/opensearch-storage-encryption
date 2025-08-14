@@ -2,13 +2,11 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.iv;
+package org.opensearch.index.store.key;
 
 import java.io.IOException;
 import java.security.Key;
 import java.security.Provider;
-import java.security.SecureRandom;
-import java.util.Base64;
 
 import javax.crypto.spec.SecretKeySpec;
 
@@ -16,91 +14,61 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
-import org.opensearch.common.Randomness;
 import org.opensearch.common.crypto.DataKeyPair;
 import org.opensearch.common.crypto.MasterKeyProvider;
-import org.opensearch.index.store.cipher.AesCipherFactory;
 
 /**
- * Default implementation of {@link KeyIvResolver} responsible for managing
- * the encryption key and initialization vector (IV) used in encrypting and decrypting
- * Lucene index files.
+ * Default implementation of {@link KeyResolver} responsible for managing
+ * the encryption key used in encrypting and decrypting Lucene index files.
  *
  * Metadata files:
  * - "keyfile" stores the encrypted data key
- * - "ivFile" stores the base64-encoded IV
+ * - IVs are derived using HKDF
  *
  * @opensearch.internal
  */
-public class DefaultKeyIvResolver implements KeyIvResolver {
+public class DefaultKeyResolver implements KeyResolver {
 
     private final Directory directory;
     private final MasterKeyProvider keyProvider;
 
     private Key dataKey;
-    private String iv;
 
-    private static final String IV_FILE = "ivFile";
     private static final String KEY_FILE = "keyfile";
 
     /**
-     * Constructs a new {@link DefaultKeyIvResolver} and ensures the key and IV are initialized.
+     * Constructs a new {@link DefaultKeyResolver} and ensures the key is initialized.
      *
      * @param directory the Lucene directory to read/write metadata files
      * @param provider the JCE provider used for cipher operations
      * @param keyProvider the master key provider used to encrypt/decrypt data keys
-     * @throws IOException if an I/O error occurs while reading or writing key/IV metadata
+     * @throws IOException if an I/O error occurs while reading or writing key metadata
      */
-    public DefaultKeyIvResolver(Directory directory, Provider provider, MasterKeyProvider keyProvider) throws IOException {
+    public DefaultKeyResolver(Directory directory, Provider provider, MasterKeyProvider keyProvider) throws IOException {
         this.directory = directory;
         this.keyProvider = keyProvider;
         initialize();
     }
 
     /**
-     * Attempts to load the IV and encrypted key from the directory.
+     * Attempts to load the encrypted key from the directory.
      * If not present, it generates and persists new values.
      */
     private void initialize() throws IOException {
         try {
-            iv = readStringFile(IV_FILE);
             dataKey = new SecretKeySpec(keyProvider.decryptKey(readByteArrayFile(KEY_FILE)), "AES");
         } catch (java.nio.file.NoSuchFileException e) {
-            initNewKeyAndIv();
+            initNewKey();
         }
     }
 
     /**
-     * Generates a new AES data key and IV (if not present), and writes them to metadata files.
+     * Generates a new AES data key and writes it to metadata file.
      */
-    private void initNewKeyAndIv() throws IOException {
+    private void initNewKey() throws IOException {
         DataKeyPair pair = keyProvider.generateDataPair();
         dataKey = new SecretKeySpec(pair.getRawKey(), "AES");
         writeByteArrayFile(KEY_FILE, pair.getEncryptedKey());
-
-        byte[] ivBytes = new byte[AesCipherFactory.IV_ARRAY_LENGTH];
-        SecureRandom random = Randomness.createSecure();
-        random.nextBytes(ivBytes);
-        iv = Base64.getEncoder().encodeToString(ivBytes);
-        writeStringFile(IV_FILE, iv);
-    }
-
-    /**
-     * Reads a string value from the specified file in the directory.
-     */
-    private String readStringFile(String fileName) throws IOException {
-        try (IndexInput in = directory.openInput(fileName, IOContext.READONCE)) {
-            return in.readString();
-        }
-    }
-
-    /**
-     * Writes a string value to the specified file in the directory.
-     */
-    private void writeStringFile(String fileName, String value) throws IOException {
-        try (IndexOutput out = directory.createOutput(fileName, IOContext.DEFAULT)) {
-            out.writeString(value);
-        }
     }
 
     /**
@@ -131,13 +99,5 @@ public class DefaultKeyIvResolver implements KeyIvResolver {
     @Override
     public Key getDataKey() {
         return dataKey;
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public byte[] getIvBytes() {
-        return Base64.getDecoder().decode(iv);
     }
 }

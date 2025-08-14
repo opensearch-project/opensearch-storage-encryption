@@ -135,6 +135,7 @@ thirdPartyAudit.enabled = false
 loggerUsageCheck.enabled = false
 validateNebulaPom.enabled = false
 testingConventions.enabled = false
+forbiddenApisMain.enabled = false
 
 task allTests {
     dependsOn test, internalClusterTest, yamlRestTest

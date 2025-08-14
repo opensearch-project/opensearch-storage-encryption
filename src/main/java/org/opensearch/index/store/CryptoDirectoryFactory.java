@@ -30,8 +30,8 @@ import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.shard.ShardPath;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
-import org.opensearch.index.store.iv.DefaultKeyIvResolver;
-import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.key.DefaultKeyResolver;
+import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.mmap.EagerDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.mmap.LazyDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
@@ -112,7 +112,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     protected Directory newFSDirectory(Path location, LockFactory lockFactory, IndexSettings indexSettings) throws IOException {
         final Provider provider = indexSettings.getValue(INDEX_CRYPTO_PROVIDER_SETTING);
         Directory baseDir = new NIOFSDirectory(location, lockFactory);
-        KeyIvResolver keyIvResolver = new DefaultKeyIvResolver(baseDir, provider, getKeyProvider(indexSettings));
+        KeyResolver keyResolver = new DefaultKeyResolver(baseDir, provider, getKeyProvider(indexSettings));
 
         IndexModule.Type type = IndexModule.defaultStoreType(IndexModule.NODE_STORE_ALLOW_MMAP.get(indexSettings.getNodeSettings()));
         Set<String> preLoadExtensions = new HashSet<>(indexSettings.getValue(IndexModule.INDEX_STORE_PRE_LOAD_SETTING));
@@ -125,12 +125,12 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                 LazyDecryptedCryptoMMapDirectory lazyDecryptedCryptoMMapDirectory = new LazyDecryptedCryptoMMapDirectory(
                     location,
                     provider,
-                    keyIvResolver
+                        keyResolver
                 );
                 EagerDecryptedCryptoMMapDirectory egarDecryptedCryptoMMapDirectory = new EagerDecryptedCryptoMMapDirectory(
                     location,
                     provider,
-                    keyIvResolver
+                        keyResolver
                 );
                 lazyDecryptedCryptoMMapDirectory.setPreloadExtensions(preLoadExtensions);
 
@@ -139,19 +139,19 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                     lazyDecryptedCryptoMMapDirectory,
                     egarDecryptedCryptoMMapDirectory,
                     provider,
-                    keyIvResolver,
+                        keyResolver,
                     nioExtensions
                 );
             }
             case MMAPFS -> {
                 LOGGER.debug("Using MMAPFS directory");
-                LazyDecryptedCryptoMMapDirectory cryptoMMapDir = new LazyDecryptedCryptoMMapDirectory(location, provider, keyIvResolver);
+                LazyDecryptedCryptoMMapDirectory cryptoMMapDir = new LazyDecryptedCryptoMMapDirectory(location, provider, keyResolver);
                 cryptoMMapDir.setPreloadExtensions(preLoadExtensions);
                 return cryptoMMapDir;
             }
             case SIMPLEFS, NIOFS -> {
                 LOGGER.debug("Using NIOFS directory");
-                return new CryptoNIOFSDirectory(lockFactory, location, provider, keyIvResolver);
+                return new CryptoNIOFSDirectory(lockFactory, location, provider, keyResolver);
             }
             default -> throw new AssertionError("unexpected built-in store type [" + type + "]");
         }
