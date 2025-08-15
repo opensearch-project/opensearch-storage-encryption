@@ -5,6 +5,7 @@
 package org.opensearch.index.store.block_cache;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.Optional;
 
 public interface BlockCache<T> {
@@ -16,13 +17,14 @@ public interface BlockCache<T> {
 
     /**
      * Returns the block, loading it via `BlockLoader` if absent.
+     * Throws IOException if the block cannot be loaded.
      */
-    Optional<BlockCacheValue<T>> getOrLoad(BlockCacheKey key, int size, BlockLoader<T> loader) throws IOException;
+    BlockCacheValue<T> getOrLoad(BlockCacheKey key) throws IOException;
 
     /**
      * Asynchronously load the block into the cache if not present.
      */
-    void prefetch(BlockCacheKey key, int size);
+    void prefetch(BlockCacheKey key);
 
     /**
      * Put a block into the cache.
@@ -38,6 +40,17 @@ public interface BlockCache<T> {
      * Clear all blocks.
      */
     void clear();
+
+    /**
+     * Bulk load multiple blocks efficiently using a single I/O operation.
+     * Similar to getOrLoad() but for a contiguous range of blocks.
+     * 
+     * @param filePath file to read from
+     * @param startOffset starting file offset (should be block-aligned)
+     * @param blockCount number of blocks to read
+     * @throws IOException if loading fails (including specific BlockLoader exceptions)
+     */
+    void loadBulk(Path filePath, long startOffset, int blockCount) throws IOException;
 
     /**
      * cache stats

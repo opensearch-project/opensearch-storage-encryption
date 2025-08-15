@@ -29,7 +29,6 @@ import org.apache.lucene.util.ArrayUtil;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
-import org.opensearch.index.store.block_cache.BlockLoader;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
@@ -56,7 +55,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
     final long absoluteBaseOffset;
     final Path path;
     final BlockCache<RefCountedMemorySegment> blockCache;
-    final BlockLoader<RefCountedMemorySegment> blockLoader;
     final ReadaheadManager readaheadManager;
     final ReadaheadContext readaheadContext;
     final String resourceDescription;
@@ -75,7 +73,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         Path path,
         Arena arena,
         BlockCache<RefCountedMemorySegment> blockCache,
-        BlockLoader<RefCountedMemorySegment> blockLoader,
         ReadaheadManager readAheadManager,
         ReadaheadContext readAheadContext,
         MemorySegment[] segments,
@@ -95,7 +92,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 path,
                 arena,
                 blockCache,
-                blockLoader,
                 readAheadManager,
                 readAheadContext,
                 segments[0],
@@ -113,7 +109,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 path,
                 arena,
                 blockCache,
-                blockLoader,
                 readAheadManager,
                 readAheadContext,
                 segments,
@@ -135,7 +130,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         Path path,
         Arena arena,
         BlockCache<RefCountedMemorySegment> blockCache,
-        BlockLoader<RefCountedMemorySegment> blockLoader,
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
         MemorySegment[] segments,
@@ -151,7 +145,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         this.arena = arena;
         this.resourceDescription = resourceDescription;
         this.blockCache = blockCache;
-        this.blockLoader = blockLoader;
         this.readaheadManager = readaheadManager;
         this.readaheadContext = readaheadContext;
         this.path = path;
@@ -712,7 +705,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 path,
                 null,  // arena
                 blockCache,
-                blockLoader,
                 readaheadManager,
                 readaheadContext,
                 slices[0].asSlice(segmentOffset, length),
@@ -731,7 +723,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 path,
                 null,  // arena
                 blockCache,
-                blockLoader,
                 readaheadManager,
                 readaheadContext,
                 slices,
@@ -814,7 +805,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             Path path,
             Arena arena,
             BlockCache<RefCountedMemorySegment> blockCache,
-            BlockLoader<RefCountedMemorySegment> blockLoader,
             ReadaheadManager readaheadManager,
             ReadaheadContext readaheadContext,
             MemorySegment segment,
@@ -831,7 +821,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 path,
                 arena,
                 blockCache,
-                blockLoader,
                 readaheadManager,
                 readaheadContext,
                 new MemorySegment[] { segment },
@@ -889,8 +878,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
         @Override
         public int readInt(long pos) throws IOException {
             try {
-                // Decrypt 4 bytes for int
-                long addr = curSegment.address() + pos;
                 curSegment = super.loadSegment(0, getAbsoluteBaseOffset(pos), 4);
                 return curSegment.get(LAYOUT_LE_INT, pos);
             } catch (IndexOutOfBoundsException e) {
@@ -930,7 +917,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             Path path,
             Arena arena,
             BlockCache<RefCountedMemorySegment> blockCache,
-            BlockLoader<RefCountedMemorySegment> blockLoader,
             ReadaheadManager readaheadManager,
             ReadaheadContext readaheadContext,
             MemorySegment[] segments,
@@ -948,7 +934,6 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 path,
                 arena,
                 blockCache,
-                blockLoader,
                 readaheadManager,
                 readaheadContext,
                 segments,

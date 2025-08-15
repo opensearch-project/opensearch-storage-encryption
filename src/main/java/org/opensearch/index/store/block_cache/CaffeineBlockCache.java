@@ -4,24 +4,36 @@
  */
 package org.opensearch.index.store.block_cache;
 
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.file.NoSuchFileException;
+import java.lang.foreign.MemorySegment;
+import java.nio.file.Path;
 import java.util.Optional;
 
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.index.store.directio.DirectIOBlockCacheKey;
 
 import com.github.benmanes.caffeine.cache.Cache;
 
+@SuppressWarnings("preview")
 @SuppressForbidden(reason = "uses custom DirectIO")
-public final class CaffeineBlockCache<T> implements BlockCache<T> {
+public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
 
     private final Cache<BlockCacheKey, BlockCacheValue<T>> cache;
-    private final BlockLoader<T> blockLoader;
+    private final BlockLoader<V> blockLoader;
+    private final Pool<V> segmentPool;
 
-    public CaffeineBlockCache(Cache<BlockCacheKey, BlockCacheValue<T>> cache, BlockLoader<T> blockLoader, long maxBlocks) {
+    public CaffeineBlockCache(
+        Cache<BlockCacheKey, BlockCacheValue<T>> cache,
+        BlockLoader<V> blockLoader,
+        Pool<V> segmentPool,
+        long maxBlocks
+    ) {
         this.blockLoader = blockLoader;
         this.cache = cache;
+        this.segmentPool = segmentPool;
     }
 
     @Override
@@ -34,53 +46,50 @@ public final class CaffeineBlockCache<T> implements BlockCache<T> {
     * <p>
     * If the block is present in the cache, it is returned immediately.
     * If the block is absent, the {@link BlockLoader} is invoked to load it. If loading succeeds,
-    * the loaded block is inserted into the cache and returned. If loading fails or returns empty,
-    * an empty {@link Optional} is returned.
+    * the loaded block is inserted into the cache and returned. If loading fails, an exception is thrown.
     * <p>
     * Any {@link IOException} thrown by the loader is propagated, while other exceptions are wrapped
     * in {@link IOException}.
     *
     * @param key  The key identifying the block to retrieve or load.
     * @param size The expected size of the block; passed to the loader.
-    * @return An {@link Optional} containing the cached or newly loaded block, or empty if loading failed or returned no value.
+    * @return The cached or newly loaded block (never null).
     * @throws IOException if the block loading fails with an IO-related error.
     */
     @Override
-    public Optional<BlockCacheValue<T>> getOrLoad(BlockCacheKey key, int size, BlockLoader<T> loader) throws IOException {
+    public BlockCacheValue<T> getOrLoad(BlockCacheKey key) throws IOException {
         try {
             BlockCacheValue<T> value = cache.get(key, k -> {
                 try {
-                    return loader.load(k, size).orElse(null); // use per-call loader
+                    V segment = blockLoader.load(k);
+                    return maybeWrapValueForRefCounting(segment);
                 } catch (Exception e) {
                     return handleLoadException(k, e);
                 }
             });
-            return Optional.ofNullable(value);
+
+            if (value == null) {
+                throw new IOException("Failed to load block for key: " + key);
+            }
+
+            return value;
         } catch (UncheckedIOException e) {
-            throw e.getCause();
+            throw e;
         } catch (RuntimeException e) {
             throw new IOException("Failed to load block for key: " + key, e);
         }
     }
 
     @Override
-    public void prefetch(BlockCacheKey key, int size) {
+    public void prefetch(BlockCacheKey key) {
         cache.asMap().computeIfAbsent(key, k -> {
             try {
-                return blockLoader.load(k, size).orElse(null); // unwrap Optional
+                V segment = blockLoader.load(k);
+                return maybeWrapValueForRefCounting(segment);
             } catch (Exception e) {
                 return handleLoadException(k, e);
             }
         });
-    }
-
-    private BlockCacheValue<T> handleLoadException(BlockCacheKey key, Exception e) {
-        switch (e) {
-            case NoSuchFileException nsfe -> throw new UncheckedIOException(nsfe);
-            case IOException io -> throw new UncheckedIOException(io);
-            case RuntimeException rte -> throw rte;
-            default -> throw new RuntimeException("Unexpected exception during block load for key: " + key, e);
-        }
     }
 
     @Override
@@ -96,6 +105,71 @@ public final class CaffeineBlockCache<T> implements BlockCache<T> {
     @Override
     public void clear() {
         cache.invalidateAll();
+    }
+
+    /**
+     * Bulk load multiple blocks efficiently using a single I/O operation.
+     * Similar to getOrLoad() but for a contiguous range of blocks.
+     * 
+     * @param filePath file to read from
+     * @param startOffset starting file offset (should be block-aligned)
+     * @param blockCount number of blocks to read
+     * @throws IOException if loading fails (including specific BlockLoader exceptions)
+     */
+    @Override
+    public void loadBulk(Path filePath, long startOffset, int blockCount) throws IOException {
+        try {
+            V[] loadedBlock = blockLoader.load(filePath, startOffset, blockCount);
+
+            // Cache all successfully loaded blocks.
+            for (int i = 0; i < loadedBlock.length; i++) {
+                if (loadedBlock[i] != null) {
+                    long blockOffset = startOffset + (long) i * CACHE_BLOCK_SIZE;
+                    BlockCacheKey key = createBlockKey(filePath, blockOffset);
+                    cache.put(key, maybeWrapValueForRefCounting(loadedBlock[i]));
+                }
+            }
+        } catch (Exception e) {
+            try {
+                handleLoadException(createBlockKey(filePath, startOffset), e);
+            } catch (UncheckedIOException uie) {
+                throw uie.getCause();
+            } catch (RuntimeException re) {
+                throw new IOException("Failed bulk load: " + filePath, re);
+            }
+        }
+    }
+
+    // Helper method to create appropriate cache key for DirectIO
+    private BlockCacheKey createBlockKey(Path filePath, long offset) {
+        return new DirectIOBlockCacheKey(filePath, offset);
+    }
+
+    @SuppressWarnings("unchecked")
+    private BlockCacheValue<T> maybeWrapValueForRefCounting(V loadedBlock) {
+        if (loadedBlock == null) {
+            throw new IllegalArgumentException("BlockLoader returned null segment");
+        }
+
+        if (loadedBlock instanceof MemorySegment memSeg) {
+            RefCountedMemorySegment refSegment = new RefCountedMemorySegment(memSeg, CACHE_BLOCK_SIZE, seg -> segmentPool.release((V) seg));
+            return (BlockCacheValue<T>) new RefCountedMemorySegmentCacheValue(refSegment);
+        }
+
+        // For non-MemorySegment types, return the segment directly
+        return (BlockCacheValue<T>) loadedBlock;
+    }
+
+    private BlockCacheValue<T> handleLoadException(BlockCacheKey key, Exception e) {
+        switch (e) {
+            case BlockLoader.PoolPressureException ppe -> throw new UncheckedIOException(ppe);
+            case BlockLoader.PoolAcquireFailedException pafe -> throw new UncheckedIOException(pafe);
+            case BlockLoader.BlockLoadFailedException blfe -> throw new UncheckedIOException(blfe);
+            case java.nio.file.NoSuchFileException nsfe -> throw new UncheckedIOException(nsfe);
+            case IOException io -> throw new UncheckedIOException(io);
+            case RuntimeException rte -> throw rte;
+            default -> throw new RuntimeException("Unexpected exception during block load for key: " + key, e);
+        }
     }
 
     @Override
