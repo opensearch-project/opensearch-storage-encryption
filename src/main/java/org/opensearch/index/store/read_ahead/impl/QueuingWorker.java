@@ -21,7 +21,6 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
-import org.opensearch.index.store.block_cache.BlockLoader;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.directio.DirectIOBlockCacheKey;
 import org.opensearch.index.store.read_ahead.Worker;
@@ -62,8 +61,6 @@ public class QueuingWorker implements Worker {
     private final ExecutorService executor;
 
     private final BlockCache<RefCountedMemorySegment> blockCache;
-    private final BlockLoader<RefCountedMemorySegment> blockLoader;
-
     private volatile boolean closed = false;
 
     /** Per-path lower bound for useful data (byte offset, monotonic non-decreasing). */
@@ -71,18 +68,11 @@ public class QueuingWorker implements Worker {
 
     private static final AtomicInteger WORKER_ID = new AtomicInteger();
 
-    public QueuingWorker(
-        int queueCapacity,
-        int threads,
-        BlockCache<RefCountedMemorySegment> blockCache,
-        BlockLoader<RefCountedMemorySegment> blockLoader,
-        int segmentSize // kept for signature parity; unused by this minimal worker
-    ) {
+    public QueuingWorker(int queueCapacity, int threads, BlockCache<RefCountedMemorySegment> blockCache) {
         this.queue = new LinkedBlockingDeque<>(queueCapacity);
         this.queueCapacity = queueCapacity;
         this.inFlight = ConcurrentHashMap.newKeySet();
         this.blockCache = blockCache;
-        this.blockLoader = blockLoader;
 
         this.executor = Executors.newFixedThreadPool(threads, r -> {
             Thread t = new Thread(r, "readahead-worker-" + WORKER_ID.incrementAndGet());
@@ -235,7 +225,7 @@ public class QueuingWorker implements Worker {
                 }
 
                 try {
-                    blockCache.getOrLoad(task.key, task.length, blockLoader);
+                    blockCache.getOrLoad(task.key);
                     task.doneNanos = System.nanoTime();
                     final long ioUs = (task.doneNanos - task.startNanos) / 1_000L;
 

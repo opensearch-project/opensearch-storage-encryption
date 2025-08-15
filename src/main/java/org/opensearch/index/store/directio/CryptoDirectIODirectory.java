@@ -46,7 +46,6 @@ public final class CryptoDirectIODirectory extends FSDirectory {
 
     private final Pool<MemorySegment> memorySegmentPool;
     private final BlockCache<RefCountedMemorySegment> blockCache;
-    private final BlockLoader<RefCountedMemorySegment> blockLoader;
     private final Worker readAheadworker;
     private final KeyIvResolver keyIvResolver;
 
@@ -57,7 +56,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         KeyIvResolver keyIvResolver,
         Pool<MemorySegment> memorySegmentPool,
         BlockCache<RefCountedMemorySegment> blockCache,
-        BlockLoader<RefCountedMemorySegment> blockLoader,
+        BlockLoader<MemorySegment> blockLoader,
         Worker worker
     )
         throws IOException {
@@ -65,7 +64,6 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         this.keyIvResolver = keyIvResolver;
         this.memorySegmentPool = memorySegmentPool;
         this.blockCache = blockCache;
-        this.blockLoader = blockLoader;
         this.readAheadworker = worker;
         startCacheStatsTelemetry();
     }
@@ -123,7 +121,6 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                     file,
                     arena,
                     blockCache,
-                    blockLoader,
                     readAheadManager,
                     readAheadContext,
                     segments,
@@ -203,7 +200,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         try {
 
             if (blockCache instanceof CaffeineBlockCache) {
-                String cacheStats = ((CaffeineBlockCache<?>) blockCache).cacheStats();
+                String cacheStats = ((CaffeineBlockCache<?, ?>) blockCache).cacheStats();
                 LOGGER.info("{}", cacheStats);
             }
 

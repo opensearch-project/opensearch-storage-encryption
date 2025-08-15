@@ -17,6 +17,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Provider;
 import java.security.Security;
+import java.time.Duration;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -201,7 +202,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     ) throws IOException {
         ensureSharedPoolInitialized();
 
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOSegmentBlockLoader(sharedSegmentPool, keyIvResolver);
+        BlockLoader<MemorySegment> loader = new CryptoDirectIOSegmentBlockLoader(sharedSegmentPool, keyIvResolver);
 
         /*
         * ================================
@@ -270,10 +271,10 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             })
             .build();
 
-        BlockCache<RefCountedMemorySegment> blockCache = new CaffeineBlockCache<>(cache, loader, MAX_CACHE_SIZE);
+        BlockCache<RefCountedMemorySegment> blockCache = new CaffeineBlockCache<>(cache, loader, sharedSegmentPool, MAX_CACHE_SIZE);
 
         int threads = Math.max(4, Runtime.getRuntime().availableProcessors() / 4);
-        Worker readaheadWorker = new QueuingWorker(READ_AHEAD_QUEUE_SIZE, threads, blockCache, loader, (int) CACHE_BLOCK_SIZE);
+        Worker readaheadWorker = new QueuingWorker(READ_AHEAD_QUEUE_SIZE, threads, blockCache);
 
         return new CryptoDirectIODirectory(
             location,
@@ -301,7 +302,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                             RESEVERED_POOL_SIZE_IN_BYTES / CACHE_BLOCK_SIZE
                         );
                     sharedSegmentPool.warmUp((long) (maxBlocks * WARM_UP_PERCENTAGE));
-                    // startTelemetry();
+                    startTelemetry();
                 }
             }
         }
@@ -309,8 +310,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
 
     private void publishPoolStats() {
         try {
-            LOGGER.info("{} {} \n {}", sharedSegmentPool.poolStats());
-
+            LOGGER.info("{}", sharedSegmentPool.poolStats());
         } catch (Exception e) {
             LOGGER.warn("Failed to log cache/pool stats", e);
         }
@@ -320,7 +320,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         Thread loggerThread = new Thread(() -> {
             while (true) {
                 try {
-                    Thread.sleep(10_000); // 60 seconds
+                    Thread.sleep(Duration.ofMinutes(5));
                     publishPoolStats();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
