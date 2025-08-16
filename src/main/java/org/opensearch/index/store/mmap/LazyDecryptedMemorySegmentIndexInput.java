@@ -587,7 +587,6 @@ public class LazyDecryptedMemorySegmentIndexInput extends IndexInput implements 
                 fileOffset,
                 this.key,
                 this.iv
-
             );
 
             MemorySegment.copy(curSegment, LAYOUT_LE_INT, curPosition, dst, offset, length);

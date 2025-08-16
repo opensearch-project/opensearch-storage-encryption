@@ -4,6 +4,7 @@
  */
 package org.opensearch.index.store.mmap;
 
+import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
@@ -26,6 +27,14 @@ public class PanamaNativeAccess {
     private static final MethodHandle GET_PAGE_SIZE;
     private static final MethodHandle OPEN;
     private static final MethodHandle CLOSE;
+    public static final MethodHandle POSIX_MEMALIGN;
+    public static final MethodHandle READ;
+    public static final MethodHandle PREAD;
+    public static final MethodHandle PWRITE;
+
+    public static final int O_RDONLY = 0;
+    public static final int O_DIRECT = 040000;
+    public static final int O_SYNC = 04010000;
 
     private static final SymbolLookup LIBC = LINKER.defaultLookup();
 
@@ -75,6 +84,45 @@ public class PanamaNativeAccess {
                 );
 
             GET_PAGE_SIZE = LINKER.downcallHandle(LIBC.find("getpagesize").orElseThrow(), FunctionDescriptor.of(ValueLayout.JAVA_INT));
+
+            POSIX_MEMALIGN = LINKER
+                .downcallHandle(
+                    LIBC.find("posix_memalign").orElseThrow(),
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG)
+                );
+
+            READ = LINKER
+                .downcallHandle(
+                    LIBC.find("read").orElseThrow(),
+                    FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
+                );
+
+            PREAD = LINKER
+                .downcallHandle(
+                    LIBC.find("pread").orElseThrow(),
+                    FunctionDescriptor
+                        .of(
+                            ValueLayout.JAVA_LONG,  // ssize_t
+                            ValueLayout.JAVA_INT,   // int fd
+                            ValueLayout.ADDRESS,    // void *buf
+                            ValueLayout.JAVA_LONG,  // size_t count
+                            ValueLayout.JAVA_LONG
+                        )  // off_t offset
+                );
+
+            PWRITE = LINKER
+                .downcallHandle(
+                    LIBC.find("pwrite").orElseThrow(),
+                    FunctionDescriptor
+                        .of(
+                            ValueLayout.JAVA_LONG,   // return ssize_t
+                            ValueLayout.JAVA_INT,    // int fd
+                            ValueLayout.ADDRESS,     // const void *buf
+                            ValueLayout.JAVA_LONG,   // size_t count
+                            ValueLayout.JAVA_LONG
+                        )   // off_t offset
+                );
+
         } catch (RuntimeException e) {
             throw new RuntimeException("Failed to load mmap", e);
         }
@@ -126,6 +174,24 @@ public class PanamaNativeAccess {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment pathSegment = arena.allocateFrom(path);
             return (int) OPEN.invoke(pathSegment, 0); // O_RDONLY = 0
+        }
+    }
+
+    public static int openFileWithODirect(String path, boolean direct, Arena arena) throws Throwable {
+        MemorySegment cPath = arena.allocateUtf8String(path);
+        int flags = O_RDONLY | (direct ? O_DIRECT : 0);
+
+        return (int) OPEN.invoke(cPath, flags);
+    }
+
+    public static void pwrite(int fd, MemorySegment segment, long length, long offset) throws IOException {
+        try {
+            long written = (long) PWRITE.invokeExact(fd, segment.address(), length, offset);
+            if (written != length) {
+                throw new IOException("pwrite wrote only " + written + " of " + length + " bytes");
+            }
+        } catch (Throwable t) {
+            throw new IOException("pwrite failed", t);
         }
     }
 
