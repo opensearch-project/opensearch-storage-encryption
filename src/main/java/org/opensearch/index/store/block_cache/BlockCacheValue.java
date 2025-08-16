@@ -6,9 +6,9 @@ package org.opensearch.index.store.block_cache;
 
 public interface BlockCacheValue<T> extends AutoCloseable {
 
-    T block();
+    T borrow();
 
-    T borrowBlock();
+    boolean tryBorrow();
 
     int length();
 

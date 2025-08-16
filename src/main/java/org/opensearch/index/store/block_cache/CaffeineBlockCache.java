@@ -12,6 +12,8 @@ import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
 import java.util.Optional;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.directio.DirectIOBlockCacheKey;
 
@@ -20,6 +22,7 @@ import com.github.benmanes.caffeine.cache.Cache;
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "uses custom DirectIO")
 public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
+    private static final Logger LOGGER = LogManager.getLogger(CaffeineBlockCache.class);
 
     private final Cache<BlockCacheKey, BlockCacheValue<T>> cache;
     private final BlockLoader<V> blockLoader;
@@ -38,7 +41,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
 
     @Override
     public Optional<BlockCacheValue<T>> get(BlockCacheKey key) {
-        return Optional.ofNullable(cache.asMap().get(key));
+        return Optional.ofNullable(cache.getIfPresent(key));
     }
 
     /**
@@ -52,7 +55,6 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     * in {@link IOException}.
     *
     * @param key  The key identifying the block to retrieve or load.
-    * @param size The expected size of the block; passed to the loader.
     * @return The cached or newly loaded block (never null).
     * @throws IOException if the block loading fails with an IO-related error.
     */
@@ -117,16 +119,18 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      * @throws IOException if loading fails (including specific BlockLoader exceptions)
      */
     @Override
-    public void loadBulk(Path filePath, long startOffset, int blockCount) throws IOException {
+    public void loadBulk(Path filePath, long startOffset, long blockCount) throws IOException {
         try {
             V[] loadedBlock = blockLoader.load(filePath, startOffset, blockCount);
 
-            // Cache all successfully loaded blocks.
             for (int i = 0; i < loadedBlock.length; i++) {
                 if (loadedBlock[i] != null) {
                     long blockOffset = startOffset + (long) i * CACHE_BLOCK_SIZE;
                     BlockCacheKey key = createBlockKey(filePath, blockOffset);
-                    cache.put(key, maybeWrapValueForRefCounting(loadedBlock[i]));
+
+                    // No cache stats update to avoid polluting metrics.
+                    // Atomic insert
+                    cache.asMap().putIfAbsent(key, maybeWrapValueForRefCounting(loadedBlock[i]));
                 }
             }
         } catch (Exception e) {
@@ -148,6 +152,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     @SuppressWarnings("unchecked")
     private BlockCacheValue<T> maybeWrapValueForRefCounting(V loadedBlock) {
         if (loadedBlock == null) {
+            LOGGER.error("BlockLoader returned null segment");
             throw new IllegalArgumentException("BlockLoader returned null segment");
         }
 

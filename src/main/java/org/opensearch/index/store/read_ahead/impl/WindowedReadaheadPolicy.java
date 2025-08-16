@@ -139,7 +139,7 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
             final State next = new State(currSeg, proposedMarker, newWin);
             if (ref.compareAndSet(s, next)) {
                 LOGGER
-                    .debug(
+                    .info(
                         "Path={}, Gap={}, isSequential={}, Trigger={}, currSeg={}, newMarker={}, win={}",
                         path,
                         gap,
@@ -189,6 +189,11 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
 
     public void onQueueSaturated() {
         onQueuePressureMedium();
+    }
+
+    /** Cache hit streak - shrink window to reduce unnecessary prefetching */
+    public void onCacheHitShrink() {
+        ref.updateAndGet(s -> new State(s.lastSeg, s.markerSeg, Math.max(initialWindow, s.window >>> 1)));
     }
 
     public void reset() {

@@ -16,14 +16,14 @@ import java.nio.file.Path;
 public interface Worker extends Closeable {
 
     /**
-     * Schedule a prefetch request for a block if not already in flight.
+     * Schedule a prefetch request for blocks if not already in flight.
      *
-     * @param path   file path to prefetch
-     * @param offset aligned block offset (in bytes)
-     * @param length length in bytes to prefetch (aligned to block size)
+     * @param path       file path to prefetch
+     * @param offset     aligned block offset (in bytes)
+     * @param blockCount number of blocks to prefetch
      * @return true if successfully scheduled or already in flight
      */
-    boolean schedule(Path path, long offset, int length);
+    boolean schedule(Path path, long offset, long blockCount);
 
     /**
      * @return true if the worker is actively running

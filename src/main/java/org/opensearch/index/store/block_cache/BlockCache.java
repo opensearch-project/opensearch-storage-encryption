@@ -50,7 +50,7 @@ public interface BlockCache<T> {
      * @param blockCount number of blocks to read
      * @throws IOException if loading fails (including specific BlockLoader exceptions)
      */
-    void loadBulk(Path filePath, long startOffset, int blockCount) throws IOException;
+    void loadBulk(Path filePath, long startOffset, long blockCount) throws IOException;
 
     /**
      * cache stats
