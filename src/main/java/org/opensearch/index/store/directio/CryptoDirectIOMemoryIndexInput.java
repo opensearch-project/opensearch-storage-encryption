@@ -224,67 +224,81 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
 
         // Align file offset to cache block boundary
         final long alignedBlockStart = fileOffset & ~CACHE_BLOCK_MASK;
-        final long segIdx = alignedBlockStart >>> CACHE_BLOCK_SIZE_POWER;
 
-        final int winSnapshot = (readaheadContext != null ? readaheadContext.policy().currentWindow() : -1);
-        LOGGER
-            .trace(
-                "FG_ACCESS thread={} path={} reqOff={} alignedOff={} segIdx={} win={} blockSize={} len={}",
-                Thread.currentThread().getName(),
-                path,
-                fileOffset,
-                alignedBlockStart,
-                segIdx,
-                winSnapshot,
-                CACHE_BLOCK_SIZE,
-                lengthNeeded
-            );
+        // Calculate blocks to potentially load for readahead positioning
+        long remainingBytes = length - alignedBlockStart;
+        int remainingBlocks = (int) (remainingBytes >> CACHE_BLOCK_SIZE_POWER);
+
+        final int initialWindow = (readaheadContext != null ? readaheadContext.policy().initialWindow() : -1);
+        int blocksToLoad = Math.min(initialWindow, remainingBlocks);
 
         boolean cacheMiss = true;
-
-        // Notify readahead manager for fetching next block (use aligned offset)
-        if (readaheadManager != null && readaheadContext != null) {
-            readaheadManager.onSegmentAccess(readaheadContext, alignedBlockStart, cacheMiss);
-        }
+        long readaheadStartOffset = alignedBlockStart + ((long) blocksToLoad << CACHE_BLOCK_SIZE_POWER);
 
         if (blockCache != null) {
             final DirectIOBlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, alignedBlockStart);
             final Optional<BlockCacheValue<RefCountedMemorySegment>> cached = blockCache.get(cacheKey);
-            if (cached.isPresent()) {
-                if (LOGGER.isDebugEnabled()) {
-                    LOGGER
-                        .debug(
-                            "CACHE_HIT thread={} path={} reqOff={} alignedOff={} segIdx={} blockSize={} len={}",
-                            Thread.currentThread().getName(),
-                            path,
-                            fileOffset,
-                            alignedBlockStart,
-                            segIdx,
-                            CACHE_BLOCK_SIZE,
-                            lengthNeeded
-                        );
-                }
-                final RefCountedMemorySegment refSeg = cached.get().block();
-                segments[segmentIndex] = refSeg.segment();
-                refSegments[segmentIndex] = refSeg;
-                cacheMiss = false;
-            } else {
-                if (LOGGER.isDebugEnabled()) {
-                    LOGGER
-                        .debug(
-                            "CACHE_MISS thread={} path={} reqOff={} alignedOff={} segIdx={} win={} blockSize={} len={}",
-                            Thread.currentThread().getName(),
-                            path,
-                            fileOffset,
-                            alignedBlockStart,
-                            segIdx,
-                            winSnapshot,
-                            CACHE_BLOCK_SIZE,
-                            lengthNeeded
-                        );
 
+            if (cached.isPresent()) {
+                BlockCacheValue<RefCountedMemorySegment> value = cached.get();
+                if (value.tryBorrow()) {
+                    LOGGER
+                        .debug(
+                            "CACHE_HIT thread={} path={} reqOff={} alignedOff={} blockSize={} len={}",
+                            Thread.currentThread().getName(),
+                            path,
+                            fileOffset,
+                            alignedBlockStart,
+                            CACHE_BLOCK_SIZE,
+                            lengthNeeded
+                        );
+                    RefCountedMemorySegment refSeg = value.borrow();
+                    segments[segmentIndex] = refSeg.segment();
+                    refSegments[segmentIndex] = refSeg;
+
+                    cacheMiss = false;
                 }
             }
+
+            if (cacheMiss) {
+                try {
+                    if (blocksToLoad > 0) {
+                        long startTime = System.nanoTime();
+
+                        // pre-load a few blocks to avoid next immediate cache misses.
+                        blockCache.loadBulk(path, alignedBlockStart, blocksToLoad);
+
+                        long loadTimeMs = (System.nanoTime() - startTime) / 1_000_000;
+                        LOGGER
+                            .debug(
+                                "BULK_LOAD thread={} path={} offset={} blocks={} time={}ms",
+                                Thread.currentThread().getName(),
+                                path,
+                                alignedBlockStart,
+                                blocksToLoad,
+                                loadTimeMs
+                            );
+                    }
+                } catch (Exception e) {
+                    // todo throw the exception.
+                    LOGGER.error("Failed to load {} blocks from {}: {}", blocksToLoad, path, e.getMessage());
+                }
+
+                LOGGER
+                    .debug(
+                        "CACHE_MISS thread={} path={} reqOff={} alignedOff={} blockSize={} len={}",
+                        Thread.currentThread().getName(),
+                        path,
+                        fileOffset,
+                        alignedBlockStart,
+                        CACHE_BLOCK_SIZE,
+                        lengthNeeded
+                    );
+            }
+        }
+
+        if (readaheadManager != null && readaheadContext != null) {
+            readaheadManager.onSegmentAccess(readaheadContext, readaheadStartOffset, cacheMiss);
         }
 
         // todo: add back the mmaped segment to cache.

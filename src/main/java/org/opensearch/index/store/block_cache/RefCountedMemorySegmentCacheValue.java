@@ -42,34 +42,24 @@ public final class RefCountedMemorySegmentCacheValue implements BlockCacheValue<
     }
 
     /**
-     * Pins the segment by incrementing its reference count, ensuring it's not released
-     * while in use. This is the safe way to access the segment for shared readers.
-     *
-     * @return the reference-counted segment with its refCount incremented
-     * @throws IllegalStateException if the segment has already been released
-     */
-    @Override
-    public RefCountedMemorySegment block() {
-        AtomicInteger refCount = refSegment.getRefCount();
-        int count;
-        do {
-            count = refCount.get();
-            if (count <= 0) {
-                throw new IllegalStateException("Attempted to borrow a released or evicting segment (refCount=" + count + ")");
-            }
-        } while (!refCount.compareAndSet(count, count + 1)); // optimistic increment with CAS loop
-        return refSegment;
-    }
-
-    /**
      * Borrows the segment without incrementing the reference count.
-     * This is useful in scenarios where lifecycle is externally managed or short-lived.
      *
      * @return the wrapped segment without touching ref count
      */
     @Override
-    public RefCountedMemorySegment borrowBlock() {
+    public RefCountedMemorySegment borrow() {
         return refSegment;
+    }
+
+    @Override
+    public boolean tryBorrow() {
+        AtomicInteger refCount = refSegment.getRefCount();
+        if (refCount == null) {
+            return false;
+        }
+
+        int current = refCount.get();
+        return current > 0 && refCount.compareAndSet(current, current + 1);
     }
 
     /**

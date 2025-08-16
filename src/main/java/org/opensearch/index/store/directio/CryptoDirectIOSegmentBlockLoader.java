@@ -37,7 +37,7 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
     }
 
     @Override
-    public MemorySegment[] load(Path filePath, long startOffset, int blockCount) throws Exception {
+    public MemorySegment[] load(Path filePath, long startOffset, long blockCount) throws Exception {
         if (!Files.exists(filePath)) {
             throw new NoSuchFileException(filePath.toString());
         }
@@ -54,8 +54,8 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
             throw new PoolPressureException("Memory segment pool is under pressure");
         }
 
-        MemorySegment[] result = new MemorySegment[blockCount];
-        int readLength = blockCount << CACHE_BLOCK_SIZE_POWER;
+        MemorySegment[] result = new MemorySegment[(int) blockCount];
+        long readLength = blockCount << CACHE_BLOCK_SIZE_POWER;
 
         try (
             Arena arena = Arena.ofConfined();

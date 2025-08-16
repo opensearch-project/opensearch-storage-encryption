@@ -4,7 +4,6 @@
  */
 package org.opensearch.index.store.read_ahead.impl;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
 
 import java.nio.file.Path;
@@ -25,7 +24,7 @@ public class WindowedReadAheadContext implements ReadaheadContext {
     private final WindowedReadaheadPolicy policy;
 
     // Cache-awareness
-    private final int hitStreakThreshold;
+    private final int cacheHitStreakThreshold;
     private int cacheHitStreak = 0;
     private boolean readaheadEnabled = true;
 
@@ -36,7 +35,7 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         this.path = path;
         this.fileLength = fileLength;
         this.worker = worker;
-        this.hitStreakThreshold = hitStreakThreshold;
+        this.cacheHitStreakThreshold = hitStreakThreshold;
         this.policy = policy;
     }
 
@@ -55,19 +54,21 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         if (closed.get())
             return;
 
-        // Let worker know how far FG has advanced (for drop-behind)
-        if (worker instanceof QueuingWorker qw) {
-            qw.updateMinUsefulOffset(path, fileOffset);
-        }
-
-        // Simple cache-awareness with light hysteresis
+        // Cache-aware window adjustment instead of complete disabling
         if (cacheMiss) {
             readaheadEnabled = true;
             cacheHitStreak = 0;
         } else if (readaheadEnabled) {
-            if (++cacheHitStreak >= hitStreakThreshold) {
-                readaheadEnabled = false;
-                cacheHitStreak = 0; // reset for next enable phase
+            cacheHitStreak++;
+
+            int shrinkThreshold = Math.max(cacheHitStreakThreshold, policy.currentWindow() / 2);
+            if (cacheHitStreak >= shrinkThreshold) {
+                policy.onCacheHitShrink();
+                cacheHitStreak = 0;
+                // Only disable if window is already at minimum
+                if (policy.currentWindow() <= policy.initialWindow()) {
+                    readaheadEnabled = false;
+                }
             }
         }
 
@@ -85,57 +86,47 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         if (closed.get() || worker == null)
             return;
 
-        final long currSeg = anchorFileOffset >>> CACHE_BLOCK_SIZE_POWER;
-        final long startSeg = currSeg + 2;
-
+        final long startSeg = anchorFileOffset >>> CACHE_BLOCK_SIZE_POWER;
         final long lastSeg = (fileLength - 1) >>> CACHE_BLOCK_SIZE_POWER;
-        final long safeEndSeg = Math.max(0, lastSeg - 3); // Skip footers (last 4 segments)
+        final long safeEndSeg = Math.max(0, lastSeg - 3); // Skip last 4 segments (footer)
 
         final long windowSegs = policy.currentWindow();
-        // Clamp end: no more than windowSegs, and not past safeEndSeg
-        final long endExclusive = Math.min(startSeg + windowSegs, safeEndSeg + 1);
-
-        if (startSeg >= endExclusive) {
+        if (windowSegs <= 0 || startSeg > safeEndSeg)
             return;
-        }
 
-        int scheduled = 0;
-        long firstAccepted = -1L, firstRejected = -1L;
+        final long endExclusive = Math.min(startSeg + windowSegs, safeEndSeg + 1);
+        if (startSeg >= endExclusive)
+            return;
 
-        for (long seg = startSeg; seg < endExclusive; seg++) {
-            final long off = seg << CACHE_BLOCK_SIZE_POWER;
-            final long remaining = fileLength - off;
-            if (remaining <= 0) {
-                break;
-            }
+        final long blockCount = endExclusive - startSeg;
 
-            final int len = (int) Math.min(CACHE_BLOCK_SIZE, remaining);
+        if (blockCount > 0) {
+            // schedule the entire window.
+            final boolean accepted = worker.schedule(path, anchorFileOffset, blockCount);
+            LOGGER
+                .debug(
+                    "RA_BULK_TRIGGER path={} anchorOff={} startSeg={} endExclusive={} windowSegs={} scheduledBlocks={} accepted={}",
+                    path,
+                    anchorFileOffset,
+                    startSeg,
+                    endExclusive,
+                    windowSegs,
+                    blockCount,
+                    accepted
+                );
 
-            if (worker.schedule(path, off, len)) {
-                if (firstAccepted == -1L)
-                    firstAccepted = seg;
-                scheduled++;
-            } else {
-                firstRejected = seg; // queue backpressure
+            if (!accepted) {
                 LOGGER
-                    .info("There is backpressure path={} length={} startSeg={} endExclusive={}", path, fileLength, startSeg, endExclusive);
-                break;
+                    .info(
+                        "Window bulk readahead backpressure path={} length={} startSeg={} endExclusive={} windowBlocks={}",
+                        path,
+                        fileLength,
+                        startSeg,
+                        endExclusive,
+                        blockCount
+                    );
             }
         }
-
-        LOGGER
-            .debug(
-                "RA_TRIGGER path={} anchorOff={} startSeg={} endExclusive={} windowSegs={} scheduled={} firstAccepted={} firstRejected={}",
-                path,
-                anchorFileOffset,
-                startSeg,
-                endExclusive,
-                windowSegs,
-                scheduled,
-                firstAccepted,
-                firstRejected
-            );
-
     }
 
     @Override

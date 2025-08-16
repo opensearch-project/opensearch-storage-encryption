@@ -56,7 +56,7 @@ public interface BlockLoader<T> {
      * @param blockCount number of blocks to read
      * @return array of loaded memory segments (length equals blockCount)
      */
-    T[] load(Path filePath, long startOffset, int blockCount) throws Exception;
+    T[] load(Path filePath, long startOffset, long blockCount) throws Exception;
 
     /**
      *  Loads a single block.
