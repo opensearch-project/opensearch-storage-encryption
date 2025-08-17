@@ -4,17 +4,25 @@
  */
 package org.opensearch.index.store.directio;
 
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+
 import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.OutputStreamIndexOutput;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
+import org.opensearch.index.store.block_cache.RefCountedMemorySegmentCacheValue;
 
 /**
  * An IndexOutput implementation that encrypts data before writing using native
@@ -25,8 +33,9 @@ import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "temporary bypass")
 public final class BufferIOWithCaching extends OutputStreamIndexOutput {
+    private static final Logger LOGGER = LogManager.getLogger(BufferIOWithCaching.class);
 
-    private static final int CHUNK_SIZE = 8_192;
+    private static final int CHUNK_SIZE = CACHE_BLOCK_SIZE;
     private static final int BUFFER_SIZE = 65_536;
 
     /**
@@ -134,7 +143,49 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         }
 
         private void processAndWrite(Path path, byte[] data, int arrayOffset, int length) throws IOException {
-            out.write(data, arrayOffset, length);
+            int offsetInBuffer = 0;
+            final MemorySegment full = MemorySegment.ofArray(data);
+
+            while (offsetInBuffer < length) {
+                long absoluteOffset = streamOffset + offsetInBuffer;
+                long blockAlignedOffset = absoluteOffset & ~CACHE_BLOCK_MASK;
+                int blockOffset = (int) (absoluteOffset & CACHE_BLOCK_MASK);
+                int chunkLen = Math.min(length - offsetInBuffer, CACHE_BLOCK_SIZE - blockOffset);
+
+                // Cache only fully-aligned full blocks
+                if (blockOffset == 0 && chunkLen == CACHE_BLOCK_SIZE) {
+                    try {
+                        if (!memorySegmentPool.isUnderPressure()) {
+                            final MemorySegment pooled = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
+                            if (pooled != null) {
+                                final MemorySegment pooledSlice = pooled.asSlice(0, CACHE_BLOCK_SIZE);
+                                MemorySegment.copy(full, arrayOffset + offsetInBuffer, pooledSlice, 0, CACHE_BLOCK_SIZE);
+
+                                BlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, blockAlignedOffset);
+                                RefCountedMemorySegment refSegment = new RefCountedMemorySegment(
+                                    pooled,
+                                    CACHE_BLOCK_SIZE,
+                                    seg -> memorySegmentPool.release(pooled)
+                                );
+                                RefCountedMemorySegmentCacheValue cacheValue = new RefCountedMemorySegmentCacheValue(refSegment);
+                                blockCache.put(cacheKey, cacheValue);
+                            } else {
+                                LOGGER.info("Failed to acquire from pool within specificed timeout path={} {} ms", path, 5);
+                            }
+                        }
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        LOGGER.warn("Interrupted while acquiring segment for cache.");
+                    } catch (IllegalStateException e) {
+                        LOGGER.debug("Failed to acquire segment from pool; skipping cache.");
+                    }
+                }
+
+                // Always write the chunk to disk
+                out.write(data, arrayOffset + offsetInBuffer, chunkLen);
+                offsetInBuffer += chunkLen;
+            }
+
             streamOffset += length;
         }
 

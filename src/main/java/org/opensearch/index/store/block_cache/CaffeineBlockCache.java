@@ -120,8 +120,12 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      */
     @Override
     public void loadBulk(Path filePath, long startOffset, long blockCount) throws IOException {
+        V[] loadedBlock = null;
+        boolean[] addedToCache = null;
+
         try {
-            V[] loadedBlock = blockLoader.load(filePath, startOffset, blockCount);
+            loadedBlock = blockLoader.load(filePath, startOffset, blockCount);
+            addedToCache = new boolean[loadedBlock.length];
 
             for (int i = 0; i < loadedBlock.length; i++) {
                 if (loadedBlock[i] != null) {
@@ -129,8 +133,11 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                     BlockCacheKey key = createBlockKey(filePath, blockOffset);
 
                     // No cache stats update to avoid polluting metrics.
-                    // Atomic insert
-                    cache.asMap().putIfAbsent(key, maybeWrapValueForRefCounting(loadedBlock[i]));
+                    // Always wrap and attempt insert - putIfAbsent tells us if successful
+                    BlockCacheValue<T> wrappedValue = maybeWrapValueForRefCounting(loadedBlock[i]);
+                    BlockCacheValue<T> existing = cache.asMap().putIfAbsent(key, wrappedValue);
+
+                    addedToCache[i] = (existing == null);
                 }
             }
         } catch (Exception e) {
@@ -140,6 +147,15 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 throw uie.getCause();
             } catch (RuntimeException re) {
                 throw new IOException("Failed bulk load: " + filePath, re);
+            }
+        } finally {
+            // Release any blocks that were NOT added to cache
+            if (loadedBlock != null && addedToCache != null) {
+                for (int i = 0; i < loadedBlock.length; i++) {
+                    if (loadedBlock[i] != null && !addedToCache[i]) {
+                        segmentPool.release(loadedBlock[i]);
+                    }
+                }
             }
         }
     }
