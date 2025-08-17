@@ -139,7 +139,7 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
             final State next = new State(currSeg, proposedMarker, newWin);
             if (ref.compareAndSet(s, next)) {
                 LOGGER
-                    .info(
+                    .debug(
                         "Path={}, Gap={}, isSequential={}, Trigger={}, currSeg={}, newMarker={}, win={}",
                         path,
                         gap,

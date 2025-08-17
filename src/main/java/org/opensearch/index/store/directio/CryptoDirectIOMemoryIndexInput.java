@@ -224,21 +224,11 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
 
         // Align file offset to cache block boundary
         final long alignedBlockStart = fileOffset & ~CACHE_BLOCK_MASK;
-
-        // Calculate blocks to potentially load for readahead positioning
-        long remainingBytes = length - alignedBlockStart;
-        int remainingBlocks = (int) (remainingBytes >> CACHE_BLOCK_SIZE_POWER);
-
-        final int initialWindow = (readaheadContext != null ? readaheadContext.policy().initialWindow() : -1);
-        int blocksToLoad = Math.min(initialWindow, remainingBlocks);
-
         boolean cacheMiss = true;
-        long readaheadStartOffset = alignedBlockStart + ((long) blocksToLoad << CACHE_BLOCK_SIZE_POWER);
 
         if (blockCache != null) {
             final DirectIOBlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, alignedBlockStart);
             final Optional<BlockCacheValue<RefCountedMemorySegment>> cached = blockCache.get(cacheKey);
-
             if (cached.isPresent()) {
                 BlockCacheValue<RefCountedMemorySegment> value = cached.get();
                 if (value.tryBorrow()) {
@@ -260,14 +250,23 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                 }
             }
 
+            // Calculate immediate blocks to load (initial window or remaining blocks, whichever is smaller)
+            int remainingBlocks = (int) ((length - alignedBlockStart) >> CACHE_BLOCK_SIZE_POWER);
+            int initialWindow = (readaheadContext != null ? readaheadContext.policy().initialWindow() : 0);
+            int immediateBlocksToLoad = Math.min(initialWindow, remainingBlocks);
+
+            // Trigger readahead starting from end of initial window only if there are more blocks beyond immediate window
+            if (readaheadManager != null && readaheadContext != null && cacheMiss && immediateBlocksToLoad < remainingBlocks) {
+                long readaheadStartOffset = alignedBlockStart + ((long) immediateBlocksToLoad << CACHE_BLOCK_SIZE_POWER);
+                readaheadManager.onSegmentAccess(readaheadContext, readaheadStartOffset, cacheMiss);
+            }
+
             if (cacheMiss) {
                 try {
-                    if (blocksToLoad > 0) {
+                    if (immediateBlocksToLoad > 0) {
                         long startTime = System.nanoTime();
-
                         // pre-load a few blocks to avoid next immediate cache misses.
-                        blockCache.loadBulk(path, alignedBlockStart, blocksToLoad);
-
+                        blockCache.loadBulk(path, alignedBlockStart, immediateBlocksToLoad);
                         long loadTimeMs = (System.nanoTime() - startTime) / 1_000_000;
                         LOGGER
                             .debug(
@@ -275,13 +274,13 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                                 Thread.currentThread().getName(),
                                 path,
                                 alignedBlockStart,
-                                blocksToLoad,
+                                immediateBlocksToLoad,
                                 loadTimeMs
                             );
                     }
                 } catch (Exception e) {
                     // todo throw the exception.
-                    LOGGER.error("Failed to load {} blocks from {}: {}", blocksToLoad, path, e.getMessage());
+                    LOGGER.error("Failed to load {} blocks from {}: {}", immediateBlocksToLoad, path, e.getMessage());
                 }
 
                 LOGGER
@@ -297,11 +296,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             }
         }
 
-        if (readaheadManager != null && readaheadContext != null) {
-            readaheadManager.onSegmentAccess(readaheadContext, readaheadStartOffset, cacheMiss);
-        }
-
-        // todo: add back the mmaped segment to cache.
+        // Fall back to MMAP.
         // Note we cannot copy this memory segment into the index input
         // arena pool because it may end up leaking decryoted bytes in swap space.
         // todo: Implement an expanding segment pool to be able to acquire more segments

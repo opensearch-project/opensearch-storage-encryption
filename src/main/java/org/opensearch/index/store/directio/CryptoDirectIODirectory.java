@@ -213,7 +213,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         Thread loggerThread = new Thread(() -> {
             while (true) {
                 try {
-                    Thread.sleep(Duration.ofMinutes(3));
+                    Thread.sleep(Duration.ofMinutes(1));
                     logCacheAndPoolStats();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();

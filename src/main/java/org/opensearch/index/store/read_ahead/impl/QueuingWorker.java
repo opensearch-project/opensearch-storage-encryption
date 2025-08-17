@@ -140,20 +140,21 @@ public class QueuingWorker implements Worker {
 
                 inFlight.remove(task);
 
-                if (LOGGER.isDebugEnabled()) {
-                    long iOms = (task.doneNanos - task.startNanos) / 1_000_000L;
-                    long length = task.blockCount << CACHE_BLOCK_SIZE_POWER;
-                    LOGGER
-                        .debug(
-                            "RA_IO_DONE_BULK path={}, off={} len={} blocks={} io_ms={} qsz={}",
-                            task.path,
-                            task.offset,
-                            length,
-                            task.blockCount,
-                            iOms,
-                            queue.size()
-                        );
-                }
+                long blockStart = task.offset >>> CACHE_BLOCK_SIZE_POWER;
+                long blockEnd = blockStart + task.blockCount - 1;
+                LOGGER
+                    .debug(
+                        "RA_IO_DONE_BULK path={} blockRange=[{}-{}] off={} len={} blocks={} io_ms={} qsz={}/{}",
+                        task.path,
+                        blockStart,
+                        blockEnd,
+                        task.offset,
+                        task.blockCount << CACHE_BLOCK_SIZE_POWER,
+                        task.blockCount,
+                        (task.doneNanos - task.startNanos) / 1_000_000L,
+                        queue.size(),
+                        queueCapacity
+                    );
 
             } catch (InterruptedException ie) {
                 if (!closed) {

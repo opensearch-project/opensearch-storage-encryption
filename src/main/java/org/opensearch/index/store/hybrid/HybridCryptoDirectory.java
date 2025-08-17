@@ -85,10 +85,6 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         ensureOpen();
         ensureCanRead(name);
 
-        if (!specialExtensions.contains("cfs")) {
-            return eagerDecryptedCryptoMMapDirectory.createOutput(name, context);
-        }
-
         return cryptoDirectIODirectory.createOutput(name, context);
     }
 

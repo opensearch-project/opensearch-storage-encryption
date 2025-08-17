@@ -8,6 +8,7 @@ import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SI
 
 import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -25,8 +26,8 @@ public class WindowedReadAheadContext implements ReadaheadContext {
 
     // Cache-awareness
     private final int cacheHitStreakThreshold;
-    private int cacheHitStreak = 0;
-    private boolean readaheadEnabled = true;
+    private final AtomicInteger cacheHitStreak = new AtomicInteger(0);
+    private volatile boolean readaheadEnabled = true;
 
     // Scheduling state (per file)
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -57,18 +58,14 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         // Cache-aware window adjustment instead of complete disabling
         if (cacheMiss) {
             readaheadEnabled = true;
-            cacheHitStreak = 0;
+            cacheHitStreak.set(0);
         } else if (readaheadEnabled) {
-            cacheHitStreak++;
-
+            int currentStreak = cacheHitStreak.incrementAndGet();
             int shrinkThreshold = Math.max(cacheHitStreakThreshold, policy.currentWindow() / 2);
-            if (cacheHitStreak >= shrinkThreshold) {
+            if (currentStreak >= shrinkThreshold) {
+                cacheHitStreak.set(0);
                 policy.onCacheHitShrink();
-                cacheHitStreak = 0;
-                // Only disable if window is already at minimum
-                if (policy.currentWindow() <= policy.initialWindow()) {
-                    readaheadEnabled = false;
-                }
+                readaheadEnabled = false;
             }
         }
 
@@ -142,7 +139,7 @@ public class WindowedReadAheadContext implements ReadaheadContext {
     @Override
     public synchronized void reset() {
         policy.reset();
-        cacheHitStreak = 0;
+        cacheHitStreak.set(0);
         readaheadEnabled = true;
     }
 
