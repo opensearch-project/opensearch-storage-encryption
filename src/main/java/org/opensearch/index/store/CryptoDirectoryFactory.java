@@ -4,13 +4,6 @@
  */
 package org.opensearch.index.store;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.BLOCK_EXPIRY_AFTER_ACCESS_MINS;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.MAX_CACHE_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.READ_AHEAD_QUEUE_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.RESEVERED_POOL_SIZE_IN_BYTES;
-import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
-
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Files;
@@ -20,6 +13,8 @@ import java.security.Security;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
@@ -49,6 +44,13 @@ import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.directio.CryptoDirectIODirectory;
 import org.opensearch.index.store.directio.CryptoDirectIOSegmentBlockLoader;
+import static org.opensearch.index.store.directio.DirectIoConfigs.BLOCK_EXPIRY_AFTER_ACCESS_MINS;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_INITIAL_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.MAX_CACHE_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.READ_AHEAD_QUEUE_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.RESEVERED_POOL_SIZE_IN_BYTES;
+import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
 import org.opensearch.index.store.iv.DefaultKeyIvResolver;
 import org.opensearch.index.store.iv.KeyIvResolver;
@@ -252,21 +254,36 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         * -----------
         * - Caffeine eviction is single-threaded by default (runs in caller thread via `Runnable::run`),
         *   which avoids offloading release to background threads that may hold on to native memory.
-        *
-        * TODO:
-        * -----
-        * - Tune `maximumSize` and eviction policy based on benchmark results and memory pressure.
+        * 
         */
+        ThreadPoolExecutor cacheExec = new ThreadPoolExecutor(
+            1,
+            1,
+            60,
+            TimeUnit.SECONDS,
+            new ArrayBlockingQueue<>(CACHE_INITIAL_SIZE),
+            r -> {
+                Thread t = new Thread(r, "block-cache-close");
+                t.setDaemon(true);
+                return t;
+            },
+            new ThreadPoolExecutor.CallerRunsPolicy()
+        );
 
         Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> cache = Caffeine
             .newBuilder()
+            .initialCapacity(CACHE_INITIAL_SIZE)
             .maximumSize(MAX_CACHE_SIZE)
             .recordStats()
             .expireAfterAccess(BLOCK_EXPIRY_AFTER_ACCESS_MINS, TimeUnit.MINUTES)
-            .executor(Runnable::run)
+            .executor(cacheExec)
             .removalListener((BlockCacheKey key, BlockCacheValue<RefCountedMemorySegment> value, RemovalCause cause) -> {
                 if (value != null) {
-                    value.close();
+                    try {
+                        value.close();
+                    } catch (Throwable t) {
+                        LOGGER.warn("Failed to close a cached value during eviction ", t);
+                    }
                 }
             })
             .build();

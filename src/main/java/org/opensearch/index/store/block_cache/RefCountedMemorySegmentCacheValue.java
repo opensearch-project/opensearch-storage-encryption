@@ -4,79 +4,108 @@
  */
 package org.opensearch.index.store.block_cache;
 
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * A cache value wrapper for {@link RefCountedMemorySegment} that implements {@link BlockCacheValue}.
+ * Cache value for a fixed-size block backed by a {@link RefCountedMemorySegment}.
  *
- * This class represents an entry in the block cache. It handles reference counting semantics
- * to ensure that segments are only released when all readers have completed using them.
+ * <p>Contract:
+ * <ul>
+ *   <li>Cache owns one reference on construction (segment refcount starts >= 1).</li>
+ *   <li>Callers must {@link #tryPin()} before accessing {@link #value()} and always {@link #unpin()} in a finally block.</li>
+ *   <li>When the cache removes this entry, it invokes {@link #close()} exactly once:
+ *       this marks the value as retired (rejecting new pins) and drops the cache’s ref;
+ *       the segment is actually freed when the last pin releases.</li>
+ * </ul>
  *
- * This value type supports both borrowing (no ref count increment) and pinning (with ref count increment),
- * depending on usage semantics (e.g., shared reads vs ownership transfer).
+ * <p>Thread-safety: All methods are thread-safe. Refcount increments use CAS loops; decrements rely on
+ * {@link RefCountedMemorySegment#decRef()} to free exactly once when refcount reaches zero.
  */
 public final class RefCountedMemorySegmentCacheValue implements BlockCacheValue<RefCountedMemorySegment> {
 
-    private final RefCountedMemorySegment refSegment;
+    private final RefCountedMemorySegment seg; // must hold an initial ref on construction
     private final int length;
+    private final AtomicBoolean retired = new AtomicBoolean(false);
 
     /**
-     * Creates a new cache value wrapping the given reference-counted memory segment.
-     *
-     * @param refSegment the reference-counted memory segment to wrap
-     * @throws IllegalArgumentException if refSegment is null
+     * @param seg backing segment with a positive initial refcount (the cache’s hold)
      */
-    public RefCountedMemorySegmentCacheValue(RefCountedMemorySegment refSegment) {
-        if (refSegment == null) {
-            throw new IllegalArgumentException("refSegment must not be null");
+    public RefCountedMemorySegmentCacheValue(RefCountedMemorySegment seg) {
+        if (seg == null) {
+            throw new IllegalArgumentException("seg must not be null");
         }
-        this.refSegment = refSegment;
-        this.length = refSegment.length();
+        // Defensive check: require a positive refcount so the cache truly owns one reference.
+        AtomicInteger rc = seg.getRefCount();
+        if (rc == null || rc.get() <= 0) {
+            throw new IllegalArgumentException("seg must have a positive initial refcount");
+        }
+        this.seg = seg;
+        this.length = seg.length();
+    }
+
+    /** Attempts to acquire a pin. Fails if retired or already fully released. */
+    @Override
+    public boolean tryPin() {
+        final AtomicInteger rc = seg.getRefCount();
+        if (rc == null)
+            return false;          // defensive: segment not ref-counted
+        for (;;) {
+            if (retired.get())
+                return false;   // no new pins after retirement
+            final int r = rc.get();
+            if (r == 0)
+                return false;          // already freed
+            // CAS failures would be rare (unless huge cache pressure), so its okay to retry.
+            if (rc.compareAndSet(r, r + 1)) {
+                return true;
+            }
+        }
+    }
+
+    /** Releases a previously acquired pin. May free the segment if this was the last reference. */
+    @Override
+    public void unpin() {
+        seg.decRef();
     }
 
     /**
-     * Returns the wrapped {@link RefCountedMemorySegment}.
-     */
-    public RefCountedMemorySegment getRefSegment() {
-        return refSegment;
-    }
-
-    /**
-     * Borrows the segment without incrementing the reference count.
-     *
-     * @return the wrapped segment without touching ref count
+     * Called exactly once by the cache’s removalListener. This is why we keep removal 
+     * listener single threaded. 
+     * <p>Marks this value retired and drops the cache’s reference. Actual free happens when the last
+     * outstanding pin (if any) releases.
      */
     @Override
-    public RefCountedMemorySegment borrow() {
-        return refSegment;
-    }
-
-    @Override
-    public boolean tryBorrow() {
-        AtomicInteger refCount = refSegment.getRefCount();
-        if (refCount == null) {
-            return false;
+    public void close() {
+        if (retired.compareAndSet(false, true)) {
+            // Drop the cache’s ownership reference. If no readers are pinned, this will free now.
+            // the uderlying memory.
+            seg.decRef();
         }
-
-        int current = refCount.get();
-        return current > 0 && refCount.compareAndSet(current, current + 1);
     }
 
-    /**
-     * Returns the logical length of the block (usually equal to the segment length).
-     */
+    /** Returns the wrapped segment for read-only use while pinned. */
+    @Override
+    public RefCountedMemorySegment value() {
+        return seg;
+    }
+
+    /** Logical size (bytes) of this block. */
     @Override
     public int length() {
         return length;
     }
 
-    /**
-     * Releases the segment by decrementing its reference count.
-     * If the ref count reaches zero, the segment is fully released.
-     */
+    /** True once this value has been removed from the cache and refuses new pins. */
     @Override
-    public void close() {
-        // Reader is done — drop ownership
-        refSegment.decRef();
+    public boolean isRetired() {
+        return retired.get();
+    }
+
+    @Override
+    public String toString() {
+        final AtomicInteger rc = seg.getRefCount();
+        final int r = (rc != null) ? rc.get() : -1;
+        return "RefCountedMemorySegmentCacheValue{len=" + length + ", retired=" + retired.get() + ", refs=" + r + "}";
     }
 }
