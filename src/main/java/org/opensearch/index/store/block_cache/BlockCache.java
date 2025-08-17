@@ -37,6 +37,11 @@ public interface BlockCache<T> {
     void invalidate(BlockCacheKey key);
 
     /**
+     * Evict all blocks for a given normalized file path.
+     */
+    void invalidate(Path normalizedFilePath);
+
+    /**
      * Clear all blocks.
      */
     void clear();

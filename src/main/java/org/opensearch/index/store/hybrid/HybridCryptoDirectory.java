@@ -18,7 +18,6 @@ import org.apache.lucene.store.IOContext.Context;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
-import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.index.store.directio.CryptoDirectIODirectory;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.mmap.EagerDecryptedCryptoMMapDirectory;
@@ -53,7 +52,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         this.eagerDecryptedCryptoMMapDirectory = eagerDecryptedCryptoMMapDirectory;
         this.cryptoDirectIODirectory = cryptoDirectIODirectory;
         // this.specialExtensions = Set.of("kdd", "kdi", "kdm", "tip", "tim", "tmd", "doc", "dvd", "nvd", "psm", "fdm");
-        this.specialExtensions = Set.of("kdd");
+        this.specialExtensions = Set.of("kdd", "doc", "dvd");
     }
 
     @Override
@@ -159,7 +158,19 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
     }
 
     @Override
+    public void deleteFile(String name) throws IOException {
+        String ext = FileSwitchDirectory.getExtension(name);
+
+        if (specialExtensions.contains(ext)) {
+            cryptoDirectIODirectory.deleteFile(name);
+        } else {
+            super.deleteFile(name); // goes to CryptoNIOFSDirectory
+        }
+    }
+
+    @Override
     public void close() throws IOException {
-        IOUtils.close(super::close, lazyDecryptedCryptoMMapDirectoryDelegate);
+        cryptoDirectIODirectory.close(); // only closes its resources.
+        super.close(); // actually closes pending files.
     }
 }
