@@ -105,7 +105,25 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     }
 
     @Override
+    public void invalidate(Path filePath) {
+        Path normalized = filePath.toAbsolutePath().normalize();
+        var keysToInvalidate = cache
+            .asMap()
+            .keySet()
+            .stream()
+            .filter(key -> key instanceof DirectIOBlockCacheKey directIOKey && directIOKey.filePath().equals(normalized))
+            .toList();
+
+        // invalidateAll to trigger removal listener for proper segment cleanup
+        // note: invalidateAll doesn't effect eviction count.
+        if (!keysToInvalidate.isEmpty()) {
+            cache.invalidateAll(keysToInvalidate);
+        }
+    }
+
+    @Override
     public void clear() {
+        // note: invalidateAll doesn't effect eviction count.
         cache.invalidateAll();
     }
 

@@ -189,11 +189,25 @@ public final class CryptoDirectIODirectory extends FSDirectory {
 
     }
 
+    // only close resources owned by this directory type.
+    // the actual directory is closed only once (see HybridCryptoDirectory.java)
     @Override
+    @SuppressWarnings("ConvertToTryWithResources")
     public synchronized void close() throws IOException {
-        isOpen = false;
         readAheadworker.close();
-        deletePendingFiles();
+        blockCache.clear();
+    }
+
+    @Override
+    public void deleteFile(String name) throws IOException {
+        Path file = getDirectory().resolve(name);
+
+        // Invalidate cache entries for this file
+        if (blockCache != null) {
+            blockCache.invalidate(file);
+        }
+
+        super.deleteFile(name);
     }
 
     private void logCacheAndPoolStats() {
