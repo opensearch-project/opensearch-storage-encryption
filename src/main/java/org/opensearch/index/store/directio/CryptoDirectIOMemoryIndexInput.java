@@ -4,10 +4,6 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
-
 import java.io.EOFException;
 import java.io.IOException;
 import java.lang.foreign.Arena;
@@ -30,6 +26,9 @@ import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
 
@@ -231,7 +230,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
             final Optional<BlockCacheValue<RefCountedMemorySegment>> cached = blockCache.get(cacheKey);
             if (cached.isPresent()) {
                 BlockCacheValue<RefCountedMemorySegment> value = cached.get();
-                if (value.tryBorrow()) {
+                if (value.tryPin()) {
                     LOGGER
                         .debug(
                             "CACHE_HIT thread={} path={} reqOff={} alignedOff={} blockSize={} len={}",
@@ -242,9 +241,12 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                             CACHE_BLOCK_SIZE,
                             lengthNeeded
                         );
-                    RefCountedMemorySegment refSeg = value.borrow();
-                    segments[segmentIndex] = refSeg.segment();
-                    refSegments[segmentIndex] = refSeg;
+                    // Hold onto the pinned block until IndexInput is closed.
+                    // This guarantees the underlying memory segment stays valid.
+                    // We call ref.decRef() in IndexInput.close().
+                    RefCountedMemorySegment pinned = value.value();
+                    refSegments[segmentIndex] = pinned;
+                    segments[segmentIndex] = pinned.segment(); // unwrap MemorySegment
 
                     cacheMiss = false;
                 }
@@ -278,7 +280,7 @@ public class CryptoDirectIOMemoryIndexInput extends IndexInput implements Random
                                 loadTimeMs
                             );
                     }
-                } catch (Exception e) {
+                } catch (IOException e) {
                     // todo throw the exception.
                     LOGGER.error("Failed to load {} blocks from {}: {}", immediateBlocksToLoad, path, e.getMessage());
                 }
