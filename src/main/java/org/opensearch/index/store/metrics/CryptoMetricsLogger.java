@@ -69,6 +69,10 @@ public class CryptoMetricsLogger {
         return THREAD_LOCAL_LOGGER.get();
     }
 
+    public static void resetThreadLocalLoggers() {
+        THREAD_LOCAL_LOGGER.remove();
+    }
+
     public static void recordBytes(String metricName, long bytes, MetricsContext context) {
         try {
             recordMetric(metricName, bytes, Unit.BYTES, context.toDimensionSet());
@@ -102,7 +106,6 @@ public class CryptoMetricsLogger {
             NAMESPACE = namespace;
         }
     }
-
 
     private static void recordMetric(String metricName, Number value, Unit unit, DimensionSet dimensions) {
         try {
