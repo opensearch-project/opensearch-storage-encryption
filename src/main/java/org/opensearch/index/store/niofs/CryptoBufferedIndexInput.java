@@ -26,6 +26,8 @@ import org.apache.lucene.store.IndexInput;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.cipher.AesCipherFactory;
 import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.metrics.CryptoMetricsLogger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * An IndexInput implementation that decrypts data for reading
@@ -43,6 +45,9 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
     private final long end;
     private final KeyIvResolver keyResolver;
     private final SecretKeySpec keySpec;
+    private static final AtomicLong readCount = new AtomicLong();
+    private static final AtomicLong atomicBytesRead = new AtomicLong();
+    private static final CryptoMetricsLogger.MetricsContext metricsContext = new CryptoMetricsLogger.MetricsContext("read", "niofs");
 
     private ByteBuffer tmpBuffer = EMPTY_BYTEBUFFER;
 
@@ -131,7 +136,14 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
                 cipher.update(ZERO_SKIP, 0, (int) (position % AesCipherFactory.AES_BLOCK_SIZE_BYTES));
             }
 
-            return (end - position > bytesRead) ? cipher.update(tmpBuffer, dst) : cipher.doFinal(tmpBuffer, dst);
+            int result = (end - position > bytesRead) ? cipher.update(tmpBuffer, dst) : cipher.doFinal(tmpBuffer, dst);
+            readCount.incrementAndGet();
+            atomicBytesRead.addAndGet(result);
+            
+            CryptoMetricsLogger.recordCount("ReadOperations", readCount.get(), metricsContext);
+            CryptoMetricsLogger.recordBytes("ReadBytes", atomicBytesRead.get(), metricsContext);
+            
+            return result;
         } catch (ShortBufferException | IllegalBlockSizeException | BadPaddingException | InvalidAlgorithmParameterException
             | InvalidKeyException ex) {
             throw new IOException("Failed to decrypt block at position " + position, ex);

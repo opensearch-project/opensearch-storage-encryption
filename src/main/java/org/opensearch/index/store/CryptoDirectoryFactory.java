@@ -32,6 +32,7 @@ import org.opensearch.index.shard.ShardPath;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
 import org.opensearch.index.store.iv.DefaultKeyIvResolver;
 import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.metrics.CryptoMetricsLogger;
 import org.opensearch.index.store.mmap.EagerDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.mmap.LazyDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
@@ -71,6 +72,15 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             throw new SettingsException("index.store.kms.type must be set");
         }
     }, Property.NodeScope, Property.IndexScope);
+
+    // EMF settings
+    public static final Setting<Boolean> EMF_ENABLED_SETTING = Setting.boolSetting("emf.enabled", false, Property.NodeScope);
+    public static final Setting<String> EMF_ENVIRONMENT_SETTING = new Setting<>("emf.environment", "Local", Function.identity(), Property.NodeScope);
+    public static final Setting<String> EMF_REGION_SETTING = new Setting<>("emf.region", "us-east-1", Function.identity(), Property.NodeScope);
+    public static final Setting<String> EMF_SERVICE_NAME_SETTING = new Setting<>("emf.service_name", "opensearch-storage-encryption", Function.identity(), Property.NodeScope);
+    public static final Setting<String> EMF_SERVICE_TYPE_SETTING = new Setting<>("emf.service_type", "OpenSearch Plugin", Function.identity(), Property.NodeScope);
+    public static final Setting<Double> EMF_SAMPLING_RATE_SETTING = Setting.doubleSetting("emf.sampling_rate", 1.0, 0.0, 1.0, Property.NodeScope);
+    public static final Setting<String> EMF_NAMESPACE_SETTING = new Setting<>("emf.namespace", "OpenSearch/StorageEncryption", Function.identity(), Property.NodeScope);
 
     MasterKeyProvider getKeyProvider(IndexSettings indexSettings) {
         final String KEY_PROVIDER_TYPE = indexSettings.getValue(INDEX_KMS_TYPE_SETTING);

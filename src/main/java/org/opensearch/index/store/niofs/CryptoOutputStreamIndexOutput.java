@@ -12,9 +12,11 @@ import java.nio.file.Path;
 import org.apache.lucene.store.OutputStreamIndexOutput;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.cipher.AesGcmCipherFactory;
+import org.opensearch.index.store.metrics.CryptoMetricsLogger;
 
 import javax.crypto.Cipher;
 import java.security.Key;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * An IndexOutput implementation that encrypts data before writing using native
@@ -27,6 +29,9 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
 
     private static final int CHUNK_SIZE = 8_192;
     private static final int BUFFER_SIZE = 65_536;
+    private static final AtomicLong writeCount = new AtomicLong();
+    private static final AtomicLong bytesWritten = new AtomicLong();
+    private static final CryptoMetricsLogger.MetricsContext metricsContext = new CryptoMetricsLogger.MetricsContext("write", "niofs");
 
     /**
      * Creates a new CryptoIndexOutput
@@ -109,6 +114,11 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
                 byte[] encrypted = org.opensearch.index.store.cipher.AesGcmCipherFactory.encryptWithoutTag(streamOffset, cipher, slice(data, offset, length), length);
                 out.write(encrypted);
                 streamOffset += length;
+                writeCount.incrementAndGet();
+                bytesWritten.addAndGet(length);
+                
+                CryptoMetricsLogger.recordCount("WriteOperations", writeCount.get(), metricsContext);
+                CryptoMetricsLogger.recordBytes("WriteBytes", bytesWritten.get(), metricsContext);
             } catch (Throwable t) {
                 throw new IOException("Encryption failed at offset " + streamOffset, t);
             }

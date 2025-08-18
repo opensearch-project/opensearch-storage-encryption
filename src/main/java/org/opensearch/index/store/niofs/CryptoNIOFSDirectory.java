@@ -20,6 +20,7 @@ import org.apache.lucene.store.LockFactory;
 import org.apache.lucene.store.NIOFSDirectory;
 import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.metrics.CryptoMetricsLogger;
 
 /**
  * A NioFS directory implementation that encrypts files to be stored based on a
@@ -31,6 +32,10 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
     private final Provider provider;
     public final KeyIvResolver keyIvResolver;
     private final AtomicLong nextTempFileCounter = new AtomicLong();
+    private static final AtomicLong openInputCount = new AtomicLong();
+    private static final AtomicLong createOutputCount = new AtomicLong();
+    private static final CryptoMetricsLogger.MetricsContext openInputContext = new CryptoMetricsLogger.MetricsContext("openInput", "niofs");
+    private static final CryptoMetricsLogger.MetricsContext createOutputContext = new CryptoMetricsLogger.MetricsContext("createOutput", "niofs");
 
     public CryptoNIOFSDirectory(LockFactory lockFactory, Path location, Provider provider, KeyIvResolver keyIvResolver) throws IOException {
         super(location, lockFactory);
@@ -58,6 +63,8 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
                 this.keyIvResolver
             );
             success = true;
+            openInputCount.incrementAndGet();
+            CryptoMetricsLogger.recordCount("OpenInputOperations", openInputCount.get(), openInputContext);
             return indexInput;
         } finally {
             if (!success) {
@@ -76,6 +83,8 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
+        createOutputCount.incrementAndGet();
+        CryptoMetricsLogger.recordCount("CreateOutputOperations", createOutputCount.get(), createOutputContext);
         return new CryptoOutputStreamIndexOutput(name, path, fos, this.keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), provider);
     }
 
