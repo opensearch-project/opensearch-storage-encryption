@@ -44,23 +44,26 @@ public final class RefCountedMemorySegmentCacheValue implements BlockCacheValue<
         this.length = seg.length();
     }
 
-    /** Attempts to acquire a pin. Fails if retired or already fully released. */
-    @Override
     public boolean tryPin() {
-        final AtomicInteger rc = seg.getRefCount();
-        if (rc == null)
-            return false;          // defensive: segment not ref-counted
-        for (;;) {
-            if (retired.get())
-                return false;   // no new pins after retirement
-            final int r = rc.get();
-            if (r == 0)
-                return false;          // already freed
-            // CAS failures would be rare (unless huge cache pressure), so its okay to retry.
-            if (rc.compareAndSet(r, r + 1)) {
-                return true;
-            }
+        AtomicInteger rc = this.seg.getRefCount();
+        if (rc == null) {
+            return false;
         }
+
+        while (!this.retired.get()) {
+            int r = rc.get();
+            if (r == 0) {
+                return false; // already released
+            }
+
+            if (rc.compareAndSet(r, r + 1)) {
+                return true; // successfully pinned
+            }
+
+            Thread.onSpinWait();
+        }
+
+        return false; // retired while we were spinning
     }
 
     /** Releases a previously acquired pin. May free the segment if this was the last reference. */

@@ -62,17 +62,41 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
             FileChannel channel = FileChannel.open(filePath, StandardOpenOption.READ, DirectIOReader.getDirectOpenOption())
         ) {
             MemorySegment bulkEncrypted = directIOReadAligned(channel, startOffset, readLength, arena);
+            long bytesRead = bulkEncrypted.byteSize();
 
-            // Validate we have enough data for all blocks
-            if (bulkEncrypted.byteSize() < readLength) {
-                throw new BlockLoadFailedException(
-                    "Insufficient data read: expected " + readLength + " bytes, got " + bulkEncrypted.byteSize()
-                );
+            // Fast-path: blockCount == 1 and partial read is acceptable (e.g., tail block)
+            if (blockCount == 1 && bytesRead <= CACHE_BLOCK_SIZE) {
+                MemorySegment pooled = null;
+                try {
+                    pooled = segmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
+                    if (pooled == null) {
+                        throw new PoolAcquireFailedException("Failed to acquire memory segment from pool within timeout");
+                    }
+
+                    int toCopy = (int) bytesRead;
+                    if (toCopy > 0) {
+                        MemorySegment.copy(bulkEncrypted, 0, pooled, 0, toCopy);
+                    }
+
+                    result[0] = pooled;
+
+                    LOGGER.debug("Short block read (EOF safe): path={} offset={} bytesRead={}", filePath, startOffset, bytesRead);
+                    return result;
+
+                } catch (Exception e) {
+                    if (pooled != null) {
+                        segmentPool.release(pooled);
+                    }
+                    throw e;
+                }
             }
 
-            // Decrypt entire read (if needed)
-            // DirectIOReader.decryptSegment(arena, bulkEncrypted, startOffset,
-            // keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
+            // For multi-block reads, short read is unexpected — likely corruption
+            if (bytesRead < readLength) {
+                throw new BlockLoadFailedException(
+                    "Short read: expected " + readLength + " bytes, got " + bytesRead + " for blockCount=" + blockCount
+                );
+            }
 
             int blockIndex = 0;
             try {
@@ -83,7 +107,6 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
                     }
 
                     result[blockIndex] = pooled;
-
                     long offsetInBulk = (long) blockIndex << CACHE_BLOCK_SIZE_POWER;
                     MemorySegment.copy(bulkEncrypted, offsetInBulk, pooled, 0, CACHE_BLOCK_SIZE);
                 }
@@ -107,7 +130,7 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
         } catch (NoSuchFileException ex) {
             throw ex;
         } catch (Exception ex) {
-            LOGGER.error("Failed bulk read: path={} offset={} length={}: {}", filePath, startOffset, readLength, ex.toString());
+            LOGGER.error("Failed bulk read: path={} offset={} length={} err={}", filePath, startOffset, readLength, ex.toString());
             throw ex;
         }
     }
