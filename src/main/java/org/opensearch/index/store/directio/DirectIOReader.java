@@ -97,53 +97,23 @@ public class DirectIOReader {
             throw new IOException("Aligned read size too large: " + alignedLength);
         }
 
-        long start = System.nanoTime();
-        long acquireStart = start;
-
         MemorySegment alignedSegment = arena.allocate(alignedLength, alignment);
         ByteBuffer directBuffer = alignedSegment.asByteBuffer();
 
-        long acquireEnd = System.nanoTime();
-
-        long readStart = acquireEnd;
         int bytesRead = channel.read(directBuffer, alignedOffset);
-        long readEnd = System.nanoTime();
-
-        if (bytesRead < offsetDelta + length) {
-            throw new IOException(
-                "Incomplete read: read="
-                    + bytesRead
-                    + ", expected="
-                    + (offsetDelta + length)
-                    + ", offset="
-                    + offset
-                    + ", alignedOffset="
-                    + alignedOffset
-            );
+        if (bytesRead < 0) {
+            // EOF, return empty segment
+            return arena.allocate(0);
         }
 
-        long allocStart = readEnd;
-        MemorySegment finalSegment = arena.allocate(length);
-        long allocEnd = System.nanoTime();
+        // Clamp to available
+        int available = Math.max(0, bytesRead - (int) offsetDelta);
+        int toCopy = (int) Math.min(length, available);
 
-        long copyStart = allocEnd;
-        MemorySegment.copy(alignedSegment, offsetDelta, finalSegment, 0, length);
-        long copyEnd = System.nanoTime();
-
-        LOGGER
-            .debug(
-                String
-                    .format(
-                        "DirectIORead(offset=%d, length=%d): total=%d µs | acquire=%d µs | read=%d µs | allocate=%d µs | copy=%d µs",
-                        offset,
-                        length,
-                        (copyEnd - start) / 1_000,
-                        (acquireEnd - acquireStart) / 1_000,
-                        (readEnd - readStart) / 1_000,
-                        (allocEnd - allocStart) / 1_000,
-                        (copyEnd - copyStart) / 1_000
-                    )
-            );
+        MemorySegment finalSegment = arena.allocate(toCopy);
+        if (toCopy > 0) {
+            MemorySegment.copy(alignedSegment, offsetDelta, finalSegment, 0, toCopy);
+        }
 
         return finalSegment;
     }

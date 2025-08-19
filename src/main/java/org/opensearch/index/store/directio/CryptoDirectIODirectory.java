@@ -4,19 +4,17 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
-import static org.opensearch.index.store.directio.DirectIoConfigs.MMAP_SEGMENT_POWER;
-
 import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
-import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.Provider;
 import java.time.Duration;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.logging.log4j.LogManager;
@@ -28,6 +26,7 @@ import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.BlockLoader;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.Pool;
@@ -82,61 +81,13 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         boolean confined = context == IOContext.READONCE;
         Arena arena = confined ? Arena.ofConfined() : Arena.ofShared();
 
-        long mmapChunkSize = 1L << MMAP_SEGMENT_POWER;       // large file in order of GBs
-        long cacheBlockSize = 1L << CACHE_BLOCK_SIZE_POWER;  // e.g. small blocks in order of 8-64KB.
-
-        // Number of cache-aligned blocks in the file
-        int numCacheBlocks = (int) ((size + cacheBlockSize - 1) / cacheBlockSize);
-
-        MemorySegment[] segments = new MemorySegment[numCacheBlocks];
-        RefCountedMemorySegment[] refSegments = new RefCountedMemorySegment[numCacheBlocks];
-
         ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker);
-        // Create a new ReadAheadContext for this index input.
         ReadaheadContext readAheadContext = readAheadManager.register(file, size);
 
-        try (FileChannel fc = FileChannel.open(file, StandardOpenOption.READ)) {
-            long fileOffset = 0;
-            int blockIndex = 0;
+        Map<DirectIOBlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> pinnedBlocks = new ConcurrentHashMap<>();
 
-            // Map the file in large chunks and slice into sizes of cache blocks
-            while (fileOffset < size) {
-                long remaining = size - fileOffset;
-                long mmapSize = Math.min(mmapChunkSize, remaining);
-
-                MemorySegment bigSegment = fc.map(FileChannel.MapMode.READ_ONLY, fileOffset, mmapSize, arena);
-
-                for (long chunkOffset = 0; chunkOffset < mmapSize && fileOffset + chunkOffset < size; chunkOffset += cacheBlockSize) {
-                    long blockSize = Math.min(cacheBlockSize, mmapSize - chunkOffset);
-                    segments[blockIndex++] = bigSegment.asSlice(chunkOffset, blockSize);
-                }
-
-                fileOffset += mmapSize;
-            }
-
-            return CryptoDirectIOMemoryIndexInput
-                .newInstance(
-                    "CryptoMemorySegmentIndexInput(path=\"" + file + "\")",
-                    fc,  // ownership transferred to IndexInput
-                    file,
-                    arena,
-                    blockCache,
-                    readAheadManager,
-                    readAheadContext,
-                    segments,
-                    refSegments,
-                    size,
-                    CACHE_BLOCK_SIZE_POWER,
-                    keyIvResolver.getDataKey().getEncoded(),
-                    keyIvResolver.getIvBytes()
-                );
-
-        } catch (Throwable t) {
-            // Ensure arena is freed if anything fails
-            arena.close();
-            LOGGER.error("DirectIO failed for file: {}", file, t);
-            throw new IOException("Failed to open DirectIO file: " + file, t);
-        }
+        return SimpleMMapIndexInput
+            .newInstance("CryptoDirectIOIndexInput(path=\"" + file + "\")", file, arena, size, blockCache, pinnedBlocks);
     }
 
     @Override
