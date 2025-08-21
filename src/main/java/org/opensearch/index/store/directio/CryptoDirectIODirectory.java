@@ -13,8 +13,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.Provider;
 import java.time.Duration;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.logging.log4j.LogManager;
@@ -26,7 +24,6 @@ import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
-import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.BlockLoader;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.Pool;
@@ -84,10 +81,9 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker);
         ReadaheadContext readAheadContext = readAheadManager.register(file, size);
 
-        Map<DirectIOBlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> pinnedBlocks = new ConcurrentHashMap<>();
+        PinRegistry registry = new PinRegistry(blockCache, file); // first owner.
 
-        return SimpleMMapIndexInput
-            .newInstance("CryptoDirectIOIndexInput(path=\"" + file + "\")", file, arena, size, blockCache, pinnedBlocks);
+        return SimpleMMapIndexInput.newInstance("CryptoDirectIOIndexInput(path=\"" + file + "\")", file, arena, size, blockCache, registry);
     }
 
     @Override

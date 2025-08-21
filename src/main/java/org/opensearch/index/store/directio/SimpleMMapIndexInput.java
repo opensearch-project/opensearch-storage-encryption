@@ -14,7 +14,6 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
-import java.util.Map;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -22,7 +21,6 @@ import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
 import org.opensearch.index.store.block_cache.BlockCache;
-import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 
 @SuppressWarnings("preview")
@@ -42,7 +40,8 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
     final Path path;
     final Arena arena;
     final BlockCache<RefCountedMemorySegment> blockCache;
-    final Map<DirectIOBlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> pinnedBlocks;
+
+    final PinRegistry registry;
 
     final long absoluteBaseOffset; // absolute position in original file where this input starts
     final boolean isSlice; // true for slices, false for main instances
@@ -56,10 +55,10 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
         Arena arena,
         long length,
         BlockCache<RefCountedMemorySegment> blockCache,
-        Map<DirectIOBlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> pinnedBlocks
+        PinRegistry registry
     ) {
 
-        return new MultiSegmentImpl(resourceDescription, path, arena, 0, 0, length, blockCache, pinnedBlocks, false);
+        return new MultiSegmentImpl(resourceDescription, path, arena, 0, 0, length, blockCache, registry, false);
     }
 
     private SimpleMMapIndexInput(
@@ -69,7 +68,7 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
         long absoluteBaseOffset,
         long length,
         BlockCache<RefCountedMemorySegment> blockCache,
-        Map<DirectIOBlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> pinnedBlocks,
+        PinRegistry registry,
         boolean isSlice
     ) {
         super(resourceDescription);
@@ -80,7 +79,7 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
         this.chunkSizePower = CACHE_BLOCK_SIZE_POWER;
         this.chunkSizeMask = CACHE_BLOCK_MASK;
         this.blockCache = blockCache;
-        this.pinnedBlocks = pinnedBlocks;
+        this.registry = registry;
         this.isSlice = isSlice;
     }
 
@@ -105,15 +104,6 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
     }
 
     /**
-     * Helper method to get cache block for a given position.
-     * Handles block alignment, cache loading, and tracks pinned blocks for cleanup.
-     * 
-     * @param pos position relative to this input
-     * @return MemorySegment for the cache block containing the position
-     * @throws IOException if cache loading fails
-     */
-
-    /**
     * Helper method to get cache block for a given position.
     * Handles block alignment, cache loading, and tracks pinned blocks for cleanup.
     *
@@ -122,47 +112,10 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
     * @throws IOException if cache loading fails
     */
     private MemorySegment getCacheBlock(long pos) throws IOException {
-        final long fileOffset = getAbsoluteFileOffset(pos);
-        final long blockOff = fileOffset & ~CACHE_BLOCK_MASK;
-        final DirectIOBlockCacheKey key = new DirectIOBlockCacheKey(path, blockOff);
-
-        // Fast path: already pinned
-        BlockCacheValue<RefCountedMemorySegment> val = pinnedBlocks.get(key);
-        if (val != null) {
-            return val.value().segment();
-        }
-
-        try {
-            val = blockCache.getOrLoad(key);
-        } catch (IOException e) {
-            LOGGER.info("Failed to load block from cache offset={} path={} err={}", pos, path, e.toString());
-            throw e;
-        }
-
-        // Only try to pin for non-slices
-        if (!isSlice) {
-            // Try to pin
-            if (val.tryPin()) {
-                pinnedBlocks.put(key, val);
-                return val.value().segment();
-            }
-
-            // re-put only if not retired and then re-pin
-            if (!val.isRetired()) {
-                // Cautious: don't re-put unless absolutely needed
-                blockCache.put(key, val);
-
-                if (val.tryPin()) {
-                    pinnedBlocks.put(key, val);
-                    return val.value().segment();
-                }
-            }
-
-            throw new IOException("Failed to pin block at offset=" + pos + ", dec=" + toString());
-        }
-
-        // For slices, just return the segment without pinning
-        return val.value().segment();
+        ensureOpen();
+        long fileOff = getAbsoluteFileOffset(pos);
+        long blockOff = fileOff & ~CACHE_BLOCK_MASK;
+        return registry.acquire(blockOff); // always pinned or throws
     }
 
     @Override
@@ -594,7 +547,7 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
             sliceAbsoluteBaseOffset,
             length,
             blockCache,
-            pinnedBlocks,
+            registry.retainOwner(), // slices retain ownership
             true // slices don't pin blocks
         );
     }
@@ -605,11 +558,17 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
             return;
         }
 
+        // Mark as closed to ensure all future accesses throw AlreadyClosedException
+        isOpen = false;
+
         // the master IndexInput has an Arena and is able
         // to release all resources (unmap segments) - a
         // side effect is that other threads still using clones
         // will throw IllegalStateException
         if (arena != null) {
+            // Assertions for master instance
+            assert !isSlice : "Master instance should not be marked as slice";
+
             while (arena.scope().isAlive()) {
                 try {
                     arena.close();
@@ -618,26 +577,16 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
                     Thread.onSpinWait();
                 }
             }
-        }
 
-        // Release all pinned blocks by decrementing their reference counts (only for non-slices)
-        if (!isSlice) {
-            var iterator = pinnedBlocks.entrySet().iterator();
-            while (iterator.hasNext()) {
-                var entry = iterator.next();
-                try {
-                    RefCountedMemorySegment refSeg = entry.getValue().value();
-                    refSeg.decRef();
-                    iterator.remove(); // Remove entry as we unpin
-                } catch (Exception e) {
-                    LOGGER.error("Failed to decRef block for key: {}", entry.getKey(), e);
-                    throw e;
-                }
-            }
-        }
+            // master cleanup: drop all pinned blocks
+            registry.releaseOwners();
+        } else {
+            // Assertions for slice instance
+            assert isSlice : "Slice instance should be marked as slice";
 
-        // Mark as closed to ensure all future accesses throw AlreadyClosedException
-        isOpen = false;
+            // slice/clone cleanup: just drop one reference
+            registry.releaseOwner();
+        }
     }
 
     /** This class adds offset support to MemorySegmentIndexInput, which is needed for slices. */
@@ -652,10 +601,10 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
             long absoluteBaseOffset,
             long length,
             BlockCache<RefCountedMemorySegment> blockCache,
-            Map<DirectIOBlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> pinnedBlocks,
+            PinRegistry pinRegistry,
             boolean isSlice
         ) {
-            super(resourceDescription, path, arena, absoluteBaseOffset, length, blockCache, pinnedBlocks, isSlice);
+            super(resourceDescription, path, arena, absoluteBaseOffset, length, blockCache, pinRegistry, isSlice);
             this.offset = offset;
             try {
                 seek(0L);
