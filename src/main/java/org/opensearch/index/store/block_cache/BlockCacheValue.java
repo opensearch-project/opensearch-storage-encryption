@@ -8,7 +8,7 @@ package org.opensearch.index.store.block_cache;
  * A cache value that wraps a resource (e.g., a native memory block) with
  * reference-counting and retirement semantics.
  *
- * <h2>Lifecycle & Contract</h2>
+ * <h2>Lifecycle Contract</h2>
  * <ul>
  *   <li><b>Pin before use:</b> Call {@link #tryPin()} before accessing {@link #value()}.
  *       If it returns {@code true}, you must eventually call {@link #unpin()} (potentially in a {@code finally}).</li>
