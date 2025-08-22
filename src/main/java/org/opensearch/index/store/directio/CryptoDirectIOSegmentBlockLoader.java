@@ -64,74 +64,53 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
             MemorySegment bulkEncrypted = directIOReadAligned(channel, startOffset, readLength, arena);
             long bytesRead = bulkEncrypted.byteSize();
 
-            // Fast-path: blockCount == 1 and partial read is acceptable (e.g., tail block)
-            if (blockCount == 1 && bytesRead <= CACHE_BLOCK_SIZE) {
-                MemorySegment pooled = null;
-                try {
-                    pooled = segmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
-                    if (pooled == null) {
-                        throw new PoolAcquireFailedException("Failed to acquire memory segment from pool within timeout");
-                    }
-
-                    int toCopy = (int) bytesRead;
-                    if (toCopy > 0) {
-                        MemorySegment.copy(bulkEncrypted, 0, pooled, 0, toCopy);
-                    }
-
-                    result[0] = pooled;
-
-                    LOGGER.debug("Short block read (EOF safe): path={} offset={} bytesRead={}", filePath, startOffset, bytesRead);
-                    return result;
-
-                } catch (Exception e) {
-                    if (pooled != null) {
-                        segmentPool.release(pooled);
-                    }
-                    throw e;
-                }
-            }
-
-            // For multi-block reads, short read is unexpected — likely corruption
-            if (bytesRead < readLength) {
-                throw new BlockLoadFailedException(
-                    "Short read: expected " + readLength + " bytes, got " + bytesRead + " for blockCount=" + blockCount
-                );
+            if (bytesRead == 0) {
+                throw new BlockLoadFailedException("EOF or empty read at offset " + startOffset);
             }
 
             int blockIndex = 0;
+            long bytesCopied = 0;
+
             try {
-                for (; blockIndex < blockCount; blockIndex++) {
+                while (blockIndex < blockCount && bytesCopied < bytesRead) {
                     MemorySegment pooled = segmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
                     if (pooled == null) {
-                        throw new PoolAcquireFailedException("Failed to acquire memory segment from pool within timeout");
+                        throw new PoolAcquireFailedException("Timeout acquiring segment from pool");
                     }
 
-                    result[blockIndex] = pooled;
-                    long offsetInBulk = (long) blockIndex << CACHE_BLOCK_SIZE_POWER;
-                    MemorySegment.copy(bulkEncrypted, offsetInBulk, pooled, 0, CACHE_BLOCK_SIZE);
+                    int remaining = (int) (bytesRead - bytesCopied);
+                    int toCopy = Math.min(CACHE_BLOCK_SIZE, remaining);
+
+                    if (toCopy > 0) {
+                        MemorySegment.copy(bulkEncrypted, bytesCopied, pooled, 0, toCopy);
+                    }
+
+                    result[blockIndex++] = pooled;
+                    bytesCopied += toCopy;
                 }
+
             } catch (InterruptedException | PoolAcquireFailedException e) {
                 releaseSegments(result, blockIndex);
-                throw new BlockLoadFailedException("Failed to load block during bulk read", e);
+                throw new BlockLoadFailedException("Failed to load blocks", e);
             }
 
             LOGGER
                 .debug(
-                    "Bulk read: path={} offset={} length={} blocksLoaded={}/{}",
+                    "Bulk read (no padding): path={} offset={} bytesRead={} blocks={}/{}",
                     filePath,
                     startOffset,
-                    readLength,
+                    bytesRead,
                     blockIndex,
                     blockCount
                 );
 
             return result;
 
-        } catch (NoSuchFileException ex) {
-            throw ex;
-        } catch (Exception ex) {
-            LOGGER.error("Failed bulk read: path={} offset={} length={} err={}", filePath, startOffset, readLength, ex.toString());
-            throw ex;
+        } catch (NoSuchFileException e) {
+            throw e;
+        } catch (Exception e) {
+            LOGGER.error("Bulk read failed: path={} offset={} length={} err={}", filePath, startOffset, readLength, e.toString());
+            throw e;
         }
     }
 

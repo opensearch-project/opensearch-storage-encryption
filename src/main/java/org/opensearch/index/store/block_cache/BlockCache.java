@@ -6,6 +6,7 @@ package org.opensearch.index.store.block_cache;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.Optional;
 
 public interface BlockCache<T> {
@@ -53,9 +54,10 @@ public interface BlockCache<T> {
      * @param filePath file to read from
      * @param startOffset starting file offset (should be block-aligned)
      * @param blockCount number of blocks to read
+     * @return list of cache values for blocks that were successfully loaded into the cache
      * @throws IOException if loading fails (including specific BlockLoader exceptions)
      */
-    void loadBulk(Path filePath, long startOffset, long blockCount) throws IOException;
+    Map<BlockCacheKey, BlockCacheValue<T>> loadBulk(Path filePath, long startOffset, long blockCount) throws IOException;
 
     /**
      * cache stats

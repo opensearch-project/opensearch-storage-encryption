@@ -10,6 +10,8 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 
 import org.apache.logging.log4j.LogManager;
@@ -137,27 +139,31 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      * @throws IOException if loading fails (including specific BlockLoader exceptions)
      */
     @Override
-    public void loadBulk(Path filePath, long startOffset, long blockCount) throws IOException {
-        V[] loadedBlock = null;
-        boolean[] addedToCache = null;
+    public Map<BlockCacheKey, BlockCacheValue<T>> loadBulk(Path filePath, long startOffset, long blockCount) throws IOException {
+        Map<BlockCacheKey, BlockCacheValue<T>> loaded = new LinkedHashMap<>();
+
+        V[] loadedBlocks = null;
 
         try {
-            loadedBlock = blockLoader.load(filePath, startOffset, blockCount);
-            addedToCache = new boolean[loadedBlock.length];
+            loadedBlocks = blockLoader.load(filePath, startOffset, blockCount);
 
-            for (int i = 0; i < loadedBlock.length; i++) {
-                if (loadedBlock[i] != null) {
-                    long blockOffset = startOffset + (long) i * CACHE_BLOCK_SIZE;
-                    BlockCacheKey key = createBlockKey(filePath, blockOffset);
+            for (int i = 0; i < loadedBlocks.length; i++) {
+                V block = loadedBlocks[i];
+                if (block == null) {
+                    throw new IOException("BlockLoader returned null at index " + i + " for path " + filePath);
+                }
 
-                    // No cache stats update to avoid polluting metrics.
-                    // Always wrap and attempt insert - putIfAbsent tells us if successful
-                    BlockCacheValue<T> wrappedValue = maybeWrapValueForRefCounting(loadedBlock[i]);
-                    BlockCacheValue<T> existing = cache.asMap().putIfAbsent(key, wrappedValue);
+                long blockOffset = startOffset + i * CACHE_BLOCK_SIZE;
+                BlockCacheKey key = createBlockKey(filePath, blockOffset);
+                BlockCacheValue<T> wrapped = maybeWrapValueForRefCounting(block);
+                loaded.put(key, wrapped);
 
-                    addedToCache[i] = (existing == null);
+                if (cache.asMap().putIfAbsent(key, wrapped) != null) {
+                    // already cached → release immediateky as we won't use it in the cache.
+                    segmentPool.release(block);
                 }
             }
+
         } catch (Exception e) {
             try {
                 handleLoadException(createBlockKey(filePath, startOffset), e);
@@ -166,16 +172,9 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
             } catch (RuntimeException re) {
                 throw new IOException("Failed bulk load: " + filePath, re);
             }
-        } finally {
-            // Release any blocks that were NOT added to cache
-            if (loadedBlock != null && addedToCache != null) {
-                for (int i = 0; i < loadedBlock.length; i++) {
-                    if (loadedBlock[i] != null && !addedToCache[i]) {
-                        segmentPool.release(loadedBlock[i]);
-                    }
-                }
-            }
         }
+
+        return loaded;
     }
 
     // Helper method to create appropriate cache key for DirectIO
