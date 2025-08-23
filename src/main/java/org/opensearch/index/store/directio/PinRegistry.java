@@ -19,7 +19,7 @@ import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 public final class PinRegistry {
     private final BlockCache<RefCountedMemorySegment> cache;
     private final Path path;
-    private final ConcurrentHashMap<DirectIOBlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> pinned = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, BlockCacheValue<RefCountedMemorySegment>> pinned = new ConcurrentHashMap<>();
     private final AtomicInteger owners = new AtomicInteger(1);
 
     PinRegistry(BlockCache<RefCountedMemorySegment> cache, Path path) {
@@ -64,7 +64,7 @@ public final class PinRegistry {
         final DirectIOBlockCacheKey key = new DirectIOBlockCacheKey(path, blockOff);
 
         // fast path: already pinned
-        BlockCacheValue<RefCountedMemorySegment> val = pinned.get(key);
+        BlockCacheValue<RefCountedMemorySegment> val = pinned.get(key.offset());
         if (val != null)
             return val.value().segment();
 
@@ -74,7 +74,7 @@ public final class PinRegistry {
 
             // load and try to pin
             if (val.tryPin()) {
-                BlockCacheValue<RefCountedMemorySegment> prev = pinned.putIfAbsent(key, val);
+                BlockCacheValue<RefCountedMemorySegment> prev = pinned.putIfAbsent(key.offset(), val);
                 if (prev != null) { // another thread won
                     val.unpin();
                     return prev.value().segment();
@@ -83,7 +83,7 @@ public final class PinRegistry {
             }
 
             // Check if someone else pinned while we were trying
-            BlockCacheValue<RefCountedMemorySegment> existing = pinned.get(key);
+            BlockCacheValue<RefCountedMemorySegment> existing = pinned.get(key.offset());
             if (existing != null)
                 return existing.value().segment();
 

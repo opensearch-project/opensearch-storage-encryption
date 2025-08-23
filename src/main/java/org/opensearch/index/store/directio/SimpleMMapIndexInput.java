@@ -548,7 +548,7 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
             length,
             blockCache,
             registry.retainOwner(), // slices retain ownership
-            true // slices don't pin blocks
+            true
         );
     }
 
