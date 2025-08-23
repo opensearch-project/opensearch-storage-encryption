@@ -4,11 +4,13 @@
  */
 package org.opensearch.index.store.directio;
 
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
+
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.concurrent.locks.LockSupport;
 
 import org.opensearch.index.store.block_cache.BlockCache;
@@ -19,12 +21,15 @@ import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 public final class PinRegistry {
     private final BlockCache<RefCountedMemorySegment> cache;
     private final Path path;
-    private final ConcurrentHashMap<Long, BlockCacheValue<RefCountedMemorySegment>> pinned = new ConcurrentHashMap<>();
+    private final AtomicReferenceArray<BlockCacheValue<RefCountedMemorySegment>> pinned;
     private final AtomicInteger owners = new AtomicInteger(1);
 
-    PinRegistry(BlockCache<RefCountedMemorySegment> cache, Path path) {
+    PinRegistry(BlockCache<RefCountedMemorySegment> cache, Path path, long fileLength) {
         this.cache = cache;
         this.path = path;
+        // Calculate exact number of blocks needed: ceil(fileLength / CACHE_BLOCK_SIZE)
+        int numBlocks = (int) ((fileLength + (1L << CACHE_BLOCK_SIZE_POWER) - 1) >>> CACHE_BLOCK_SIZE_POWER);
+        this.pinned = new AtomicReferenceArray<>(numBlocks);
     }
 
     // Called by slices/clones to share the registry
@@ -43,49 +48,56 @@ public final class PinRegistry {
     }
 
     void releaseOwners() {
-        int pinnedCount = pinned.size();
+        int totalSlots = pinned.length();
 
-        var it = pinned.values().iterator();
-        int unpinnedCount = 0;
-        while (it.hasNext()) {
-            try {
-                it.next().unpin();
-                unpinnedCount++;
-            } finally {
-                it.remove();
+        for (int i = 0; i < totalSlots; i++) {
+            BlockCacheValue<RefCountedMemorySegment> val = pinned.getAndSet(i, null);
+            if (val != null) {
+                val.unpin();
             }
         }
-
-        assert unpinnedCount == pinnedCount : "Unpinned count (" + unpinnedCount + ") != initial pinned count (" + pinnedCount + ")";
-        assert pinned.isEmpty() : "Pinned map should be empty after releaseOwners()";
     }
 
     MemorySegment acquire(long blockOff) throws IOException {
         final DirectIOBlockCacheKey key = new DirectIOBlockCacheKey(path, blockOff);
+        final int arrayIndex = (int) (blockOff >>> CACHE_BLOCK_SIZE_POWER);
 
-        // fast path: already pinned
-        BlockCacheValue<RefCountedMemorySegment> val = pinned.get(key.offset());
-        if (val != null)
+        // Bounds check for safety
+        if (arrayIndex < 0 || arrayIndex >= pinned.length()) {
+            throw new IOException("Block offset out of bounds: off=" + blockOff + " index=" + arrayIndex + " length=" + pinned.length());
+        }
+
+        // Fast path: already pinned
+        BlockCacheValue<RefCountedMemorySegment> val = pinned.get(arrayIndex);
+        if (val != null) {
             return val.value().segment();
+        }
 
         // Retry loop to handle cache pressure
         for (int attempt = 0; attempt < 3; attempt++) {
             val = cache.getOrLoad(key);
 
-            // load and try to pin
+            // Load and try to pin
             if (val.tryPin()) {
-                BlockCacheValue<RefCountedMemorySegment> prev = pinned.putIfAbsent(key.offset(), val);
-                if (prev != null) { // another thread won
+                // Atomic compare-and-set to handle concurrent access
+                if (pinned.compareAndSet(arrayIndex, null, val)) {
+                    return val.value().segment();
+                } else {
+                    // Another thread won, unpin our attempt and use theirs
                     val.unpin();
-                    return prev.value().segment();
+                    BlockCacheValue<RefCountedMemorySegment> existing = pinned.get(arrayIndex);
+                    if (existing != null) {
+                        return existing.value().segment();
+                    }
+                    // Fall through to retry
                 }
-                return val.value().segment();
             }
 
             // Check if someone else pinned while we were trying
-            BlockCacheValue<RefCountedMemorySegment> existing = pinned.get(key.offset());
-            if (existing != null)
+            BlockCacheValue<RefCountedMemorySegment> existing = pinned.get(arrayIndex);
+            if (existing != null) {
                 return existing.value().segment();
+            }
 
             // Brief pause before retry to let cache pressure subside
             if (attempt < 2) {

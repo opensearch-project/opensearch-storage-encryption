@@ -81,7 +81,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker);
         ReadaheadContext readAheadContext = readAheadManager.register(file, size);
 
-        PinRegistry registry = new PinRegistry(blockCache, file); // first owner.
+        PinRegistry registry = new PinRegistry(blockCache, file, size); // first owner.
 
         return SimpleMMapIndexInput.newInstance("CryptoDirectIOIndexInput(path=\"" + file + "\")", file, arena, size, blockCache, registry);
     }
