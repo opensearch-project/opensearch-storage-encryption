@@ -59,14 +59,9 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         if (cacheMiss) {
             readaheadEnabled = true;
             cacheHitStreak.set(0);
-        } else if (readaheadEnabled) {
-            int currentStreak = cacheHitStreak.incrementAndGet();
-            int shrinkThreshold = Math.max(cacheHitStreakThreshold, policy.currentWindow() / 2);
-            if (currentStreak >= shrinkThreshold) {
-                cacheHitStreak.set(0);
-                policy.onCacheHitShrink();
-                readaheadEnabled = false;
-            }
+        } else {
+            policy.onCacheHitShrink();
+            return;
         }
 
         if (!readaheadEnabled)
@@ -85,7 +80,7 @@ public class WindowedReadAheadContext implements ReadaheadContext {
 
         final long startSeg = anchorFileOffset >>> CACHE_BLOCK_SIZE_POWER;
         final long lastSeg = (fileLength - 1) >>> CACHE_BLOCK_SIZE_POWER;
-        final long safeEndSeg = Math.max(0, lastSeg - 3); // Skip last 4 segments (footer)
+        final long safeEndSeg = Math.max(0, lastSeg);
 
         final long windowSegs = policy.currentWindow();
         if (windowSegs <= 0 || startSeg > safeEndSeg)

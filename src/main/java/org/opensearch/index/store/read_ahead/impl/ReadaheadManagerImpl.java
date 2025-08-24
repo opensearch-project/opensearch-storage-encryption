@@ -41,7 +41,7 @@ public class ReadaheadManagerImpl implements ReadaheadManager {
         }
 
         WindowedReadAheadConfig config = new WindowedReadAheadConfig.Builder()
-            .initialWindow(2)
+            .initialWindow(4)
             .maxWindowSegments(16)
             .hitStreakThreshold(4)
             .shrinkOnRandomThreshold(50)

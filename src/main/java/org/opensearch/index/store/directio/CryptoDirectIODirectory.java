@@ -4,6 +4,9 @@
  */
 package org.opensearch.index.store.directio;
 
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+
 import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.foreign.Arena;
@@ -62,6 +65,14 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         this.blockCache = blockCache;
         this.readAheadworker = worker;
         startCacheStatsTelemetry();
+    }
+
+    private static long footerWindowStart(long fileSize) {
+        if (fileSize <= 0)
+            return 0L;
+        final long lastBlockStart = (fileSize - 1L) & ~CACHE_BLOCK_MASK; // align down to 8KiB
+        final long windowStart = lastBlockStart - 3L * CACHE_BLOCK_SIZE; // back 3 blocks (total window = 4)
+        return Math.max(0L, windowStart);
     }
 
     @Override

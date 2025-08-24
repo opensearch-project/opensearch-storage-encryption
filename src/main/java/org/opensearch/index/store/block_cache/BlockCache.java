@@ -23,6 +23,33 @@ public interface BlockCache<T> {
     BlockCacheValue<T> getOrLoad(BlockCacheKey key) throws IOException;
 
     /**
+     * Result of getOrLoad with cache hit/miss information
+     */
+    class CacheResult<T> {
+        private final BlockCacheValue<T> value;
+        private final boolean wasCacheHit;
+
+        public CacheResult(BlockCacheValue<T> value, boolean wasCacheHit) {
+            this.value = value;
+            this.wasCacheHit = wasCacheHit;
+        }
+
+        public BlockCacheValue<T> getValue() {
+            return value;
+        }
+
+        public boolean wasCacheHit() {
+            return wasCacheHit;
+        }
+    }
+
+    /**
+     * Returns the block, loading it via `BlockLoader` if absent.
+     * Also indicates whether the result was a cache hit or miss.
+     */
+    CacheResult<T> getOrLoadWithHitInfo(BlockCacheKey key) throws IOException;
+
+    /**
      * Asynchronously load the block into the cache if not present.
      */
     void prefetch(BlockCacheKey key);

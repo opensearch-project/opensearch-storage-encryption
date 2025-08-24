@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -62,8 +63,15 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     */
     @Override
     public BlockCacheValue<T> getOrLoad(BlockCacheKey key) throws IOException {
+        return getOrLoadWithHitInfo(key).getValue();
+    }
+
+    @Override
+    public CacheResult<T> getOrLoadWithHitInfo(BlockCacheKey key) throws IOException {
+        final AtomicBoolean loadedByThisCall = new AtomicBoolean(false);
         try {
             BlockCacheValue<T> value = cache.get(key, k -> {
+                loadedByThisCall.set(true);
                 try {
                     V segment = blockLoader.load(k);
                     return maybeWrapValueForRefCounting(segment);
@@ -71,12 +79,11 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                     return handleLoadException(k, e);
                 }
             });
-
             if (value == null) {
                 throw new IOException("Failed to load block for key: " + key);
             }
-
-            return value;
+            boolean hit = !loadedByThisCall.get();         // true = cache hit (or another thread loaded)
+            return new CacheResult<>(value, hit);
         } catch (UncheckedIOException e) {
             throw e;
         } catch (RuntimeException e) {

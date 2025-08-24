@@ -115,7 +115,7 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
         ensureOpen();
         long fileOff = getAbsoluteFileOffset(pos);
         long blockOff = fileOff & ~CACHE_BLOCK_MASK;
-        return registry.acquire(blockOff); // always pinned or throws
+        return registry.acquire(blockOff, length); // always pinned or throws
     }
 
     @Override

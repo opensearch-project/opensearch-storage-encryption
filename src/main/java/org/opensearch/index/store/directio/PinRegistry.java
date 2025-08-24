@@ -13,12 +13,16 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.concurrent.locks.LockSupport;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 
 @SuppressWarnings("preview")
 public final class PinRegistry {
+    private static final Logger LOGGER = LogManager.getLogger(PinRegistry.class);
+
     private final BlockCache<RefCountedMemorySegment> cache;
     private final Path path;
     private final AtomicReferenceArray<BlockCacheValue<RefCountedMemorySegment>> pinned;
@@ -58,7 +62,7 @@ public final class PinRegistry {
         }
     }
 
-    MemorySegment acquire(long blockOff) throws IOException {
+    MemorySegment acquire(long blockOff, long fileLength) throws IOException {
         final DirectIOBlockCacheKey key = new DirectIOBlockCacheKey(path, blockOff);
         final int arrayIndex = (int) (blockOff >>> CACHE_BLOCK_SIZE_POWER);
 
@@ -75,7 +79,24 @@ public final class PinRegistry {
 
         // Retry loop to handle cache pressure
         for (int attempt = 0; attempt < 3; attempt++) {
-            val = cache.getOrLoad(key);
+            var cacheResult = cache.getOrLoadWithHitInfo(key);
+            val = cacheResult.getValue();
+            boolean wasCacheHit = cacheResult.wasCacheHit();
+
+            if (!wasCacheHit) {
+                long blockIndex = blockOff >>> CACHE_BLOCK_SIZE_POWER;
+                long totalBlocks = (fileLength + (1L << CACHE_BLOCK_SIZE_POWER) - 1) >>> CACHE_BLOCK_SIZE_POWER;
+
+                LOGGER
+                    .info(
+                        "Cache miss: path={} blockIndex={}/{} blockOffset={} fileLength={}",
+                        path,
+                        blockIndex,
+                        totalBlocks,
+                        blockOff,
+                        fileLength
+                    );
+            }
 
             // Load and try to pin
             if (val.tryPin()) {
