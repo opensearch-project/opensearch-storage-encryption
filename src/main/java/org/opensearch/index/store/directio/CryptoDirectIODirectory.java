@@ -75,15 +75,12 @@ public final class CryptoDirectIODirectory extends FSDirectory {
             throw new IOException("Cannot open empty file with DirectIO: " + file);
         }
 
-        boolean confined = context == IOContext.READONCE;
-        Arena arena = confined ? Arena.ofConfined() : Arena.ofShared();
-
         ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker);
         ReadaheadContext readAheadContext = readAheadManager.register(file, size);
 
         PinRegistry registry = new PinRegistry(blockCache, file, size); // first owner.
 
-        return SimpleMMapIndexInput.newInstance("CryptoDirectIOIndexInput(path=\"" + file + "\")", file, arena, size, blockCache, registry);
+        return CachedMemorySegmentIndexInput.newInstance("CachedMemorySegmentIndexInput(path=\"" + file + "\")", file, size, blockCache, registry);
     }
 
     @Override

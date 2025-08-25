@@ -9,7 +9,6 @@ import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SI
 
 import java.io.EOFException;
 import java.io.IOException;
-import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
@@ -24,8 +23,8 @@ import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 
 @SuppressWarnings("preview")
-public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInput {
-    private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIODirectory.class);
+public class CachedMemorySegmentIndexInput extends IndexInput implements RandomAccessInput {
+    private static final Logger LOGGER = LogManager.getLogger(CachedMemorySegmentIndexInput.class);
 
     static final ValueLayout.OfByte LAYOUT_BYTE = ValueLayout.JAVA_BYTE;
     static final ValueLayout.OfShort LAYOUT_LE_SHORT = ValueLayout.JAVA_SHORT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
@@ -38,7 +37,6 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
     final int chunkSizePower;
 
     final Path path;
-    final Arena arena;
     final BlockCache<RefCountedMemorySegment> blockCache;
 
     final PinRegistry registry;
@@ -49,22 +47,20 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
     long curPosition = 0L; // absolute position within this input (0-based)
     volatile boolean isOpen = true;
 
-    public static SimpleMMapIndexInput newInstance(
+    public static CachedMemorySegmentIndexInput newInstance(
         String resourceDescription,
         Path path,
-        Arena arena,
         long length,
         BlockCache<RefCountedMemorySegment> blockCache,
         PinRegistry registry
     ) {
 
-        return new MultiSegmentImpl(resourceDescription, path, arena, 0, 0, length, blockCache, registry, false);
+        return new MultiSegmentImpl(resourceDescription, path, 0, 0, length, blockCache, registry, false);
     }
 
-    private SimpleMMapIndexInput(
+    private CachedMemorySegmentIndexInput(
         String resourceDescription,
         Path path,
-        Arena arena,
         long absoluteBaseOffset,
         long length,
         BlockCache<RefCountedMemorySegment> blockCache,
@@ -73,7 +69,6 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
     ) {
         super(resourceDescription);
         this.path = path;
-        this.arena = arena;
         this.absoluteBaseOffset = absoluteBaseOffset;
         this.length = length;
         this.chunkSizePower = CACHE_BLOCK_SIZE_POWER;
@@ -135,7 +130,7 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
             throw alreadyClosed(e);
         }
     }
-
+    
     @Override
     public final void readBytes(byte[] b, int offset, int len) throws IOException {
         ensureOpen();
@@ -389,7 +384,8 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
     @Override
     public byte readByte(long pos) throws IOException {
         ensureOpen();
-
+        
+        // todo evaluate if this is still needed. 
         if (pos < 0 || pos >= length) {
             return 0;
         }
@@ -482,8 +478,8 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
     }
 
     @Override
-    public final SimpleMMapIndexInput clone() {
-        final SimpleMMapIndexInput clone = buildSlice((String) null, 0L, this.length);
+    public final CachedMemorySegmentIndexInput clone() {
+        final CachedMemorySegmentIndexInput clone = buildSlice((String) null, 0L, this.length);
         try {
             clone.seek(getFilePointer());
         } catch (IOException ioe) {
@@ -498,7 +494,7 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
      * is seeked to the beginning.
      */
     @Override
-    public final SimpleMMapIndexInput slice(String sliceDescription, long offset, long length) throws IOException {
+    public final CachedMemorySegmentIndexInput slice(String sliceDescription, long offset, long length) throws IOException {
         if (offset < 0 || length < 0 || offset + length > this.length) {
             throw new IllegalArgumentException(
                 "slice() "
@@ -522,7 +518,7 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
     }
 
     /** Builds the actual sliced IndexInput (may apply extra offset in subclasses). * */
-    SimpleMMapIndexInput buildSlice(String sliceDescription, long sliceOffset, long length) {
+    CachedMemorySegmentIndexInput buildSlice(String sliceDescription, long sliceOffset, long length) {
         ensureOpen();
         // Calculate absolute base offset for the slice
         final long sliceAbsoluteBaseOffset = this.absoluteBaseOffset + sliceOffset;
@@ -542,7 +538,6 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
         return new MultiSegmentImpl(
             newResourceDescription,
             path,
-            null, // clones don't have an Arena, as they can't close)
             0, // slice offset is always 0 (slice starts at its beginning)
             sliceAbsoluteBaseOffset,
             length,
@@ -561,42 +556,26 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
         // Mark as closed to ensure all future accesses throw AlreadyClosedException
         isOpen = false;
 
-        // the master IndexInput has an Arena and is able
-        // to release all resources (unmap segments) - a
-        // side effect is that other threads still using clones
-        // will throw IllegalStateException
-        if (arena != null) {
+        if (!isSlice) {
             // Assertions for master instance
             assert !isSlice : "Master instance should not be marked as slice";
-
-            while (arena.scope().isAlive()) {
-                try {
-                    arena.close();
-                    break;
-                } catch (@SuppressWarnings("unused") IllegalStateException e) {
-                    Thread.onSpinWait();
-                }
-            }
-
             // master cleanup: drop all pinned blocks
             registry.releaseOwners();
         } else {
             // Assertions for slice instance
             assert isSlice : "Slice instance should be marked as slice";
-
             // slice/clone cleanup: just drop one reference
             registry.releaseOwner();
         }
     }
 
     /** This class adds offset support to MemorySegmentIndexInput, which is needed for slices. */
-    static final class MultiSegmentImpl extends SimpleMMapIndexInput {
+    static final class MultiSegmentImpl extends CachedMemorySegmentIndexInput {
         private final long offset;
 
         MultiSegmentImpl(
             String resourceDescription,
             Path path,
-            Arena arena,
             long offset,
             long absoluteBaseOffset,
             long length,
@@ -604,7 +583,7 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
             PinRegistry pinRegistry,
             boolean isSlice
         ) {
-            super(resourceDescription, path, arena, absoluteBaseOffset, length, blockCache, pinRegistry, isSlice);
+            super(resourceDescription, path, absoluteBaseOffset, length, blockCache, pinRegistry, isSlice);
             this.offset = offset;
             try {
                 seek(0L);
@@ -651,7 +630,7 @@ public class SimpleMMapIndexInput extends IndexInput implements RandomAccessInpu
         }
 
         @Override
-        SimpleMMapIndexInput buildSlice(String sliceDescription, long ofs, long length) {
+        CachedMemorySegmentIndexInput buildSlice(String sliceDescription, long ofs, long length) {
             return super.buildSlice(sliceDescription, this.offset + ofs, length);
         }
 
