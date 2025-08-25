@@ -4,9 +4,6 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
-
 import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.foreign.Arena;
@@ -64,15 +61,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         this.memorySegmentPool = memorySegmentPool;
         this.blockCache = blockCache;
         this.readAheadworker = worker;
-        startCacheStatsTelemetry();
-    }
-
-    private static long footerWindowStart(long fileSize) {
-        if (fileSize <= 0)
-            return 0L;
-        final long lastBlockStart = (fileSize - 1L) & ~CACHE_BLOCK_MASK; // align down to 8KiB
-        final long windowStart = lastBlockStart - 3L * CACHE_BLOCK_SIZE; // back 3 blocks (total window = 4)
-        return Math.max(0L, windowStart);
+        startCacheStatsTelemetry(path);
     }
 
     @Override
@@ -168,12 +157,12 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         super.deleteFile(name);
     }
 
-    private void logCacheAndPoolStats() {
+    private void logCacheAndPoolStats(Path path) {
         try {
 
             if (blockCache instanceof CaffeineBlockCache) {
                 String cacheStats = ((CaffeineBlockCache<?, ?>) blockCache).cacheStats();
-                LOGGER.info("{}", cacheStats);
+                LOGGER.info("{} /n {}", cacheStats, path);
             }
 
         } catch (Exception e) {
@@ -181,12 +170,12 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         }
     }
 
-    private void startCacheStatsTelemetry() {
+    private void startCacheStatsTelemetry(Path path) {
         Thread loggerThread = new Thread(() -> {
             while (true) {
                 try {
                     Thread.sleep(Duration.ofMinutes(1));
-                    logCacheAndPoolStats();
+                    logCacheAndPoolStats(path);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return;

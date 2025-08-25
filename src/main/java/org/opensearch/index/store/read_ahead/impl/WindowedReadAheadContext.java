@@ -109,7 +109,7 @@ public class WindowedReadAheadContext implements ReadaheadContext {
 
             if (!accepted) {
                 LOGGER
-                    .info(
+                    .debug(
                         "Window bulk readahead backpressure path={} length={} startSeg={} endExclusive={} windowBlocks={}",
                         path,
                         fileLength,
