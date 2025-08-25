@@ -6,6 +6,7 @@ package org.opensearch.index.store.directio;
 
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
 
 import java.io.FilterOutputStream;
 import java.io.IOException;
@@ -37,6 +38,9 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
 
     private static final int CHUNK_SIZE = CACHE_BLOCK_SIZE;
     private static final int BUFFER_SIZE = 65_536;
+
+    private static final int BLOCK = 1 << CACHE_BLOCK_SIZE_POWER;
+    private static final int BLOCK_MASK = BLOCK - 1;
 
     /**
      * Creates a new CryptoIndexOutput
@@ -104,9 +108,8 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         @Override
         public void write(byte[] b, int offset, int length) throws IOException {
             checkClosed();
-            if (b == null) {
+            if (b == null)
                 throw new NullPointerException("Input buffer cannot be null");
-            }
             if (offset < 0 || length < 0 || offset + length > b.length) {
                 throw new IndexOutOfBoundsException("Invalid offset or length");
             }
@@ -114,16 +117,30 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                 return;
 
             if (length >= BUFFER_SIZE) {
-                flushBuffer();
+                // leave large-write path as-is for now
+                flushBuffer(); // will now be block-aligned
                 processAndWrite(path, b, offset, length);
-            } else if (bufferPosition + length > BUFFER_SIZE) {
-                flushBuffer();
-                System.arraycopy(b, offset, buffer, bufferPosition, length);
-                bufferPosition += length;
-            } else {
-                System.arraycopy(b, offset, buffer, bufferPosition, length);
-                bufferPosition += length;
+                return;
             }
+
+            // CHUNKED WRITES: if this would overflow the buffer, top-off to a block boundary, then flush
+            if (bufferPosition + length > BUFFER_SIZE) {
+                int partial = bufferPosition & BLOCK_MASK;
+                if (partial != 0) {
+                    int need = BLOCK - partial;
+                    int take = Math.min(need, length);
+                    System.arraycopy(b, offset, buffer, bufferPosition, take);
+                    bufferPosition += take;
+                    offset += take;
+                    length -= take;
+                }
+                // buffer now ends at a block boundary (or was already aligned)
+                flushBuffer(); // flushes only whole 8KB blocks; holding partial blocks.
+            }
+
+            // normal copy
+            System.arraycopy(b, offset, buffer, bufferPosition, length);
+            bufferPosition += length;
         }
 
         @Override
@@ -135,7 +152,27 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             buffer[bufferPosition++] = (byte) b;
         }
 
+        /** Flush only whole CHUNK_SIZE blocks; keep any <CHUNK_SIZE tail in the buffer (no mid-file partials). */
         private void flushBuffer() throws IOException {
+            if (bufferPosition == 0)
+                return;
+
+            final int flushable = (int) (bufferPosition & ~CACHE_BLOCK_MASK); // largest multiple of 8192
+            if (flushable == 0)
+                return; // keep tail (<CHUNK_SIZE) until we can complete it (or EOF)
+
+            processAndWrite(path, buffer, 0, flushable);
+
+            // slide tail to start
+            final int tail = bufferPosition - flushable;
+            if (tail > 0) {
+                System.arraycopy(buffer, flushable, buffer, 0, tail);
+            }
+            bufferPosition = tail;
+        }
+
+        /** Force flush ALL buffered data including any tail < CHUNK_SIZE */
+        private void forceFlushBuffer() throws IOException {
             if (bufferPosition > 0) {
                 processAndWrite(path, buffer, 0, bufferPosition);
                 bufferPosition = 0;
@@ -195,10 +232,14 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
 
             try {
                 checkClosed();
-                flushBuffer();
+                forceFlushBuffer(); // Force flush ALL data including tail
                 // Lucene writes footer here.
                 // this will also flush the buffer.
                 super.close();
+
+                // After file is complete, load final block (footer) into cache for immediate reads
+                loadFinalBlocksIntoCache();
+
             } catch (IOException e) {
                 exception = e;
             } finally {
@@ -207,6 +248,21 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
 
             if (exception != null)
                 throw exception;
+        }
+
+        private void loadFinalBlocksIntoCache() {
+            try {
+                if (streamOffset <= 0)
+                    return;
+
+                // Load the final block containing the end of file
+                long finalBlockOffset = (streamOffset - 1) & ~CACHE_BLOCK_MASK;
+                blockCache.loadBulk(path, finalBlockOffset, 1);
+
+            } catch (Exception e) {
+                LOGGER.debug("Failed to load final block into cache for path={}: {}", path, e.toString());
+                // Non-fatal - cache loading is best effort
+            }
         }
 
         private void checkClosed() throws IOException {

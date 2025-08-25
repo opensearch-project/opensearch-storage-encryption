@@ -31,6 +31,7 @@ public class PanamaNativeAccess {
     public static final MethodHandle READ;
     public static final MethodHandle PREAD;
     public static final MethodHandle PWRITE;
+    public static final MethodHandle POSIX_FADVISE;
 
     public static final int O_RDONLY = 0;
     public static final int O_DIRECT = 040000;
@@ -42,6 +43,8 @@ public class PanamaNativeAccess {
     public static final int PROT_READ = 0x1;
     public static final int PROT_WRITE = 0x2;
     public static final int MAP_PRIVATE = 0x02;
+
+    public static final int POSIX_FADV_DONTNEED = 4;
 
     private static SymbolLookup loadLibc() {
         String os = System.getProperty("os.name").toLowerCase();
@@ -144,6 +147,19 @@ public class PanamaNativeAccess {
                         )   // off_t offset
                 );
 
+            POSIX_FADVISE = LINKER
+                .downcallHandle(
+                    LIBC.find("posix_fadvise").orElseThrow(),
+                    FunctionDescriptor
+                        .of(
+                            ValueLayout.JAVA_INT, // return int
+                            ValueLayout.JAVA_INT, // int fd
+                            ValueLayout.JAVA_LONG, // offset
+                            ValueLayout.JAVA_LONG, // len
+                            ValueLayout.JAVA_INT // advice
+                        )
+                );
+
         } catch (RuntimeException e) {
             throw new RuntimeException("Failed to load mmap", e);
         }
@@ -218,6 +234,28 @@ public class PanamaNativeAccess {
 
     public static void closeFile(int fd) throws Throwable {
         CLOSE.invoke(fd);
+    }
+
+    public static void dropFileCache(String filePath) {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment cPath = arena.allocateUtf8String(filePath);
+            int fd = (int) OPEN.invoke(cPath, O_RDONLY); // Use CLOEXEC for safety
+            if (fd < 0) {
+                return; // Cannot open file
+            }
+
+            try {
+                // 0, 0 means "entire file"
+                int rc = (int) POSIX_FADVISE.invoke(fd, 0L, 0L, POSIX_FADV_DONTNEED);
+                if (rc != 0) {
+                    // Non-fatal: log or ignore
+                }
+            } finally {
+                CLOSE.invoke(fd);
+            }
+        } catch (Throwable t) {
+            // Best-effort: log at DEBUG level if needed
+        }
     }
 
 }

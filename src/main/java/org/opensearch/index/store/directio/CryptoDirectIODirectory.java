@@ -61,7 +61,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         this.memorySegmentPool = memorySegmentPool;
         this.blockCache = blockCache;
         this.readAheadworker = worker;
-        startCacheStatsTelemetry();
+        startCacheStatsTelemetry(path);
     }
 
     @Override
@@ -81,7 +81,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker);
         ReadaheadContext readAheadContext = readAheadManager.register(file, size);
 
-        PinRegistry registry = new PinRegistry(blockCache, file); // first owner.
+        PinRegistry registry = new PinRegistry(blockCache, file, size); // first owner.
 
         return SimpleMMapIndexInput.newInstance("CryptoDirectIOIndexInput(path=\"" + file + "\")", file, arena, size, blockCache, registry);
     }
@@ -157,12 +157,12 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         super.deleteFile(name);
     }
 
-    private void logCacheAndPoolStats() {
+    private void logCacheAndPoolStats(Path path) {
         try {
 
             if (blockCache instanceof CaffeineBlockCache) {
                 String cacheStats = ((CaffeineBlockCache<?, ?>) blockCache).cacheStats();
-                LOGGER.info("{}", cacheStats);
+                LOGGER.info("{} /n {}", cacheStats, path);
             }
 
         } catch (Exception e) {
@@ -170,12 +170,12 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         }
     }
 
-    private void startCacheStatsTelemetry() {
+    private void startCacheStatsTelemetry(Path path) {
         Thread loggerThread = new Thread(() -> {
             while (true) {
                 try {
                     Thread.sleep(Duration.ofMinutes(1));
-                    logCacheAndPoolStats();
+                    logCacheAndPoolStats(path);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return;
