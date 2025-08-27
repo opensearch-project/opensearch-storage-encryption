@@ -9,7 +9,6 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileChannel.MapMode;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.Provider;
@@ -24,19 +23,85 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.MMapDirectory;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
-import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.key.HkdfKeyDerivation;
+import org.opensearch.index.store.key.KeyResolver;
+import org.opensearch.index.store.footer.EncryptionFooter;
+import org.opensearch.index.store.footer.EncryptionMetadataTrailer;
+import org.opensearch.index.store.cipher.EncryptionAlgorithm;
+import java.nio.ByteBuffer;
 
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "temporary bypass")
 public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
     private static final Logger LOGGER = LogManager.getLogger(EagerDecryptedCryptoMMapDirectory.class);
 
-    private final KeyIvResolver keyIvResolver;
+    private final KeyResolver keyResolver;
 
-    public EagerDecryptedCryptoMMapDirectory(Path path, Provider provider, KeyIvResolver keyIvResolver) throws IOException {
+    public EagerDecryptedCryptoMMapDirectory(Path path, Provider provider, KeyResolver keyResolver) throws IOException {
         super(path);
-        this.keyIvResolver = keyIvResolver;
+        this.keyResolver = keyResolver;
     }
+    
+    /**
+     * Footer information extracted from encrypted file
+     */
+    private static class FooterInfo {
+        final byte[] messageId;
+        final long frameSize;
+        final EncryptionAlgorithm algorithm;
+        final long contentLength; // File size excluding footer
+        
+        FooterInfo(byte[] messageId, long frameSize, EncryptionAlgorithm algorithm, long contentLength) {
+            this.messageId = messageId;
+            this.frameSize = frameSize;
+            this.algorithm = algorithm;
+            this.contentLength = contentLength;
+        }
+    }
+    
+    /**
+     * Read footer from FileChannel and return footer information
+     */
+    private FooterInfo readFooterInfo(FileChannel channel, byte[] directoryKey) throws IOException {
+        long fileSize = channel.size();
+        if (fileSize < EncryptionMetadataTrailer.MIN_FOOTER_SIZE) {
+            throw new IOException("File too small to contain encryption footer");
+        }
+        
+        // Read minimum footer to get actual length
+        ByteBuffer minBuffer = ByteBuffer.allocate(EncryptionMetadataTrailer.MIN_FOOTER_SIZE);
+        channel.read(minBuffer, fileSize - EncryptionMetadataTrailer.MIN_FOOTER_SIZE);
+        
+        int footerLength = EncryptionFooter.calculateFooterLength(minBuffer.array());
+        
+        // Read complete footer
+        ByteBuffer footerBuffer = ByteBuffer.allocate(footerLength);
+        int bytesRead = channel.read(footerBuffer, fileSize - footerLength);
+        
+        if (bytesRead != footerLength) {
+            throw new IOException("Failed to read complete footer");
+        }
+        
+        // Deserialize footer using directory key
+        EncryptionFooter footer = EncryptionFooter.deserialize(footerBuffer.array(), directoryKey);
+        
+        return new FooterInfo(
+            footer.getMessageId(),
+            footer.getFrameSize(),
+            EncryptionAlgorithm.fromId(footer.getAlgorithmId()),
+            fileSize - footerLength
+        );
+    }
+    
+//    /**
+//     * Check if file should be encrypted (excludes segments, si files, etc.)
+//     */
+//    private boolean isNonEncryptedFile(String fileName) {
+//        return fileName.contains("segments_") ||
+//               fileName.endsWith(".si") ||
+//               fileName.equals("keyfile") ||
+//               fileName.endsWith(".lock");
+//    }
 
     /**
      * Sets the preload predicate based on file extension list.
@@ -71,7 +136,12 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
         ensureCanRead(name);
 
         Path file = getDirectory().resolve(name);
-        long size = Files.size(file);
+        
+        // Skip footer processing for non-encrypted files
+        if (name.contains("segments_") || name.endsWith(".si")) {
+            return super.openInput(name, context);
+        }
+        
         boolean confined = context == IOContext.READONCE;
         Arena arena = confined ? Arena.ofConfined() : Arena.ofShared();
 
@@ -80,11 +150,15 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
         boolean success = false;
 
         try (var fc = FileChannel.open(file, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
-            final long fileSize = fc.size();
-            MemorySegment[] segments = mmapAndDecrypt(fc, fileSize, arena, chunkSizePower, name, context);
+            // Read footer information
+            byte[] directoryKey = keyResolver.getDataKey().getEncoded();
+            FooterInfo footerInfo = readFooterInfo(fc, directoryKey);
+            
+            // Map and decrypt only the content (excluding footer)
+            MemorySegment[] segments = mmapAndDecrypt(fc, footerInfo.contentLength, arena, chunkSizePower, name, context, footerInfo);
 
             final IndexInput in = MemorySegmentIndexInput
-                .newInstance("CryptoMemorySegmentIndexInput(path=\"" + file + "\")", arena, segments, size, chunkSizePower);
+                .newInstance("CryptoMemorySegmentIndexInput(path=\"" + file + "\")", arena, segments, footerInfo.contentLength, chunkSizePower);
             success = true;
             return in;
         } catch (Throwable ex) {
@@ -96,7 +170,7 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
         }
     }
 
-    private MemorySegment[] mmapAndDecrypt(FileChannel fc, long size, Arena arena, int chunkSizePower, String name, IOContext context)
+    private MemorySegment[] mmapAndDecrypt(FileChannel fc, long size, Arena arena, int chunkSizePower, String name, IOContext context, FooterInfo footerInfo)
         throws Throwable {
         final long chunkSize = 1L << chunkSizePower;
         final int numSegments = (int) ((size + chunkSize - 1) >>> chunkSizePower);
@@ -122,7 +196,7 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
                 LOGGER.warn("madvise MADV_WILLNEED failed for file {} with IOcontext {}", name, context, t);
             }
 
-            decryptSegment(arena, mmapSegment, offset);
+            decryptSegment(arena, mmapSegment, offset, footerInfo);
 
             segments[i] = mmapSegment;
             offset += segmentSize;
@@ -131,7 +205,7 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
         return segments;
     }
 
-    public void decryptSegment(Arena arena, MemorySegment segment, long segmentOffsetInFile) throws Throwable {
+    public void decryptSegment(Arena arena, MemorySegment segment, long segmentOffsetInFile, FooterInfo footerInfo) throws Throwable {
         final long size = segment.byteSize();
 
         final int twoMB = 1 << 21; // 2 MiB
@@ -139,22 +213,23 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
         final int eightMB = 1 << 23; // 8 MiB
         final int sixteenMB = 1 << 24; // 16 MiB
 
-        final byte[] key = this.keyIvResolver.getDataKey().getEncoded();
-        final byte[] iv = this.keyIvResolver.getIvBytes();
+        // Use frame-based decryption
+        final byte[] directoryKey = this.keyResolver.getDataKey().getEncoded();
+        final byte[] fileKey = HkdfKeyDerivation.deriveAesKey(directoryKey, footerInfo.messageId, "file-encryption");
 
         // Fast-path: no parallelism for ≤ 4 MiB
         if (size <= (4L << 20)) {
             long start = System.nanoTime();
 
-            OpenSslNativeCipher.decryptInPlace(arena, segment.address(), size, key, iv, segmentOffsetInFile);
+            OpenSslNativeCipher.decryptInPlaceFrameBased(arena, segment.address(), size, fileKey, directoryKey, footerInfo.messageId, footerInfo.frameSize, segmentOffsetInFile);
 
             long end = System.nanoTime();
             long durationMs = (end - start) / 1_000_000;
-            LOGGER.debug("Egar decryption of {} MiB at offset {} took {} ms", size / 1048576.0, segmentOffsetInFile, durationMs);
+            LOGGER.debug("Eager frame-based decryption of {} MiB at offset {} took {} ms", size / 1048576.0, segmentOffsetInFile, durationMs);
             return;
         }
 
-        // Use Openssl for large block decrytion.
+        // Use Openssl for large block decryption with frame support
         final int chunkSize;
         if (size <= (8L << 20)) {
             chunkSize = twoMB;
@@ -168,7 +243,7 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
 
         final int numChunks = (int) ((size + chunkSize - 1) / chunkSize);
 
-        // parallel decryptions.
+        // parallel decryptions with frame-based approach
         IntStream.range(0, numChunks).parallel().forEach(i -> {
             long offset = (long) i * chunkSize;
             long length = Math.min(chunkSize, size - offset);
@@ -176,9 +251,9 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
             long addr = segment.address() + offset;
 
             try {
-                OpenSslNativeCipher.decryptInPlace(addr, length, key, iv, fileOffset);
+                OpenSslNativeCipher.decryptInPlaceFrameBased(addr, length, fileKey, directoryKey, footerInfo.messageId, footerInfo.frameSize, fileOffset);
             } catch (Throwable t) {
-                throw new RuntimeException("Decryption failed at offset: " + fileOffset, t);
+                throw new RuntimeException("Frame-based decryption failed at offset: " + fileOffset, t);
             }
         });
     }

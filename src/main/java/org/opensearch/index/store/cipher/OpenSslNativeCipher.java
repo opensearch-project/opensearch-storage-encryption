@@ -454,6 +454,24 @@ public final class OpenSslNativeCipher {
         }
     }
 
+    /**
+     * Frame-based decryption for large files using OpenSSL
+     */
+    public static void decryptInPlaceFrameBased(Arena arena, long addr, long length, byte[] fileKey, byte[] directoryKey, byte[] messageId, long frameSize, long fileOffset) throws Throwable {
+        decryptInPlaceFrameBased(addr, length, fileKey, directoryKey, messageId, frameSize, fileOffset);
+    }
+    
+    /**
+     * Frame-based decryption for large files using OpenSSL
+     */
+    public static void decryptInPlaceFrameBased(long addr, long length, byte[] fileKey, byte[] directoryKey, byte[] messageId, long frameSize, long fileOffset) throws Throwable {
+        // Calculate frame-based IV
+        byte[] frameIV = org.opensearch.index.store.cipher.AesCipherFactory.computeFrameIV(directoryKey, messageId, (int)(fileOffset / frameSize), fileOffset % frameSize);
+        
+        // Use existing OpenSSL decryption with frame-based IV
+        decryptInPlace(addr, length, fileKey, frameIV, fileOffset);
+    }
+
     private OpenSslNativeCipher() {
         // Utility class
     }

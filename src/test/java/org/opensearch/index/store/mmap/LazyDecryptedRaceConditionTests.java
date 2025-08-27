@@ -20,6 +20,7 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Before;
 import org.junit.Test;
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.index.store.key.HkdfKeyDerivation;
 
 /**
  * The test focuses on the specific scenario where multiple
@@ -49,6 +50,10 @@ public class LazyDecryptedRaceConditionTests {
     private byte[] testKey;
     private byte[] testIv;
     private byte[] expectedPlaintextData;
+    private byte[] messageId;
+    private byte[] directoryKey;
+    private long frameSize;
+    private short algorithmId;
 
     @Before
     public void setUp() throws Exception {
@@ -60,6 +65,14 @@ public class LazyDecryptedRaceConditionTests {
         testIv = new byte[16];  // 128-bit IV
         Arrays.fill(testKey, (byte) 0x42);
         Arrays.fill(testIv, (byte) 0x24);
+        
+        // Frame-based parameters
+        messageId = new byte[16];
+        Arrays.fill(messageId, (byte) 0x33);
+        directoryKey = new byte[32];
+        Arrays.fill(directoryKey, (byte) 0x55);
+        frameSize = 64L * 1024 * 1024 * 1024; // 64GB
+        algorithmId = 1; // AES-256-GCM
 
         // STEP 1: Create known plaintext data
         byte[] plaintextData = new byte[DATA_SIZE];
@@ -81,15 +94,18 @@ public class LazyDecryptedRaceConditionTests {
     }
 
     /**
-     * Encrypt data using the same method as MemorySegmentDecryptor but in reverse.
-     * This matches the complex IV manipulation and block alignment.
+     * Encrypt data using frame-based approach to match new decryption
      */
     private byte[] encryptData(byte[] plaintext, byte[] key, byte[] iv) throws Exception {
+        // Use the derived file key for encryption (same as decryption)
+        byte[] fileKey = HkdfKeyDerivation.deriveAesKey(this.directoryKey, this.messageId, "file-encryption");
+        
         javax.crypto.Cipher cipher = org.opensearch.index.store.cipher.AesCipherFactory.CIPHER_POOL.get();
-        javax.crypto.spec.SecretKeySpec keySpec = new javax.crypto.spec.SecretKeySpec(key, "AES");
+        javax.crypto.spec.SecretKeySpec keySpec = new javax.crypto.spec.SecretKeySpec(fileKey, "AES");
 
-        byte[] ivCopy = org.opensearch.index.store.cipher.AesCipherFactory.computeOffsetIVForAesGcmEncrypted(iv, 0);
-        cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, keySpec, new javax.crypto.spec.IvParameterSpec(ivCopy));
+        // Use frame-based IV calculation
+        byte[] frameIV = org.opensearch.index.store.cipher.AesCipherFactory.computeFrameIV(this.directoryKey, this.messageId, 0, 0);
+        cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, keySpec, new javax.crypto.spec.IvParameterSpec(frameIV));
 
         return cipher.update(plaintext);
     }
@@ -107,7 +123,7 @@ public class LazyDecryptedRaceConditionTests {
     @Test(timeout = TEST_TIMEOUT_SECONDS * 1000)
     public void testEncryptedDataSetupWorks() throws Exception {
         LazyDecryptedMemorySegmentIndexInput input = LazyDecryptedMemorySegmentIndexInput
-            .newInstance("test-resource", arena, new MemorySegment[] { segment }, DATA_SIZE, CHUNK_SIZE_POWER, testKey, testIv);
+            .newInstance("test-resource", arena, new MemorySegment[] { segment }, DATA_SIZE, CHUNK_SIZE_POWER, messageId, frameSize, algorithmId, directoryKey);
 
         // Test that we can decrypt and get back the original plaintext
         input.seek(0);
@@ -128,7 +144,7 @@ public class LazyDecryptedRaceConditionTests {
     @Test(timeout = TEST_TIMEOUT_SECONDS * 1000)
     public void testConcurrentReadsSameLocation() throws Exception {
         LazyDecryptedMemorySegmentIndexInput input = LazyDecryptedMemorySegmentIndexInput
-            .newInstance("test-resource", arena, new MemorySegment[] { segment }, DATA_SIZE, CHUNK_SIZE_POWER, testKey, testIv);
+            .newInstance("test-resource", arena, new MemorySegment[] { segment }, DATA_SIZE, CHUNK_SIZE_POWER, messageId, frameSize, algorithmId, directoryKey);
 
         // Test reading from the same safe location using random access
         final long testOffset = 50;
@@ -198,7 +214,7 @@ public class LazyDecryptedRaceConditionTests {
     @Test(timeout = TEST_TIMEOUT_SECONDS * 1000)
     public void testConcurrentReadsMultipleLocations() throws Exception {
         LazyDecryptedMemorySegmentIndexInput input = LazyDecryptedMemorySegmentIndexInput
-            .newInstance("test-resource", arena, new MemorySegment[] { segment }, DATA_SIZE, CHUNK_SIZE_POWER, testKey, testIv);
+            .newInstance("test-resource", arena, new MemorySegment[] { segment }, DATA_SIZE, CHUNK_SIZE_POWER, messageId, frameSize, algorithmId, directoryKey);
 
         final int numOperations = 3; // Reduced operations for safety
         final CountDownLatch startLatch = new CountDownLatch(1);
@@ -251,7 +267,7 @@ public class LazyDecryptedRaceConditionTests {
     @Test(timeout = TEST_TIMEOUT_SECONDS * 1000)
     public void testConcurrentBlockReads() throws Exception {
         LazyDecryptedMemorySegmentIndexInput input = LazyDecryptedMemorySegmentIndexInput
-            .newInstance("test-resource", arena, new MemorySegment[] { segment }, DATA_SIZE, CHUNK_SIZE_POWER, testKey, testIv);
+            .newInstance("test-resource", arena, new MemorySegment[] { segment }, DATA_SIZE, CHUNK_SIZE_POWER, messageId, frameSize, algorithmId, directoryKey);
 
         final int blockSize = 8; // Very small block size
         final long testOffset = 10; // Safe offset
@@ -303,7 +319,7 @@ public class LazyDecryptedRaceConditionTests {
     @Test(timeout = TEST_TIMEOUT_SECONDS * 1000)
     public void testHighContentionRaceCondition() throws Exception {
         LazyDecryptedMemorySegmentIndexInput input = LazyDecryptedMemorySegmentIndexInput
-            .newInstance("test-resource", arena, new MemorySegment[] { segment }, DATA_SIZE, CHUNK_SIZE_POWER, testKey, testIv);
+            .newInstance("test-resource", arena, new MemorySegment[] { segment }, DATA_SIZE, CHUNK_SIZE_POWER, messageId, frameSize, algorithmId, directoryKey);
 
         // Use just a few very safe offsets to maximize contention
         final long[] testOffsets = { 0, 5, 10, 15, 20 };
