@@ -239,23 +239,24 @@ public class PanamaNativeAccess {
     public static void dropFileCache(String filePath) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment cPath = arena.allocateUtf8String(filePath);
-            int fd = (int) OPEN.invoke(cPath, O_RDONLY); // Use CLOEXEC for safety
+            int fd = (int) OPEN.invoke(cPath, O_RDONLY);
             if (fd < 0) {
-                return; // Cannot open file
+                return; // Cannot open file - may already be deleted
             }
 
             try {
-                // 0, 0 means "entire file"
+                // 0, 0 means "entire file" - let kernel drop all cached pages
                 int rc = (int) POSIX_FADVISE.invoke(fd, 0L, 0L, POSIX_FADV_DONTNEED);
                 if (rc != 0) {
-                    // Non-fatal: log or ignore
+                    // Non-fatal: POSIX_FADV_DONTNEED is advisory, not guaranteed
+                    // Some filesystems or kernel configurations may ignore it
                 }
             } finally {
                 CLOSE.invoke(fd);
             }
         } catch (Throwable t) {
-            // Best-effort: log at DEBUG level if needed
+            // Best-effort operation: file may be deleted, permissions changed, etc.
+            // This is expected and should not affect application functionality
         }
     }
-
 }

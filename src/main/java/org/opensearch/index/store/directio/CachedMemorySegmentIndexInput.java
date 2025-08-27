@@ -4,9 +4,6 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
-
 import java.io.EOFException;
 import java.io.IOException;
 import java.lang.foreign.Arena;
@@ -22,6 +19,8 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
 
 @SuppressWarnings("preview")
 public class CachedMemorySegmentIndexInput extends IndexInput implements RandomAccessInput {
@@ -134,18 +133,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         }
     }
 
-    /**
-    * Helper method to get cache block for a given position.
-    * Handles block alignment, cache loading, and tracks pinned blocks for cleanup.
-    * Uses a simple cache to avoid redundant registry lookups for the same block.
-    *
-    * @param pos position relative to this input
-    * @return MemorySegment for the cache block containing the position
-    * @throws IOException if cache loading fails
-    */
-    private MemorySegment getCacheBlock(long pos) throws IOException {
-        return getCacheBlockWithOffset(pos).segment;
-    }
 
     /**
      * Optimized method to get both cache block and offset in one operation.
@@ -181,8 +168,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public final byte readByte() throws IOException {
-        ensureOpen();
-
         final long currentPos = getFilePointer();
         try {
             final BlockAccess access = getCacheBlockWithOffset(currentPos);
@@ -198,7 +183,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public final void readBytes(byte[] b, int offset, int len) throws IOException {
-        ensureOpen();
         if (len == 0)
             return;
 
@@ -243,8 +227,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public void readInts(int[] dst, int offset, int length) throws IOException {
-        ensureOpen();
-
         if (length == 0)
             return;
 
@@ -272,8 +254,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public void readLongs(long[] dst, int offset, int length) throws IOException {
-        ensureOpen();
-
         if (length == 0)
             return;
 
@@ -301,8 +281,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public void readFloats(float[] dst, int offset, int length) throws IOException {
-        ensureOpen();
-
         if (length == 0)
             return;
 
@@ -330,8 +308,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public final short readShort() throws IOException {
-        ensureOpen();
-
         final long currentPos = getFilePointer();
         try {
             final BlockAccess access = getCacheBlockWithOffset(currentPos);
@@ -354,8 +330,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public final int readInt() throws IOException {
-        ensureOpen();
-
         final long currentPos = getFilePointer();
         try {
             final BlockAccess access = getCacheBlockWithOffset(currentPos);
@@ -378,8 +352,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public final long readLong() throws IOException {
-        ensureOpen();
-
         final long currentPos = getFilePointer();
         try {
             final BlockAccess access = getCacheBlockWithOffset(currentPos);
@@ -427,17 +399,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         return absoluteBaseOffset + pos;
     }
 
-    /**
-     * Helper method to get offset within cache block for a given position.
-     * 
-     * @param pos position relative to this input
-     * @return offset within the cache block
-     */
-    private int getOffsetInBlock(long pos) {
-        BlockPosition blockPos = new BlockPosition(pos, absoluteBaseOffset);
-        return blockPos.offsetInBlock;
-    }
-
     @Override
     public void seek(long pos) throws IOException {
         ensureOpen();
@@ -449,8 +410,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public byte readByte(long pos) throws IOException {
-        ensureOpen();
-
         if (pos < 0 || pos >= length) {
             return 0;
         }
@@ -467,8 +426,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public short readShort(long pos) throws IOException {
-        ensureOpen();
-
         try {
             final BlockAccess access = getCacheBlockWithOffset(pos);
 
@@ -489,8 +446,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public int readInt(long pos) throws IOException {
-        ensureOpen();
-
         try {
             final BlockAccess access = getCacheBlockWithOffset(pos);
 
@@ -513,8 +468,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public long readLong(long pos) throws IOException {
-        ensureOpen();
-
         try {
             final BlockAccess access = getCacheBlockWithOffset(pos);
 

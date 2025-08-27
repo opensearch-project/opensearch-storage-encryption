@@ -97,8 +97,6 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-        final boolean shouldAddToBufferPool = true;
-
         return new BufferIOWithCaching(
             name,
             path,
@@ -106,10 +104,8 @@ public final class CryptoDirectIODirectory extends FSDirectory {
             this.keyIvResolver.getDataKey().getEncoded(),
             keyIvResolver.getIvBytes(),
             this.memorySegmentPool,
-            this.blockCache,
-            shouldAddToBufferPool
+            this.blockCache
         );
-
     }
 
     @Override
@@ -122,7 +118,6 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         String name = getTempFileName(prefix, suffix, nextTempFileCounter.getAndIncrement());
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
-        final boolean shouldAddToBufferPool = false;
 
         return new BufferIOWithCaching(
             name,
@@ -131,10 +126,8 @@ public final class CryptoDirectIODirectory extends FSDirectory {
             this.keyIvResolver.getDataKey().getEncoded(),
             keyIvResolver.getIvBytes(),
             this.memorySegmentPool,
-            this.blockCache,
-            shouldAddToBufferPool
+            this.blockCache
         );
-
     }
 
     // only close resources owned by this directory type.

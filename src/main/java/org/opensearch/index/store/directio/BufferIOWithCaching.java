@@ -24,6 +24,7 @@ import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegmentCacheValue;
+import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
 /**
  * An IndexOutput implementation that encrypts data before writing using native
@@ -60,14 +61,13 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         byte[] key,
         byte[] iv,
         Pool<MemorySegment> memorySegmentPool,
-        BlockCache<RefCountedMemorySegment> blockCache,
-        boolean shouldAddToBufferPool
+        BlockCache<RefCountedMemorySegment> blockCache
     )
         throws IOException {
         super(
             "FSIndexOutput(path=\"" + path + "\")",
             name,
-            new EncryptedOutputStream(os, path, key, iv, shouldAddToBufferPool, memorySegmentPool, blockCache),
+            new EncryptedOutputStream(os, path, key, iv, memorySegmentPool, blockCache),
             CHUNK_SIZE
         );
     }
@@ -80,7 +80,6 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         private final Path path;
         private final Pool<MemorySegment> memorySegmentPool;
         private final BlockCache<RefCountedMemorySegment> blockCache;
-        private final boolean shouldAddToBufferPool;
 
         private int bufferPosition = 0;
         private long streamOffset = 0;
@@ -91,7 +90,6 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             Path path,
             byte[] key,
             byte[] iv,
-            boolean shouldAddToBufferPool,
             Pool<MemorySegment> memorySegmentPool,
             BlockCache<RefCountedMemorySegment> blockCache
         ) {
@@ -102,7 +100,6 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             this.buffer = new byte[BUFFER_SIZE];
             this.memorySegmentPool = memorySegmentPool;
             this.blockCache = blockCache;
-            this.shouldAddToBufferPool = shouldAddToBufferPool;
         }
 
         @Override
@@ -240,6 +237,14 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                 // After file is complete, load final block (footer) into cache for immediate reads
                 loadFinalBlocksIntoCache();
 
+                // signal the kernel to flush the file cacehe
+                // we don't call flush aggresevley to avoid cpu pressure.
+                if (streamOffset > 32L * 1024 * 1024) {
+                    String absolutePath = path.toAbsolutePath().toString();
+                    // Drop cache BEFORE deletion while file handle is still valid
+                    Thread.startVirtualThread(() -> PanamaNativeAccess.dropFileCache(absolutePath));
+                }
+
             } catch (IOException e) {
                 exception = e;
             } finally {
@@ -259,7 +264,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                 long finalBlockOffset = (streamOffset - 1) & ~CACHE_BLOCK_MASK;
                 blockCache.loadBulk(path, finalBlockOffset, 1);
 
-            } catch (Exception e) {
+            } catch (IOException e) {
                 LOGGER.debug("Failed to load final block into cache for path={}: {}", path, e.toString());
                 // Non-fatal - cache loading is best effort
             }
