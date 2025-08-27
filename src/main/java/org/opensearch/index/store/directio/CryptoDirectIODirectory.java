@@ -83,7 +83,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
 
         PinRegistry registry = new PinRegistry(blockCache, file, size); // first owner.
 
-        return SimpleMMapIndexInput.newInstance("CryptoDirectIOIndexInput(path=\"" + file + "\")", file, arena, size, blockCache, registry);
+        return CachedMemorySegmentIndexInput.newInstance("CachedMemorySegmentIndexInput(path=\"" + file + "\")", file, arena, size, blockCache, registry);
     }
 
     @Override
