@@ -51,8 +51,8 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         this.lazyDecryptedCryptoMMapDirectoryDelegate = delegate;
         this.eagerDecryptedCryptoMMapDirectory = eagerDecryptedCryptoMMapDirectory;
         this.cryptoDirectIODirectory = cryptoDirectIODirectory;
-        // this.specialExtensions = Set.of("kdd", "kdm", "tip", "tim", "tmd", "doc", "dvd", "nvd", "psm", "fdm");
-        this.specialExtensions = Set.of("kdd", "cfs", "doc", "dvd");
+        // this.specialExtensions = Set.of("kdd", "kdm", "tip", "tim", "tmd", "doc", "dvd", "nvd", "psm", "fdm", "cfs");
+        this.specialExtensions = Set.of("kdd", "cfs", "doc", "dvd", "tim");
     }
 
     @Override

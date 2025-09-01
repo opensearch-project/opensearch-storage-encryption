@@ -260,13 +260,12 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                 if (streamOffset <= 0)
                     return;
 
-                // Load the final block containing the end of file
                 long finalBlockOffset = (streamOffset - 1) & ~CACHE_BLOCK_MASK;
-                blockCache.loadBulk(path, finalBlockOffset, 1);
+                BlockCacheKey key = new DirectIOBlockCacheKey(path, finalBlockOffset);
+                blockCache.getOrLoad(key);
 
             } catch (IOException e) {
                 LOGGER.debug("Failed to load final block into cache for path={}: {}", path, e.toString());
-                // Non-fatal - cache loading is best effort
             }
         }
 
