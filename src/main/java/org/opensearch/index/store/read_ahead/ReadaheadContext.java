@@ -37,12 +37,16 @@ import java.io.Closeable;
 public interface ReadaheadContext extends Closeable {
 
     /**
-     * Called on each segment load to update access pattern and possibly trigger readahead.
+     * Called on cache miss to update access pattern and possibly trigger readahead.
      *
-     * @param fileOffset absolute file offset of the accessed segment
-     * @param cacheMiss  true if the segment was not in the block cache
+     * @param fileOffset absolute file offset of the missed segment
      */
-    void onSegmentAccess(long fileOffset, boolean cacheMiss);
+    void onCacheMiss(long fileOffset);
+
+    /**
+     * Called on cache hits to track hit streaks for adaptive readahead.
+     */
+    void onCacheHit();
 
     void triggerReadahead(long fileOffset);
 

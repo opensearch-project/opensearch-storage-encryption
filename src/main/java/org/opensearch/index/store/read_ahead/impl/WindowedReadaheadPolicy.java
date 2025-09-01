@@ -41,15 +41,17 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
         final long lastSeg;    // -1 if uninit
         final long markerSeg;  // next trigger point (reader crosses => trigger)
         final int window;     // current window (segments)
+        final int hitStreak;  // consecutive cache hits
 
-        State(long lastSeg, long markerSeg, int window) {
+        State(long lastSeg, long markerSeg, int window, int hitStreak) {
             this.lastSeg = lastSeg;
             this.markerSeg = markerSeg;
             this.window = window;
+            this.hitStreak = hitStreak;
         }
 
         static State init(int initWin) {
-            return new State(-1L, -1L, initWin);
+            return new State(-1L, -1L, initWin, 0);
         }
     }
 
@@ -86,6 +88,13 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
         return Math.max(minLead, window / 3);
     }
 
+    /**
+     * Track cache hit to update hit streak. Called on cache hits.
+     */
+    public void onCacheHit() {
+        ref.updateAndGet(s -> new State(s.lastSeg, s.markerSeg, s.window, s.hitStreak + 1));
+    }
+
     @Override
     public boolean shouldTrigger(long currentOffset) {
         final long currSeg = currentOffset >>> CACHE_BLOCK_SIZE_POWER;
@@ -93,11 +102,22 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
         for (;;) {
             final State s = ref.get();
 
+            // Check if we should pause readahead due to high hit streak
+            if (s.hitStreak > s.window) {
+                // Reset hit streak but keep other state - readahead is working well
+                final State paused = new State(s.lastSeg, s.markerSeg, s.window, 0);
+                if (ref.compareAndSet(s, paused)) {
+                    LOGGER.debug("Path={}, Pausing readahead due to hit streak {} > window {}", path, s.hitStreak, s.window);
+                    return false; // Pause readahead
+                }
+                continue;
+            }
+
             // First access — trigger and seed state
             if (s.lastSeg == -1L) {
                 final int win = initialWindow;
                 final long marker = currSeg + leadFor(win);
-                if (ref.compareAndSet(s, new State(currSeg, marker, win))) {
+                if (ref.compareAndSet(s, new State(currSeg, marker, win, 0))) {
                     LOGGER.trace("Path={}, Trigger={}, currSeg={}, newMarker={}, win={}", path, true, currSeg, marker, win);
                     return true;
                 }
@@ -136,7 +156,8 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
                 newWin = initialWindow;
             }
 
-            final State next = new State(currSeg, proposedMarker, newWin);
+            // Cache miss resets hit streak to 0
+            final State next = new State(currSeg, proposedMarker, newWin, 0);
             if (ref.compareAndSet(s, next)) {
                 LOGGER
                     .debug(
@@ -180,11 +201,11 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
 
     /** Queue backpressure hooks (optional, simple + Linux-ish “be humble under pressure”). */
     public void onQueuePressureMedium() {
-        ref.updateAndGet(s -> new State(s.lastSeg, s.markerSeg, Math.max(1, s.window >>> 1)));
+        ref.updateAndGet(s -> new State(s.lastSeg, s.markerSeg, Math.max(1, s.window >>> 1), s.hitStreak));
     }
 
     public void onQueuePressureHigh() {
-        ref.updateAndGet(s -> new State(s.lastSeg, s.markerSeg, initialWindow));
+        ref.updateAndGet(s -> new State(s.lastSeg, s.markerSeg, initialWindow, s.hitStreak));
     }
 
     public void onQueueSaturated() {
@@ -193,7 +214,7 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
 
     /** Cache hit streak - shrink window to reduce unnecessary prefetching */
     public void onCacheHitShrink() {
-        ref.updateAndGet(s -> new State(s.lastSeg, s.markerSeg, Math.max(initialWindow, s.window >>> 1)));
+        ref.updateAndGet(s -> new State(s.lastSeg, s.markerSeg, Math.max(initialWindow, s.window >>> 1), s.hitStreak));
     }
 
     public void reset() {

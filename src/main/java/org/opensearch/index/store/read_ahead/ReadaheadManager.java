@@ -12,13 +12,19 @@ public interface ReadaheadManager extends Closeable {
     ReadaheadContext register(Path path, long fileLength);
 
     /**
-     * Notify that a segment was accessed, possibly triggering readahead.
+     * Notify that a cache miss occurred, possibly triggering readahead.
      *
      * @param context       per-index input context
      * @param startFileOffset  the fileoffset from where we start reading.
-     * @param cacheMiss     true if the block was not in cache (enables RA)
      */
-    void onSegmentAccess(ReadaheadContext context, long startFileOffset, boolean cacheMiss);
+    void onCacheMiss(ReadaheadContext context, long startFileOffset);
+
+    /**
+     * Notify that a cache hit occurred to track hit streaks.
+     *
+     * @param context the readahead context
+     */
+    void onCacheHit(ReadaheadContext context);
 
     /**
      * Cancel all readahead for a given stream context.

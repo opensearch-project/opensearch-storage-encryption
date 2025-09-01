@@ -8,7 +8,6 @@ import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SI
 
 import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -24,19 +23,15 @@ public class WindowedReadAheadContext implements ReadaheadContext {
     private final Worker worker;
     private final WindowedReadaheadPolicy policy;
 
-    // Cache-awareness
-    private final int cacheHitStreakThreshold;
-    private final AtomicInteger cacheHitStreak = new AtomicInteger(0);
-    private volatile boolean readaheadEnabled = true;
+    // Removed cache-awareness - let worker handle cache decisions
 
     // Scheduling state (per file)
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
-    private WindowedReadAheadContext(Path path, long fileLength, Worker worker, int hitStreakThreshold, WindowedReadaheadPolicy policy) {
+    private WindowedReadAheadContext(Path path, long fileLength, Worker worker, WindowedReadaheadPolicy policy) {
         this.path = path;
         this.fileLength = fileLength;
         this.worker = worker;
-        this.cacheHitStreakThreshold = hitStreakThreshold;
         this.policy = policy;
     }
 
@@ -47,36 +42,30 @@ public class WindowedReadAheadContext implements ReadaheadContext {
             config.maxWindowSegments(),
             config.shrinkOnRandomThreshold()
         );
-        return new WindowedReadAheadContext(path, fileLength, worker, config.hitStreakThreshold(), policy);
+        return new WindowedReadAheadContext(path, fileLength, worker, policy);
     }
 
     @Override
-    public synchronized void onSegmentAccess(long fileOffset, boolean cacheMiss) {
+    public void onCacheMiss(long fileOffset) {
         if (closed.get())
             return;
 
-        // Cache-aware window adjustment instead of complete disabling
-        if (cacheMiss) {
-            readaheadEnabled = true;
-            cacheHitStreak.set(0);
-        } else if (readaheadEnabled) {
-            int currentStreak = cacheHitStreak.incrementAndGet();
-            int shrinkThreshold = Math.max(cacheHitStreakThreshold, policy.currentWindow() / 2);
-            if (currentStreak >= shrinkThreshold) {
-                cacheHitStreak.set(0);
-                policy.onCacheHitShrink();
-                readaheadEnabled = false;
-            }
-        }
-
-        if (!readaheadEnabled)
-            return;
-
+        // Cache miss - check if we should trigger readahead
         if (!policy.shouldTrigger(fileOffset)) {
             return;
         }
 
         trigger(fileOffset);
+    }
+
+    @Override
+    public void onCacheHit() {
+        if (closed.get())
+            return;
+
+        if (policy instanceof WindowedReadaheadPolicy windowedReadaheadPolicy) {
+            windowedReadaheadPolicy.onCacheHit();
+        }
     }
 
     private void trigger(long anchorFileOffset) {
@@ -132,15 +121,13 @@ public class WindowedReadAheadContext implements ReadaheadContext {
     }
 
     @Override
-    public synchronized void triggerReadahead(long fileOffset) {
+    public void triggerReadahead(long fileOffset) {
         trigger(fileOffset);
     }
 
     @Override
-    public synchronized void reset() {
+    public void reset() {
         policy.reset();
-        cacheHitStreak.set(0);
-        readaheadEnabled = true;
     }
 
     @Override
@@ -152,7 +139,7 @@ public class WindowedReadAheadContext implements ReadaheadContext {
 
     @Override
     public boolean isReadAheadEnabled() {
-        return readaheadEnabled;
+        return !closed.get();
     }
 
     @Override

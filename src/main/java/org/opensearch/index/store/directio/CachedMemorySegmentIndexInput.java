@@ -22,6 +22,8 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
+import org.opensearch.index.store.read_ahead.ReadaheadContext;
+import org.opensearch.index.store.read_ahead.ReadaheadManager;
 
 @SuppressWarnings("preview")
 public class CachedMemorySegmentIndexInput extends IndexInput implements RandomAccessInput {
@@ -38,6 +40,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     final Path path;
     final Arena arena;
     final BlockCache<RefCountedMemorySegment> blockCache;
+    final ReadaheadManager readaheadManager;
+    final ReadaheadContext readaheadContext;
 
     final PinRegistry registry;
 
@@ -75,10 +79,24 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         Arena arena,
         long length,
         BlockCache<RefCountedMemorySegment> blockCache,
+        ReadaheadManager readaheadManager,
+        ReadaheadContext readaheadContext,
         PinRegistry registry
     ) {
 
-        return new MultiSegmentImpl(resourceDescription, path, arena, 0, 0, length, blockCache, registry, false);
+        return new MultiSegmentImpl(
+            resourceDescription,
+            path,
+            arena,
+            0,
+            0,
+            length,
+            blockCache,
+            readaheadManager,
+            readaheadContext,
+            registry,
+            false
+        );
     }
 
     private CachedMemorySegmentIndexInput(
@@ -88,6 +106,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         long absoluteBaseOffset,
         long length,
         BlockCache<RefCountedMemorySegment> blockCache,
+        ReadaheadManager readaheadManager,
+        ReadaheadContext readaheadContext,
         PinRegistry registry,
         boolean isSlice
     ) {
@@ -97,6 +117,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         this.absoluteBaseOffset = absoluteBaseOffset;
         this.length = length;
         this.blockCache = blockCache;
+        this.readaheadManager = readaheadManager;
+        this.readaheadContext = readaheadContext;
         this.registry = registry;
         this.isSlice = isSlice;
     }
@@ -148,13 +170,21 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
         // Check cache entries
         if (blockPos.blockOffset == cacheBlockOffset1 && cacheBlock1 != null) {
+            // Cache hit - track for adaptive readahead
+            if (readaheadManager != null && readaheadContext != null) {
+                readaheadManager.onCacheHit(readaheadContext);
+            }
             return new BlockAccess(cacheBlock1, blockPos.offsetInBlock);
         }
         if (blockPos.blockOffset == cacheBlockOffset2 && cacheBlock2 != null) {
+            // Cache hit - track for adaptive readahead
+            if (readaheadManager != null && readaheadContext != null) {
+                readaheadManager.onCacheHit(readaheadContext);
+            }
             return new BlockAccess(cacheBlock2, blockPos.offsetInBlock);
         }
 
-        // Acquire new block and cache it using LRU replacement
+        // Cache miss detected - acquire new block and trigger readahead
         MemorySegment block = registry.acquire(blockPos.blockOffset, length); // always pinned or throws
 
         // Shift cache: entry 1 becomes entry 2, new block becomes entry 1
@@ -162,6 +192,11 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         cacheBlock2 = cacheBlock1;
         cacheBlockOffset1 = blockPos.blockOffset;
         cacheBlock1 = block;
+
+        // Notify readahead manager about the cache miss
+        if (readaheadManager != null && readaheadContext != null) {
+            readaheadManager.onCacheMiss(readaheadContext, blockPos.blockOffset);
+        }
 
         return new BlockAccess(block, blockPos.offsetInBlock);
     }
@@ -557,6 +592,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             sliceAbsoluteBaseOffset,
             length,
             blockCache,
+            readaheadManager,
+            readaheadContext,
             registry.retainOwner(), // slices retain ownership
             true
         );
@@ -596,6 +633,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
             // master cleanup: drop all pinned blocks
             registry.releaseOwners();
+            readaheadManager.close();
         } else {
             // Assertions for slice instance
             assert isSlice : "Slice instance should be marked as slice";
@@ -617,10 +655,23 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             long absoluteBaseOffset,
             long length,
             BlockCache<RefCountedMemorySegment> blockCache,
+            ReadaheadManager readaheadManager,
+            ReadaheadContext readaheadContext,
             PinRegistry pinRegistry,
             boolean isSlice
         ) {
-            super(resourceDescription, path, arena, absoluteBaseOffset, length, blockCache, pinRegistry, isSlice);
+            super(
+                resourceDescription,
+                path,
+                arena,
+                absoluteBaseOffset,
+                length,
+                blockCache,
+                readaheadManager,
+                readaheadContext,
+                pinRegistry,
+                isSlice
+            );
             this.offset = offset;
             try {
                 seek(0L);

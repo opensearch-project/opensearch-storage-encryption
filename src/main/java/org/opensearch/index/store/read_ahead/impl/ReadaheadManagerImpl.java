@@ -41,7 +41,7 @@ public class ReadaheadManagerImpl implements ReadaheadManager {
         }
 
         WindowedReadAheadConfig config = new WindowedReadAheadConfig.Builder()
-            .initialWindow(2)
+            .initialWindow(4)
             .maxWindowSegments(16)
             .hitStreakThreshold(4)
             .shrinkOnRandomThreshold(50)
@@ -53,11 +53,19 @@ public class ReadaheadManagerImpl implements ReadaheadManager {
     }
 
     @Override
-    public void onSegmentAccess(ReadaheadContext ctx, long startFileOffset, boolean cacheMiss) {
+    public void onCacheMiss(ReadaheadContext ctx, long startFileOffset) {
         if (closed.get() || ctx == null) {
             return;
         }
-        ctx.onSegmentAccess(startFileOffset, cacheMiss);
+        ctx.onCacheMiss(startFileOffset);
+    }
+
+    @Override
+    public void onCacheHit(ReadaheadContext ctx) {
+        if (closed.get() || ctx == null) {
+            return;
+        }
+        ctx.onCacheHit();
     }
 
     @Override
