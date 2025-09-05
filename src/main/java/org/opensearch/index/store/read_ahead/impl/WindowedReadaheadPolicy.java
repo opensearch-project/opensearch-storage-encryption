@@ -6,6 +6,8 @@ package org.opensearch.index.store.read_ahead.impl;
 
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -28,6 +30,18 @@ import org.opensearch.index.store.read_ahead.ReadaheadPolicy;
 public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
     private static final Logger LOGGER = LogManager.getLogger(WindowedReadaheadPolicy.class);
 
+    private static final VarHandle VH_HIT_STREAK;
+
+    static {
+        try {
+            VH_HIT_STREAK = MethodHandles.lookup().findVarHandle(WindowedReadaheadPolicy.class, "hitStreak", int.class);
+        } catch (ReflectiveOperationException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
+    private volatile int hitStreak = 0;
+
     private final Path path;
     private final int initialWindow;       // segments
     private final int maxWindow;           // segments
@@ -41,17 +55,15 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
         final long lastSeg;    // -1 if uninit
         final long markerSeg;  // next trigger point (reader crosses => trigger)
         final int window;     // current window (segments)
-        final int hitStreak;  // consecutive cache hits
 
-        State(long lastSeg, long markerSeg, int window, int hitStreak) {
+        State(long lastSeg, long markerSeg, int window) {
             this.lastSeg = lastSeg;
             this.markerSeg = markerSeg;
             this.window = window;
-            this.hitStreak = hitStreak;
         }
 
         static State init(int initWin) {
-            return new State(-1L, -1L, initWin, 0);
+            return new State(-1L, -1L, initWin);
         }
     }
 
@@ -91,33 +103,27 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
     /**
      * Track cache hit to update hit streak. Called on cache hits.
      */
+
     public void onCacheHit() {
-        ref.updateAndGet(s -> new State(s.lastSeg, s.markerSeg, s.window, s.hitStreak + 1));
+        VH_HIT_STREAK.getAndAdd(this, 1);
     }
 
     @Override
     public boolean shouldTrigger(long currentOffset) {
         final long currSeg = currentOffset >>> CACHE_BLOCK_SIZE_POWER;
-
+        final int streak = (int) VH_HIT_STREAK.getAndSet(this, 0);
         for (;;) {
             final State s = ref.get();
-
-            // Check if we should pause readahead due to high hit streak
-            if (s.hitStreak > s.window) {
-                // Reset hit streak but keep other state - readahead is working well
-                final State paused = new State(s.lastSeg, s.markerSeg, s.window, 0);
-                if (ref.compareAndSet(s, paused)) {
-                    LOGGER.debug("Path={}, Pausing readahead due to hit streak {} > window {}", path, s.hitStreak, s.window);
-                    return false; // Pause readahead
-                }
-                continue;
+            if (streak > s.window) {
+                onCacheHitShrink();
+                return false;
             }
 
             // First access — trigger and seed state
             if (s.lastSeg == -1L) {
                 final int win = initialWindow;
                 final long marker = currSeg + leadFor(win);
-                if (ref.compareAndSet(s, new State(currSeg, marker, win, 0))) {
+                if (ref.compareAndSet(s, new State(currSeg, marker, win))) {
                     LOGGER.trace("Path={}, Trigger={}, currSeg={}, newMarker={}, win={}", path, true, currSeg, marker, win);
                     return true;
                 }
@@ -156,8 +162,7 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
                 newWin = initialWindow;
             }
 
-            // Cache miss resets hit streak to 0
-            final State next = new State(currSeg, proposedMarker, newWin, 0);
+            final State next = new State(currSeg, proposedMarker, newWin);
             if (ref.compareAndSet(s, next)) {
                 LOGGER
                     .debug(
@@ -201,11 +206,11 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
 
     /** Queue backpressure hooks (optional, simple + Linux-ish “be humble under pressure”). */
     public void onQueuePressureMedium() {
-        ref.updateAndGet(s -> new State(s.lastSeg, s.markerSeg, Math.max(1, s.window >>> 1), s.hitStreak));
+        ref.updateAndGet(s -> new State(s.lastSeg, s.markerSeg, Math.max(1, s.window >>> 1)));
     }
 
     public void onQueuePressureHigh() {
-        ref.updateAndGet(s -> new State(s.lastSeg, s.markerSeg, initialWindow, s.hitStreak));
+        ref.updateAndGet(s -> new State(s.lastSeg, s.markerSeg, initialWindow));
     }
 
     public void onQueueSaturated() {
@@ -214,7 +219,7 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
 
     /** Cache hit streak - shrink window to reduce unnecessary prefetching */
     public void onCacheHitShrink() {
-        ref.updateAndGet(s -> new State(s.lastSeg, s.markerSeg, Math.max(initialWindow, s.window >>> 1), s.hitStreak));
+        ref.updateAndGet(s -> new State(s.lastSeg, s.markerSeg, Math.max(initialWindow, s.window >>> 1)));
     }
 
     public void reset() {

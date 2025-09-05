@@ -122,7 +122,7 @@ public final class EagerDecryptedCryptoMMapDirectory extends MMapDirectory {
                 LOGGER.warn("madvise MADV_WILLNEED failed for file {} with IOcontext {}", name, context, t);
             }
 
-            decryptSegment(arena, mmapSegment, offset);
+            // decryptSegment(arena, mmapSegment, offset);
 
             segments[i] = mmapSegment;
             offset += segmentSize;

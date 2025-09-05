@@ -22,7 +22,7 @@ public class DirectIoConfigs {
     public static final long PER_DIR_CACHE_SIZE = 3L * 1024 * 1024 * 1024;
     public static final int CACHE_INITIAL_SIZE = 65536;
     public static final long MAX_CACHE_SIZE = PER_DIR_CACHE_SIZE >> CACHE_BLOCK_SIZE_POWER;
-    public static final int BLOCK_EXPIRY_AFTER_ACCESS_MINS = 15;
+    public static final int BLOCK_EXPIRY_AFTER_ACCESS_MINS = 120;
 
     public static final int READ_AHEAD_QUEUE_SIZE = 4096;
 }

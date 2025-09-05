@@ -4,6 +4,9 @@
  */
 package org.opensearch.index.store.directio;
 
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
+
 import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.foreign.Arena;
@@ -61,7 +64,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         this.memorySegmentPool = memorySegmentPool;
         this.blockCache = blockCache;
         this.readAheadworker = worker;
-        startCacheStatsTelemetry(path);
+        // startCacheStatsTelemetry(path);
     }
 
     @Override
@@ -78,10 +81,16 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         boolean confined = context == IOContext.READONCE;
         Arena arena = confined ? Arena.ofConfined() : Arena.ofShared();
 
+        // Pre-generate cache keys for all blocks in this file
+        final int totalBlocks = (int) ((size + CACHE_BLOCK_SIZE - 1) >>> CACHE_BLOCK_SIZE_POWER);
+        final DirectIOBlockCacheKey[] preGeneratedKeys = new DirectIOBlockCacheKey[totalBlocks];
+        for (int i = 0; i < totalBlocks; i++) {
+            final long blockOffset = (long) i << CACHE_BLOCK_SIZE_POWER;
+            preGeneratedKeys[i] = new DirectIOBlockCacheKey(file, blockOffset);
+        }
+
         ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker);
         ReadaheadContext readAheadContext = readAheadManager.register(file, size);
-
-        PinRegistry registry = new PinRegistry(blockCache, file, size); // first owner.
 
         return CachedMemorySegmentIndexInput
             .newInstance(
@@ -92,7 +101,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                 blockCache,
                 readAheadManager,
                 readAheadContext,
-                registry
+                preGeneratedKeys
             );
     }
 
@@ -165,7 +174,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
 
             if (blockCache instanceof CaffeineBlockCache) {
                 String cacheStats = ((CaffeineBlockCache<?, ?>) blockCache).cacheStats();
-                LOGGER.info("{} /n {}", cacheStats, path);
+                LOGGER.info("{}", cacheStats);
             }
 
         } catch (Exception e) {

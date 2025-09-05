@@ -6,12 +6,16 @@ package org.opensearch.index.store.directio;
 
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
 
 import java.io.EOFException;
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
+import java.lang.invoke.VarHandle;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
 
@@ -20,6 +24,7 @@ import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
+import org.apache.lucene.util.GroupVIntUtil;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
@@ -35,6 +40,13 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     static final ValueLayout.OfLong LAYOUT_LE_LONG = ValueLayout.JAVA_LONG_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
     static final ValueLayout.OfFloat LAYOUT_LE_FLOAT = ValueLayout.JAVA_FLOAT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
 
+    private static final VarHandle VH_MEMSEG_GET_INT = MethodHandles
+        .filterCoordinates(
+            LAYOUT_LE_INT.varHandle(),
+            0,
+            MethodHandles.identity(Object.class).asType(MethodType.methodType(MemorySegment.class, Object.class))
+        );
+
     final long length;
 
     final Path path;
@@ -43,8 +55,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     final ReadaheadManager readaheadManager;
     final ReadaheadContext readaheadContext;
 
-    final PinRegistry registry;
-
     final long absoluteBaseOffset; // absolute position in original file where this input starts
     final boolean isSlice; // true for slices, false for main instances
 
@@ -52,24 +62,34 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     volatile boolean isOpen = true;
 
     // 2-entry cache for last accessed blocks to smooth boundary crossings
-    private volatile long cacheBlockOffset1 = -1;
-    private volatile MemorySegment cacheBlock1 = null;
-    private volatile long cacheBlockOffset2 = -1;
-    private volatile MemorySegment cacheBlock2 = null;
+    private volatile long currentBlockOffset = -1;
+    private volatile MemorySegment currentBlock = null;
+    private volatile RefCountedMemorySegment currentPinnedBlock = null;
+    private volatile long previousBlockOffset = -1;
+    private volatile MemorySegment previousBlock = null;
+    private volatile RefCountedMemorySegment previousPinnedBlock = null;
 
-    /**
-     * Helper class to encapsulate position calculations and avoid redundant arithmetic.
-     * Combines file offset, block offset, and offset-in-block calculations.
-     */
-    private static final class BlockPosition {
-        final long fileOffset;
-        final long blockOffset;
-        final int offsetInBlock;
+    // Cached offset from last getCacheBlockWithOffset call (avoid BlockAccess allocation)
+    private int lastOffsetInBlock;
 
-        BlockPosition(long pos, long absoluteBaseOffset) {
-            this.fileOffset = absoluteBaseOffset + pos;
-            this.blockOffset = fileOffset & ~CACHE_BLOCK_MASK;
-            this.offsetInBlock = (int) (fileOffset - blockOffset);
+    // Pre-generated cache keys to avoid allocation overhead during reads
+    private final DirectIOBlockCacheKey[] preGeneratedKeys;
+
+    private RefCountedMemorySegment pinSegment(RefCountedMemorySegment segment) {
+        if (segment != null) {
+            // segment.incRef(); // Direct pin without cache lookup
+        }
+        return segment;
+    }
+
+    private DirectIOBlockCacheKey getCacheKey(long blockOffset) {
+        final int index = (int) (blockOffset >>> CACHE_BLOCK_SIZE_POWER);
+        return preGeneratedKeys[index];
+    }
+
+    private void unpinSegment(RefCountedMemorySegment segment) {
+        if (segment != null) {
+            segment.decRef();
         }
     }
 
@@ -81,7 +101,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         BlockCache<RefCountedMemorySegment> blockCache,
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
-        PinRegistry registry
+        DirectIOBlockCacheKey[] preGeneratedKeys
     ) {
 
         return new MultiSegmentImpl(
@@ -94,7 +114,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             blockCache,
             readaheadManager,
             readaheadContext,
-            registry,
+            preGeneratedKeys,
             false
         );
     }
@@ -108,7 +128,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         BlockCache<RefCountedMemorySegment> blockCache,
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
-        PinRegistry registry,
+        DirectIOBlockCacheKey[] preGeneratedKeys,
         boolean isSlice
     ) {
         super(resourceDescription);
@@ -119,7 +139,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         this.blockCache = blockCache;
         this.readaheadManager = readaheadManager;
         this.readaheadContext = readaheadContext;
-        this.registry = registry;
+        this.preGeneratedKeys = preGeneratedKeys;
         this.isSlice = isSlice;
     }
 
@@ -144,70 +164,77 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     }
 
     /**
-     * Helper class to return both cache block and offset in one operation.
-     */
-    private static final class BlockAccess {
-        final MemorySegment segment;
-        final int offsetInBlock;
-
-        BlockAccess(MemorySegment segment, int offsetInBlock) {
-            this.segment = segment;
-            this.offsetInBlock = offsetInBlock;
-        }
-    }
-
-    /**
      * Optimized method to get both cache block and offset in one operation.
      * Eliminates redundant position calculations between getCacheBlock() and getOffsetInBlock().
      *
      * @param pos position relative to this input
-     * @return BlockAccess containing both segment and offset
+     * @return MemorySegment for the cache block (offset available in lastOffsetInBlock)
      * @throws IOException if cache loading fails
      */
-    private BlockAccess getCacheBlockWithOffset(long pos) throws IOException {
-        ensureOpen();
-        BlockPosition blockPos = new BlockPosition(pos, absoluteBaseOffset);
+    private MemorySegment getCacheBlockWithOffset(long pos) throws IOException {
+        final long fileOffset = absoluteBaseOffset + pos;
+        final long blockOffset = fileOffset & ~CACHE_BLOCK_MASK;
+        final int offsetInBlock = (int) (fileOffset - blockOffset);
 
         // Check cache entries
-        if (blockPos.blockOffset == cacheBlockOffset1 && cacheBlock1 != null) {
-            // Cache hit - track for adaptive readahead
-            if (readaheadManager != null && readaheadContext != null) {
-                readaheadManager.onCacheHit(readaheadContext);
-            }
-            return new BlockAccess(cacheBlock1, blockPos.offsetInBlock);
+        if (blockOffset == currentBlockOffset && currentBlock != null) {
+            lastOffsetInBlock = offsetInBlock;
+            // if (readaheadManager != null && readaheadContext != null) {
+            // readaheadManager.onCacheHit(readaheadContext);
+            // }
+            return currentBlock;
         }
-        if (blockPos.blockOffset == cacheBlockOffset2 && cacheBlock2 != null) {
-            // Cache hit - track for adaptive readahead
-            if (readaheadManager != null && readaheadContext != null) {
-                readaheadManager.onCacheHit(readaheadContext);
-            }
-            return new BlockAccess(cacheBlock2, blockPos.offsetInBlock);
+        if (blockOffset == previousBlockOffset && previousBlock != null) {
+            lastOffsetInBlock = offsetInBlock;
+            return previousBlock;
         }
 
         // Cache miss detected - acquire new block and trigger readahead
-        MemorySegment block = registry.acquire(blockPos.blockOffset, length); // always pinned or throws
+        DirectIOBlockCacheKey key = getCacheKey(blockOffset);
 
-        // Shift cache: entry 1 becomes entry 2, new block becomes entry 1
-        cacheBlockOffset2 = cacheBlockOffset1;
-        cacheBlock2 = cacheBlock1;
-        cacheBlockOffset1 = blockPos.blockOffset;
-        cacheBlock1 = block;
+        // Get the RefCountedMemorySegment for direct pinning
+        RefCountedMemorySegment refCountedSeg = null;
+        MemorySegment block = null;
 
-        // Notify readahead manager about the cache miss
-        if (readaheadManager != null && readaheadContext != null) {
-            readaheadManager.onCacheMiss(readaheadContext, blockPos.blockOffset);
+        try {
+            var maybeCached = blockCache.get(key);
+            if (maybeCached.isPresent()) {
+                refCountedSeg = maybeCached.get().value();
+                block = refCountedSeg.segment();
+            } else {
+                var cacheVal = blockCache.getOrLoad(key);
+                refCountedSeg = cacheVal.value();
+                block = refCountedSeg.segment();
+            }
+        } catch (IOException e) {
+            throw new IOException("Failed to acquire block at offset " + blockOffset, e);
         }
 
-        return new BlockAccess(block, blockPos.offsetInBlock);
+        previousBlockOffset = currentBlockOffset;
+        previousBlock = currentBlock;
+        previousPinnedBlock = currentPinnedBlock;
+
+        currentBlockOffset = blockOffset;
+        currentBlock = block;
+        currentPinnedBlock = refCountedSeg;
+
+        // Notify readahead manager about the cache miss
+        // if (readaheadManager != null && readaheadContext != null) {
+        // readaheadManager.onCacheMiss(readaheadContext, blockOffset);
+        // }
+
+        lastOffsetInBlock = offsetInBlock;
+        return block;
     }
 
     @Override
     public final byte readByte() throws IOException {
-        final long currentPos = getFilePointer();
+        // Use direct field access instead of virtual call
+        final long currentPos = curPosition;
         try {
-            final BlockAccess access = getCacheBlockWithOffset(currentPos);
-            final byte v = access.segment.get(LAYOUT_BYTE, access.offsetInBlock);
-            curPosition++;
+            final MemorySegment segment = getCacheBlockWithOffset(currentPos);
+            final byte v = segment.get(LAYOUT_BYTE, lastOffsetInBlock);
+            curPosition = currentPos + 1; // Direct assignment
             return v;
         } catch (IndexOutOfBoundsException ioobe) {
             throw handlePositionalIOOBE(ioobe, "read", currentPos);
@@ -228,9 +255,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
         try {
             while (remaining > 0) {
-                final BlockAccess a = getCacheBlockWithOffset(currentPos);
-                final MemorySegment seg = a.segment;
-                final int offInBlock = a.offsetInBlock;
+                final MemorySegment seg = getCacheBlockWithOffset(currentPos);
+                final int offInBlock = lastOffsetInBlock;
                 final int avail = (int) (seg.byteSize() - offInBlock);
 
                 // Fast path: block-aligned and large
@@ -269,12 +295,13 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         final long totalBytes = Integer.BYTES * (long) length;
 
         try {
-            final BlockAccess access = getCacheBlockWithOffset(startPos);
+            final MemorySegment segment = getCacheBlockWithOffset(startPos);
+            final int offsetInBlock = lastOffsetInBlock;
 
             // Check if entire read fits in current cache block
-            if (access.offsetInBlock + totalBytes <= access.segment.byteSize()) {
+            if (offsetInBlock + totalBytes <= segment.byteSize()) {
                 // Fast path: entire read fits in one cache block
-                MemorySegment.copy(access.segment, LAYOUT_LE_INT, access.offsetInBlock, dst, offset, length);
+                MemorySegment.copy(segment, LAYOUT_LE_INT, offsetInBlock, dst, offset, length);
                 curPosition += totalBytes;
             } else {
                 // Slow path: spans cache blocks, fall back to super implementation
@@ -296,12 +323,13 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         final long totalBytes = Long.BYTES * (long) length;
 
         try {
-            final BlockAccess access = getCacheBlockWithOffset(startPos);
+            final MemorySegment segment = getCacheBlockWithOffset(startPos);
+            final int offsetInBlock = lastOffsetInBlock;
 
             // Check if entire read fits in current cache block
-            if (access.offsetInBlock + totalBytes <= access.segment.byteSize()) {
+            if (offsetInBlock + totalBytes <= segment.byteSize()) {
                 // Fast path: entire read fits in one cache block
-                MemorySegment.copy(access.segment, LAYOUT_LE_LONG, access.offsetInBlock, dst, offset, length);
+                MemorySegment.copy(segment, LAYOUT_LE_LONG, offsetInBlock, dst, offset, length);
                 curPosition += totalBytes;
             } else {
                 // Slow path: spans cache blocks, fall back to super implementation
@@ -323,12 +351,13 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         final long totalBytes = Float.BYTES * (long) length;
 
         try {
-            final BlockAccess access = getCacheBlockWithOffset(startPos);
+            final MemorySegment segment = getCacheBlockWithOffset(startPos);
+            final int offsetInBlock = lastOffsetInBlock;
 
             // Check if entire read fits in current cache block
-            if (access.offsetInBlock + totalBytes <= access.segment.byteSize()) {
+            if (offsetInBlock + totalBytes <= segment.byteSize()) {
                 // Fast path: entire read fits in one cache block
-                MemorySegment.copy(access.segment, LAYOUT_LE_FLOAT, access.offsetInBlock, dst, offset, length);
+                MemorySegment.copy(segment, LAYOUT_LE_FLOAT, offsetInBlock, dst, offset, length);
                 curPosition += totalBytes;
             } else {
                 // Slow path: spans cache blocks, fall back to super implementation
@@ -345,15 +374,16 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     public final short readShort() throws IOException {
         final long currentPos = getFilePointer();
         try {
-            final BlockAccess access = getCacheBlockWithOffset(currentPos);
+            final MemorySegment segment = getCacheBlockWithOffset(currentPos);
+            final int offsetInBlock = lastOffsetInBlock;
 
             // Check if the short spans beyond the current cache block
-            if (access.offsetInBlock + Short.BYTES > access.segment.byteSize()) {
+            if (offsetInBlock + Short.BYTES > segment.byteSize()) {
                 // Read spans cache block boundary, fall back to super implementation
                 return super.readShort();
             }
 
-            final short v = access.segment.get(LAYOUT_LE_SHORT, access.offsetInBlock);
+            final short v = segment.get(LAYOUT_LE_SHORT, offsetInBlock);
             curPosition += Short.BYTES;
             return v;
         } catch (IndexOutOfBoundsException ioobe) {
@@ -365,19 +395,20 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public final int readInt() throws IOException {
-        final long currentPos = getFilePointer();
+        final long currentPos = curPosition;
         try {
-            final BlockAccess access = getCacheBlockWithOffset(currentPos);
+            final MemorySegment segment = getCacheBlockWithOffset(currentPos);
+            final int offsetInBlock = lastOffsetInBlock;
 
-            // Check if the int spans beyond the current cache block
-            if (access.offsetInBlock + Integer.BYTES > access.segment.byteSize()) {
-                // Read spans cache block boundary, fall back to super implementation
-                return super.readInt();
+            // Fast path: check if we have enough bytes in current block
+            if (offsetInBlock <= segment.byteSize() - Integer.BYTES) {
+                final int v = segment.get(LAYOUT_LE_INT, offsetInBlock);
+                curPosition = currentPos + Integer.BYTES; // Direct assignment, no +=
+                return v;
             }
 
-            final int v = access.segment.get(LAYOUT_LE_INT, access.offsetInBlock);
-            curPosition += Integer.BYTES;
-            return v;
+            // Slow path: spans cache block boundary
+            return super.readInt();
         } catch (IndexOutOfBoundsException ioobe) {
             throw handlePositionalIOOBE(ioobe, "read", currentPos);
         } catch (NullPointerException | IllegalStateException e) {
@@ -387,24 +418,55 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public final long readLong() throws IOException {
-        final long currentPos = getFilePointer();
+        final long currentPos = curPosition;
         try {
-            final BlockAccess access = getCacheBlockWithOffset(currentPos);
+            final MemorySegment segment = getCacheBlockWithOffset(currentPos);
+            final int offsetInBlock = lastOffsetInBlock;
 
-            // Check if the long spans beyond the current cache block
-            if (access.offsetInBlock + Long.BYTES > access.segment.byteSize()) {
-                // Read spans cache block boundary, fall back to super implementation
-                return super.readLong();
+            if (offsetInBlock <= segment.byteSize() - Long.BYTES) {
+                final long v = segment.get(LAYOUT_LE_LONG, offsetInBlock);
+                curPosition = currentPos + Long.BYTES;
+                return v;
             }
 
-            final long v = access.segment.get(LAYOUT_LE_LONG, access.offsetInBlock);
-            curPosition += Long.BYTES;
-            return v;
+            // Slow path: spans cache block boundary
+            return super.readLong();
         } catch (IndexOutOfBoundsException ioobe) {
             throw handlePositionalIOOBE(ioobe, "read", currentPos);
         } catch (NullPointerException | IllegalStateException e) {
             throw alreadyClosed(e);
         }
+    }
+
+    @Override
+    public void readGroupVInt(int[] dst, int offset) throws IOException {
+        try {
+            final MemorySegment segment = getCacheBlockWithOffset(curPosition);
+            final int offsetInBlock = lastOffsetInBlock;
+            final int len = GroupVIntUtil.readGroupVInt(
+                this,
+                segment.byteSize() - offsetInBlock,
+                p -> segment.get(LAYOUT_LE_INT, p),
+                offsetInBlock,
+                dst,
+                offset
+            );
+            curPosition += len;
+        } catch (IllegalStateException | NullPointerException e) {
+            throw alreadyClosed(e);
+        }
+    }
+
+    @Override
+    public final int readVInt() throws IOException {
+        // this can make JVM less confused (see LUCENE-10366)
+        return super.readVInt();
+    }
+
+    @Override
+    public final long readVLong() throws IOException {
+        // this can make JVM less confused (see LUCENE-10366)
+        return super.readVLong();
     }
 
     @Override
@@ -450,8 +512,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         }
 
         try {
-            final BlockAccess access = getCacheBlockWithOffset(pos);
-            return access.segment.get(LAYOUT_BYTE, access.offsetInBlock);
+            final MemorySegment segment = getCacheBlockWithOffset(pos);
+            return segment.get(LAYOUT_BYTE, lastOffsetInBlock);
         } catch (IndexOutOfBoundsException ioobe) {
             throw handlePositionalIOOBE(ioobe, "read", pos);
         } catch (NullPointerException | IllegalStateException e) {
@@ -462,16 +524,21 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     @Override
     public short readShort(long pos) throws IOException {
         try {
-            final BlockAccess access = getCacheBlockWithOffset(pos);
+            final MemorySegment segment = getCacheBlockWithOffset(pos);
+            final int offsetInBlock = lastOffsetInBlock;
 
             // Check if the short spans beyond the current cache block
-            if (access.offsetInBlock + Short.BYTES > access.segment.byteSize()) {
-                // Read spans cache block boundary, fall back to byte-by-byte
-                byte b1 = readByte(pos);
-                byte b2 = readByte(pos + 1);
-                return (short) ((b2 << 8) | (b1 & 0xFF)); // Little endian
+            if (offsetInBlock + Short.BYTES > segment.byteSize()) {
+                // Read spans cache block boundary, delegate to sequential readShort()
+                long savedPos = getFilePointer();
+                try {
+                    seek(pos);
+                    return readShort();
+                } finally {
+                    seek(savedPos);
+                }
             }
-            return access.segment.get(LAYOUT_LE_SHORT, access.offsetInBlock);
+            return segment.get(LAYOUT_LE_SHORT, offsetInBlock);
         } catch (IndexOutOfBoundsException ioobe) {
             throw handlePositionalIOOBE(ioobe, "read", pos);
         } catch (NullPointerException | IllegalStateException e) {
@@ -482,18 +549,21 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     @Override
     public int readInt(long pos) throws IOException {
         try {
-            final BlockAccess access = getCacheBlockWithOffset(pos);
+            final MemorySegment segment = getCacheBlockWithOffset(pos);
+            final int offsetInBlock = lastOffsetInBlock;
 
             // Check if the int spans beyond the current cache block
-            if (access.offsetInBlock + Integer.BYTES > access.segment.byteSize()) {
-                // Read spans cache block boundary, fall back to byte-by-byte
-                byte b1 = readByte(pos);
-                byte b2 = readByte(pos + 1);
-                byte b3 = readByte(pos + 2);
-                byte b4 = readByte(pos + 3);
-                return (b4 << 24) | ((b3 & 0xFF) << 16) | ((b2 & 0xFF) << 8) | (b1 & 0xFF); // Little endian
+            if (offsetInBlock + Integer.BYTES > segment.byteSize()) {
+                // Read spans cache block boundary, delegate to sequential readInt()
+                long savedPos = getFilePointer();
+                try {
+                    seek(pos);
+                    return readInt();
+                } finally {
+                    seek(savedPos);
+                }
             }
-            return access.segment.get(LAYOUT_LE_INT, access.offsetInBlock);
+            return segment.get(LAYOUT_LE_INT, offsetInBlock);
         } catch (IndexOutOfBoundsException ioobe) {
             throw handlePositionalIOOBE(ioobe, "read", pos);
         } catch (NullPointerException | IllegalStateException e) {
@@ -504,16 +574,21 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     @Override
     public long readLong(long pos) throws IOException {
         try {
-            final BlockAccess access = getCacheBlockWithOffset(pos);
+            final MemorySegment segment = getCacheBlockWithOffset(pos);
+            final int offsetInBlock = lastOffsetInBlock;
 
             // Check if the long spans beyond the current cache block
-            if (access.offsetInBlock + Long.BYTES > access.segment.byteSize()) {
-                // Read spans cache block boundary, fall back to two ints
-                int lowInt = readInt(pos);      // Low 32 bits
-                int highInt = readInt(pos + 4); // High 32 bits
-                return ((long) highInt << 32) | ((long) lowInt & 0xFFFFFFFFL); // Little endian
+            if (offsetInBlock + Long.BYTES > segment.byteSize()) {
+                // Read spans cache block boundary, delegate to sequential readLong()
+                long savedPos = getFilePointer();
+                try {
+                    seek(pos);
+                    return readLong();
+                } finally {
+                    seek(savedPos);
+                }
             }
-            return access.segment.get(LAYOUT_LE_LONG, access.offsetInBlock);
+            return segment.get(LAYOUT_LE_LONG, offsetInBlock);
         } catch (IndexOutOfBoundsException ioobe) {
             throw handlePositionalIOOBE(ioobe, "read", pos);
         } catch (NullPointerException | IllegalStateException e) {
@@ -594,7 +669,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             blockCache,
             readaheadManager,
             readaheadContext,
-            registry.retainOwner(), // slices retain ownership
+            preGeneratedKeys,
             true
         );
     }
@@ -608,11 +683,17 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         // Mark as closed to ensure all future accesses throw AlreadyClosedException
         isOpen = false;
 
-        // Clear cached block references
-        cacheBlock1 = null;
-        cacheBlockOffset1 = -1;
-        cacheBlock2 = null;
-        cacheBlockOffset2 = -1;
+        // Unpin and clear cached blocks
+        // unpinSegment(currentPinnedBlock);
+        // unpinSegment(previousPinnedBlock);
+
+        currentBlock = null;
+        currentBlockOffset = -1;
+        currentPinnedBlock = null;
+
+        previousBlock = null;
+        previousBlockOffset = -1;
+        previousPinnedBlock = null;
 
         // the master IndexInput has an Arena and is able
         // to release all resources (unmap segments) - a
@@ -631,15 +712,10 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
                 }
             }
 
-            // master cleanup: drop all pinned blocks
-            registry.releaseOwners();
             readaheadManager.close();
         } else {
             // Assertions for slice instance
             assert isSlice : "Slice instance should be marked as slice";
-
-            // slice/clone cleanup: just drop one reference
-            registry.releaseOwner();
         }
     }
 
@@ -657,7 +733,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             BlockCache<RefCountedMemorySegment> blockCache,
             ReadaheadManager readaheadManager,
             ReadaheadContext readaheadContext,
-            PinRegistry pinRegistry,
+            DirectIOBlockCacheKey[] preGeneratedKeys,
             boolean isSlice
         ) {
             super(
@@ -669,7 +745,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
                 blockCache,
                 readaheadManager,
                 readaheadContext,
-                pinRegistry,
+                preGeneratedKeys,
                 isSlice
             );
             this.offset = offset;

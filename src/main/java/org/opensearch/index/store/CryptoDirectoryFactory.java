@@ -21,7 +21,7 @@ import java.security.Security;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.Set;
-import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
@@ -257,25 +257,20 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         *   which avoids offloading release to background threads that may hold on to native memory.
         * 
         */
-        ThreadPoolExecutor cacheExec = new ThreadPoolExecutor(
-            1,
-            1,
-            60,
-            TimeUnit.SECONDS,
-            new ArrayBlockingQueue<>(CACHE_INITIAL_SIZE),
-            r -> {
-                Thread t = new Thread(r, "block-cache-close");
-                t.setDaemon(true);
-                return t;
-            },
-            new ThreadPoolExecutor.CallerRunsPolicy()
+
+        ThreadPoolExecutor cacheExec = new ThreadPoolExecutor(2, 4, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<>(1024), r -> {
+            Thread t = new Thread(r, "block-cache-maint");
+            t.setDaemon(true);
+            return t;
+        },
+            new ThreadPoolExecutor.DiscardPolicy() // drop excess, avoid caller runs
         );
 
         Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> cache = Caffeine
             .newBuilder()
             .initialCapacity(CACHE_INITIAL_SIZE)
             .maximumSize(MAX_CACHE_SIZE)
-            .recordStats()
+            // .recordStats()
             .expireAfterAccess(BLOCK_EXPIRY_AFTER_ACCESS_MINS, TimeUnit.MINUTES)
             .executor(cacheExec)
             .removalListener((BlockCacheKey key, BlockCacheValue<RefCountedMemorySegment> value, RemovalCause cause) -> {

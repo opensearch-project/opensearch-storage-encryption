@@ -13,37 +13,62 @@ import org.opensearch.index.store.block_cache.BlockCacheKey;
  * 
  * <p>Each cache key uniquely identifies a block within a file by combining:
  * <ul>
- * <li>File path - identifies which file the block belongs to</li>
+ * <li>File name - extracted from the file path for fast comparison</li>
  * <li>File offset - identifies the position within the file where the block starts</li>
  * </ul>
  * 
- * <p>The file path is automatically normalized to absolute form to ensure consistent
- * cache key matching regardless of how the path was originally specified.
- * 
- * @param filePath the absolute, normalized path to the file containing this block
- * @param fileOffset the byte offset within the file where this block starts
+ * <p>Hash code is precomputed for optimal performance in concurrent environments.
  */
-public record DirectIOBlockCacheKey(Path filePath, long fileOffset) implements BlockCacheKey {
+public final class DirectIOBlockCacheKey implements BlockCacheKey {
 
-    /**
-     * constructor that normalizes the file path to ensure consistent cache key matching.
-     * 
-     * <p>The path is converted to absolute form and normalized to remove redundant elements
-     * like "." and ".." segments. This ensures that cache keys for the same file are identical
-     * regardless of how the path was originally specified (relative vs absolute, with or
-     * without redundant path elements).
-     */
-    public DirectIOBlockCacheKey {
-        filePath = filePath.toAbsolutePath().normalize();
+    private final Path filePath;
+    private final long fileOffset;
+    private final String fileName;
+    private int hash; // 0 means "not yet computed"
+
+    public DirectIOBlockCacheKey(Path filePath, long fileOffset) {
+        this.filePath = filePath.toAbsolutePath().normalize();
+        this.fileOffset = fileOffset;
+        this.fileName = this.filePath.getFileName().toString();
     }
 
-    /**
-     * Returns the file offset for this cache key.
-     * 
-     * @return the byte offset within the file where this block starts
-     */
+    @Override
+    public int hashCode() {
+        int h = hash;
+        if (h == 0) {
+            // compute once
+            h = 31 * fileName.hashCode() + Long.hashCode(fileOffset);
+            if (h == 0)
+                h = 1; // avoid sentinel clash
+            hash = h;
+        }
+        return h;
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj)
+            return true;
+        if (!(obj instanceof DirectIOBlockCacheKey other))
+            return false;
+        return fileOffset == other.fileOffset && fileName.equals(other.fileName);
+    }
+
+    @Override
+    public String toString() {
+        return "DirectIOBlockCacheKey[filePath=" + filePath + ", fileOffset=" + fileOffset + "]";
+    }
+
     @Override
     public long offset() {
+        return fileOffset;
+    }
+
+    public Path filePath() {
+        return filePath;
+    }
+
+    public long fileOffset() {
         return fileOffset;
     }
 }

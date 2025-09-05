@@ -63,9 +63,7 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         if (closed.get())
             return;
 
-        if (policy instanceof WindowedReadaheadPolicy windowedReadaheadPolicy) {
-            windowedReadaheadPolicy.onCacheHit();
-        }
+        policy.onCacheHit();
     }
 
     private void trigger(long anchorFileOffset) {
