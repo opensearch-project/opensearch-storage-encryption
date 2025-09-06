@@ -23,17 +23,14 @@ public final class PinRegistry {
 
     private final BlockCache<RefCountedMemorySegment> cache;
     private final Path path;
-    private final Slot[] slots;
+    private final MemorySegment[] slots;
     private final int totalBlocks;
 
     PinRegistry(BlockCache<RefCountedMemorySegment> cache, Path path, long fileLength) {
         this.cache = cache;
         this.path = path;
         this.totalBlocks = (int) ((fileLength + (1L << CACHE_BLOCK_SIZE_POWER) - 1) >>> CACHE_BLOCK_SIZE_POWER);
-        this.slots = new Slot[totalBlocks];
-        for (int i = 0; i < totalBlocks; i++) {
-            slots[i] = new Slot();
-        }
+        this.slots = new MemorySegment[totalBlocks];
     }
 
     public MemorySegment acquire(long blockOff) throws IOException {
@@ -42,10 +39,9 @@ public final class PinRegistry {
             throw new IOException("Block offset OOB: off=" + blockOff + " idx=" + idx + " len=" + totalBlocks);
         }
 
-        final Slot slotVal = slots[idx];
-        BlockCacheValue<RefCountedMemorySegment> cur = slotVal.getAcquire();
-        if (cur != null) {
-            return cur.value().segment();
+        final MemorySegment slotVal = slots[idx];
+        if (slotVal != null) {
+            return slotVal;
         }
 
         final DirectIOBlockCacheKey key = new DirectIOBlockCacheKey(path, blockOff);
@@ -54,13 +50,14 @@ public final class PinRegistry {
 
         if (maybeCache.isPresent()) {
             BlockCacheValue<RefCountedMemorySegment> cacheVal = maybeCache.get();
-            slotVal.casNullTo(cacheVal);
-            return cacheVal.value().segment();
+            slots[idx] = cacheVal.value().segment();
+            return slots[idx];
         }
 
         BlockCacheValue<RefCountedMemorySegment> cacheVal = cache.getOrLoad(key);
 
-        slotVal.casNullTo(cacheVal);
-        return cacheVal.value().segment();
+        slots[idx] = cacheVal.value().segment();
+
+        return slots[idx];
     }
 }

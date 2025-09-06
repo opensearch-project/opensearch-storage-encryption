@@ -92,6 +92,9 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker);
         ReadaheadContext readAheadContext = readAheadManager.register(file, size);
 
+        // Create PinRegistry for this file's block caching
+        PinRegistry pinRegistry = new PinRegistry(blockCache, file, size);
+
         return CachedMemorySegmentIndexInput
             .newInstance(
                 "CachedMemorySegmentIndexInput(path=\"" + file + "\")",
@@ -101,7 +104,8 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                 blockCache,
                 readAheadManager,
                 readAheadContext,
-                preGeneratedKeys
+                preGeneratedKeys,
+                pinRegistry
             );
     }
 
@@ -161,9 +165,21 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     public void deleteFile(String name) throws IOException {
         Path file = getDirectory().resolve(name);
 
-        // Invalidate cache entries for this file
         if (blockCache != null) {
-            blockCache.invalidate(file);
+            try {
+                long fileSize = Files.size(file);
+                if (fileSize > 0) {
+                    final int totalBlocks = (int) ((fileSize + CACHE_BLOCK_SIZE - 1) >>> CACHE_BLOCK_SIZE_POWER);
+                    for (int i = 0; i < totalBlocks; i++) {
+                        final long blockOffset = (long) i << CACHE_BLOCK_SIZE_POWER;
+                        DirectIOBlockCacheKey key = new DirectIOBlockCacheKey(file, blockOffset);
+                        blockCache.invalidate(key);
+                    }
+                }
+            } catch (IOException e) {
+                // Fall back to path-based invalidation if file size unavailable
+                LOGGER.warn("Failed to get file size for", e);
+            }
         }
 
         super.deleteFile(name);

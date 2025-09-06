@@ -61,19 +61,18 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     long curPosition = 0L; // absolute position within this input (0-based)
     volatile boolean isOpen = true;
 
-    // 2-entry cache for last accessed blocks to smooth boundary crossings
-    private volatile long currentBlockOffset = -1;
-    private volatile MemorySegment currentBlock = null;
-    private volatile RefCountedMemorySegment currentPinnedBlock = null;
-    private volatile long previousBlockOffset = -1;
-    private volatile MemorySegment previousBlock = null;
-    private volatile RefCountedMemorySegment previousPinnedBlock = null;
+    // Single block cache for current access
+    private long currentBlockOffset = -1;
+    private MemorySegment currentBlock = null;
 
     // Cached offset from last getCacheBlockWithOffset call (avoid BlockAccess allocation)
     private int lastOffsetInBlock;
 
     // Pre-generated cache keys to avoid allocation overhead during reads
     private final DirectIOBlockCacheKey[] preGeneratedKeys;
+
+    // PinRegistry for per-file block caching
+    private final PinRegistry pinRegistry;
 
     private RefCountedMemorySegment pinSegment(RefCountedMemorySegment segment) {
         if (segment != null) {
@@ -101,7 +100,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         BlockCache<RefCountedMemorySegment> blockCache,
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
-        DirectIOBlockCacheKey[] preGeneratedKeys
+        DirectIOBlockCacheKey[] preGeneratedKeys,
+        PinRegistry pinRegistry
     ) {
 
         return new MultiSegmentImpl(
@@ -115,7 +115,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             readaheadManager,
             readaheadContext,
             preGeneratedKeys,
-            false
+            false,
+            pinRegistry
         );
     }
 
@@ -129,7 +130,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
         DirectIOBlockCacheKey[] preGeneratedKeys,
-        boolean isSlice
+        boolean isSlice,
+        PinRegistry pinRegistry
     ) {
         super(resourceDescription);
         this.path = path;
@@ -141,6 +143,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         this.readaheadContext = readaheadContext;
         this.preGeneratedKeys = preGeneratedKeys;
         this.isSlice = isSlice;
+        this.pinRegistry = pinRegistry;
     }
 
     void ensureOpen() {
@@ -176,47 +179,18 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         final long blockOffset = fileOffset & ~CACHE_BLOCK_MASK;
         final int offsetInBlock = (int) (fileOffset - blockOffset);
 
-        // Check cache entries
+        // Check current block cache
         if (blockOffset == currentBlockOffset && currentBlock != null) {
             lastOffsetInBlock = offsetInBlock;
-            // if (readaheadManager != null && readaheadContext != null) {
-            // readaheadManager.onCacheHit(readaheadContext);
-            // }
             return currentBlock;
         }
-        if (blockOffset == previousBlockOffset && previousBlock != null) {
-            lastOffsetInBlock = offsetInBlock;
-            return previousBlock;
-        }
 
-        // Cache miss detected - acquire new block and trigger readahead
-        DirectIOBlockCacheKey key = getCacheKey(blockOffset);
+        // Cache miss - use PinRegistry to acquire block
+        MemorySegment block = pinRegistry.acquire(blockOffset);
 
-        // Get the RefCountedMemorySegment for direct pinning
-        RefCountedMemorySegment refCountedSeg = null;
-        MemorySegment block = null;
-
-        try {
-            var maybeCached = blockCache.get(key);
-            if (maybeCached.isPresent()) {
-                refCountedSeg = maybeCached.get().value();
-                block = refCountedSeg.segment();
-            } else {
-                var cacheVal = blockCache.getOrLoad(key);
-                refCountedSeg = cacheVal.value();
-                block = refCountedSeg.segment();
-            }
-        } catch (IOException e) {
-            throw new IOException("Failed to acquire block at offset " + blockOffset, e);
-        }
-
-        previousBlockOffset = currentBlockOffset;
-        previousBlock = currentBlock;
-        previousPinnedBlock = currentPinnedBlock;
-
+        // Update current block cache
         currentBlockOffset = blockOffset;
         currentBlock = block;
-        currentPinnedBlock = refCountedSeg;
 
         // Notify readahead manager about the cache miss
         // if (readaheadManager != null && readaheadContext != null) {
@@ -443,14 +417,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         try {
             final MemorySegment segment = getCacheBlockWithOffset(curPosition);
             final int offsetInBlock = lastOffsetInBlock;
-            final int len = GroupVIntUtil.readGroupVInt(
-                this,
-                segment.byteSize() - offsetInBlock,
-                p -> segment.get(LAYOUT_LE_INT, p),
-                offsetInBlock,
-                dst,
-                offset
-            );
+            final int len = GroupVIntUtil
+                .readGroupVInt(this, segment.byteSize() - offsetInBlock, p -> segment.get(LAYOUT_LE_INT, p), offsetInBlock, dst, offset);
             curPosition += len;
         } catch (IllegalStateException | NullPointerException e) {
             throw alreadyClosed(e);
@@ -670,7 +638,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             readaheadManager,
             readaheadContext,
             preGeneratedKeys,
-            true
+            true,
+            pinRegistry // reuse the same PinRegistry instance
         );
     }
 
@@ -683,17 +652,9 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         // Mark as closed to ensure all future accesses throw AlreadyClosedException
         isOpen = false;
 
-        // Unpin and clear cached blocks
-        // unpinSegment(currentPinnedBlock);
-        // unpinSegment(previousPinnedBlock);
-
+        // Clear current block cache
         currentBlock = null;
         currentBlockOffset = -1;
-        currentPinnedBlock = null;
-
-        previousBlock = null;
-        previousBlockOffset = -1;
-        previousPinnedBlock = null;
 
         // the master IndexInput has an Arena and is able
         // to release all resources (unmap segments) - a
@@ -734,7 +695,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             ReadaheadManager readaheadManager,
             ReadaheadContext readaheadContext,
             DirectIOBlockCacheKey[] preGeneratedKeys,
-            boolean isSlice
+            boolean isSlice,
+            PinRegistry pinRegistry
         ) {
             super(
                 resourceDescription,
@@ -746,7 +708,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
                 readaheadManager,
                 readaheadContext,
                 preGeneratedKeys,
-                isSlice
+                isSlice,
+                pinRegistry
             );
             this.offset = offset;
             try {

@@ -4,7 +4,6 @@
  */
 package org.opensearch.index.store;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.BLOCK_EXPIRY_AFTER_ACCESS_MINS;
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_INITIAL_SIZE;
 import static org.opensearch.index.store.directio.DirectIoConfigs.MAX_CACHE_SIZE;
@@ -258,7 +257,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         * 
         */
 
-        ThreadPoolExecutor cacheExec = new ThreadPoolExecutor(2, 4, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<>(1024), r -> {
+        ThreadPoolExecutor cacheExec = new ThreadPoolExecutor(2, 4, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<>(), r -> {
             Thread t = new Thread(r, "block-cache-maint");
             t.setDaemon(true);
             return t;
@@ -271,8 +270,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             .initialCapacity(CACHE_INITIAL_SIZE)
             .maximumSize(MAX_CACHE_SIZE)
             // .recordStats()
-            .expireAfterAccess(BLOCK_EXPIRY_AFTER_ACCESS_MINS, TimeUnit.MINUTES)
-            .executor(cacheExec)
+            // .expireAfterAccess(BLOCK_EXPIRY_AFTER_ACCESS_MINS, TimeUnit.MINUTES)
+            // .executor(cacheExec)
             .removalListener((BlockCacheKey key, BlockCacheValue<RefCountedMemorySegment> value, RemovalCause cause) -> {
                 if (value != null) {
                     try {
