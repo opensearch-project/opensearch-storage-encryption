@@ -8,7 +8,7 @@ import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
 public class DirectIoConfigs {
     public static final int DIRECT_IO_ALIGNMENT = Math.max(512, PanamaNativeAccess.getPageSize());
-    public static final int INDEX_OUTPUT_BUFFER_SIZE_POWER = 20; // 1mb
+    public static final int DIRECT_IO_WRITE_BUFFER_SIZE_POWER = 18; // 1mb
 
     public static final long RESEVERED_POOL_SIZE_IN_BYTES = 24L * 1024 * 1024 * 1024;
     public static final double WARM_UP_PERCENTAGE = 0.4;

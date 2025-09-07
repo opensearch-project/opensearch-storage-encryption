@@ -20,9 +20,6 @@ import java.security.Security;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.Set;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 import org.apache.logging.log4j.LogManager;
@@ -64,6 +61,10 @@ import org.opensearch.plugins.IndexStorePlugin;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.RemovalCause;
+
+import io.netty.channel.IoEventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.uring.IoUringIoHandler;
 
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "temporary")
@@ -257,21 +258,11 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         * 
         */
 
-        ThreadPoolExecutor cacheExec = new ThreadPoolExecutor(2, 4, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<>(), r -> {
-            Thread t = new Thread(r, "block-cache-maint");
-            t.setDaemon(true);
-            return t;
-        },
-            new ThreadPoolExecutor.DiscardPolicy() // drop excess, avoid caller runs
-        );
-
         Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> cache = Caffeine
             .newBuilder()
             .initialCapacity(CACHE_INITIAL_SIZE)
+            .recordStats()
             .maximumSize(MAX_CACHE_SIZE)
-            // .recordStats()
-            // .expireAfterAccess(BLOCK_EXPIRY_AFTER_ACCESS_MINS, TimeUnit.MINUTES)
-            // .executor(cacheExec)
             .removalListener((BlockCacheKey key, BlockCacheValue<RefCountedMemorySegment> value, RemovalCause cause) -> {
                 if (value != null) {
                     try {
@@ -287,6 +278,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
 
         int threads = Math.max(4, Runtime.getRuntime().availableProcessors() / 4);
         Worker readaheadWorker = new QueuingWorker(READ_AHEAD_QUEUE_SIZE, threads, blockCache);
+        IoEventLoopGroup sharedEventLoopGroup = new MultiThreadIoEventLoopGroup(threads, IoUringIoHandler.newFactory());
 
         return new CryptoDirectIODirectory(
             location,
@@ -296,7 +288,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             sharedSegmentPool,
             blockCache,
             loader,
-            readaheadWorker
+            readaheadWorker,
+            sharedEventLoopGroup
         );
     }
 

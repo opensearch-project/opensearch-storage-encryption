@@ -4,9 +4,6 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
-
 import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.foreign.Arena;
@@ -31,11 +28,15 @@ import org.opensearch.index.store.block_cache.BlockLoader;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.index.store.read_ahead.impl.ReadaheadManagerImpl;
+
+import io.netty.channel.IoEventLoopGroup;
 
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "uses custom DirectIO")
@@ -47,6 +48,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     private final BlockCache<RefCountedMemorySegment> blockCache;
     private final Worker readAheadworker;
     private final KeyIvResolver keyIvResolver;
+    private final IoEventLoopGroup ioEventLoopGroup;
 
     public CryptoDirectIODirectory(
         Path path,
@@ -56,7 +58,8 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         Pool<MemorySegment> memorySegmentPool,
         BlockCache<RefCountedMemorySegment> blockCache,
         BlockLoader<MemorySegment> blockLoader,
-        Worker worker
+        Worker worker,
+        IoEventLoopGroup ioEventLoopGroup
     )
         throws IOException {
         super(path, lockFactory);
@@ -64,7 +67,8 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         this.memorySegmentPool = memorySegmentPool;
         this.blockCache = blockCache;
         this.readAheadworker = worker;
-        // startCacheStatsTelemetry(path);
+        this.ioEventLoopGroup = ioEventLoopGroup;
+        startCacheStatsTelemetry(path);
     }
 
     @Override
@@ -119,15 +123,17 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-        return new BufferIOWithCaching(
-            name,
-            path,
-            fos,
-            this.keyIvResolver.getDataKey().getEncoded(),
-            keyIvResolver.getIvBytes(),
-            this.memorySegmentPool,
-            this.blockCache
-        );
+        // return new BufferIOWithCaching(
+        // name,
+        // path,
+        // fos,
+        // this.keyIvResolver.getDataKey().getEncoded(),
+        // keyIvResolver.getIvBytes(),
+        // this.memorySegmentPool,
+        // this.blockCache
+        // );
+        return new DirectIOWithIoUringIndexOutput(path, name, this.memorySegmentPool, this.blockCache, this.ioEventLoopGroup);
+
     }
 
     @Override
@@ -141,15 +147,17 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-        return new BufferIOWithCaching(
-            name,
-            path,
-            fos,
-            this.keyIvResolver.getDataKey().getEncoded(),
-            keyIvResolver.getIvBytes(),
-            this.memorySegmentPool,
-            this.blockCache
-        );
+        // return new BufferIOWithCaching(
+        // name,
+        // path,
+        // fos,
+        // this.keyIvResolver.getDataKey().getEncoded(),
+        // keyIvResolver.getIvBytes(),
+        // this.memorySegmentPool,
+        // this.blockCache
+        // );
+
+        return new DirectIOWithIoUringIndexOutput(path, name, this.memorySegmentPool, this.blockCache, this.ioEventLoopGroup);
     }
 
     // only close resources owned by this directory type.
@@ -178,7 +186,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                 }
             } catch (IOException e) {
                 // Fall back to path-based invalidation if file size unavailable
-                LOGGER.warn("Failed to get file size for", e);
+                LOGGER.warn("Failed to get file size", e);
             }
         }
 

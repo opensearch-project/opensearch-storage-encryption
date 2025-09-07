@@ -72,6 +72,12 @@ dependencies {
     internalClusterTestImplementation "org.opensearch.plugin:aggs-matrix-stats-client:${opensearch_version}"
 
     implementation 'com.github.ben-manes.caffeine:caffeine:3.0.0'
+    api "io.netty:netty-buffer:4.2.5.Final"
+    api "io.netty:netty-transport:4.2.5.Final"
+    api "io.netty:netty-transport-native-unix-common:4.2.5.Final"
+    api "io.netty:netty-transport-classes-io_uring:4.2.5.Final"
+    api "io.netty:netty-common:4.2.5.Final"
+    api "io.netty:netty-transport-native-io_uring:4.2.5.Final:linux-x86_64"
 }
 
 test {
