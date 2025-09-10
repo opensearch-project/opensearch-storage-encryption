@@ -652,10 +652,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         // Mark as closed to ensure all future accesses throw AlreadyClosedException
         isOpen = false;
 
-        // Clear current block cache
-        currentBlock = null;
-        currentBlockOffset = -1;
-
         // the master IndexInput has an Arena and is able
         // to release all resources (unmap segments) - a
         // side effect is that other threads still using clones
@@ -671,6 +667,11 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
                 } catch (@SuppressWarnings("unused") IllegalStateException e) {
                     Thread.onSpinWait();
                 }
+            }
+
+            // Clear pin registry slots to prevent memory leaks
+            if (pinRegistry != null) {
+                pinRegistry.clear();
             }
 
             readaheadManager.close();
