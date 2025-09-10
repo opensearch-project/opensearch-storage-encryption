@@ -231,9 +231,8 @@ public class QueuingWorker implements Worker {
             long blockIndex = startBlockIndex + i;
             long blockOffset = blockIndex << CACHE_BLOCK_SIZE_POWER;
             BlockCacheKey key = new DirectIOBlockCacheKey(path, blockOffset);
-            boolean cached = blockCache.get(key).isPresent();
 
-            if (!cached) {
+            if (blockCache.get(key) != null) {
                 if (currentGapStartIndex == -1) {
                     // Start of new gap
                     currentGapStartIndex = blockIndex;

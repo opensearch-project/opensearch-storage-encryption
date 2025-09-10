@@ -84,10 +84,10 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         // Pre-generate cache keys for all blocks in this file
         final int totalBlocks = (int) ((size + CACHE_BLOCK_SIZE - 1) >>> CACHE_BLOCK_SIZE_POWER);
         final DirectIOBlockCacheKey[] preGeneratedKeys = new DirectIOBlockCacheKey[totalBlocks];
-        for (int i = 0; i < totalBlocks; i++) {
-            final long blockOffset = (long) i << CACHE_BLOCK_SIZE_POWER;
-            preGeneratedKeys[i] = new DirectIOBlockCacheKey(file, blockOffset);
-        }
+        // for (int i = 0; i < totalBlocks; i++) {
+        // final long blockOffset = (long) i << CACHE_BLOCK_SIZE_POWER;
+        // preGeneratedKeys[i] = new DirectIOBlockCacheKey(file, blockOffset);
+        // }
 
         ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker);
         ReadaheadContext readAheadContext = readAheadManager.register(file, size);

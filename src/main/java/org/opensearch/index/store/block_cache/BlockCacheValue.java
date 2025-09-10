@@ -10,16 +10,16 @@ package org.opensearch.index.store.block_cache;
  *
  * <h2>Lifecycle Contract</h2>
  * <ul>
- *   <li><b>Pin before use:</b> Call {@link #tryPin()} before accessing {@link #value()}.
+ *   <li><b>Pin before use:</b> Call {@link #isRetired()} before accessing {@link #value()}.
  *       If it returns {@code true}, you must eventually call {@link #unpin()} (potentially in a {@code finally}).</li>
  *   <li><b>Retirement:</b> When the cache removes this entry, it will call {@link #close()} exactly once.
- *       Implementations must mark the value as <i>retired</i> so that new {@link #tryPin()} attempts fail,
+ *       Implementations must mark the value as <i>retired</i> so that new {@link #isRetired()} attempts fail,
  *       and then drop the cache’s reference. The underlying resource is freed only when the refcount reaches zero.</li>
- *   <li><b>No unpinned access:</b> Callers must never read from {@link #value()} without a successful {@link #tryPin()}.</li>
+ *   <li><b>No unpinned access:</b> Callers must never read from {@link #value()} without a successful {@link #isRetired()}.</li>
  * </ul>
  *
  * <h2>Thread-safety</h2>
- * All methods are expected to be thread-safe. {@link #tryPin()} and {@link #unpin()} must be safe under concurrency.
+ * All methods are expected to be thread-safe. {@link #isRetired()} and {@link #unpin()} must be safe under concurrency.
  *
  * @param <T> The wrapped resource type (e.g., RefCountedMemorySegment)
  */
@@ -32,12 +32,12 @@ public interface BlockCacheValue<T> extends AutoCloseable {
      *
      * @return {@code true} if the caller acquired a pin and may access {@link #value()}, {@code false} otherwise
      */
-    boolean tryPin();
+    boolean isRetired();
 
     /**
      * Releases a previously acquired pin.
      * <p>
-     * Every successful {@link #tryPin()} must be paired with exactly one {@code unpin()}.
+     * Every successful {@link #isRetired()} must be paired with exactly one {@code unpin()}.
      * When the last pin is released (including the cache’s own hold after {@link #close()}),
      * the underlying resource should be freed.
      */
@@ -45,7 +45,7 @@ public interface BlockCacheValue<T> extends AutoCloseable {
 
     /**
      * @return the wrapped resource for read-only use while pinned.
-     *         Calling code must have a valid pin (see {@link #tryPin()} / {@link #unpin()}).
+     *         Calling code must have a valid pin (see {@link #isRetired()} / {@link #unpin()}).
      */
     T value();
 
@@ -55,17 +55,11 @@ public interface BlockCacheValue<T> extends AutoCloseable {
     int length();
 
     /**
-     * @return {@code true} if this value has been retired by the cache (removed/invalidated/evicted)
-     *         and will not accept new pins; existing pins may still be active until released.
-     */
-    boolean isRetired();
-
-    /**
      * Retires this value from the cache and drops the cache’s reference.
      * <p>
      * <b>Called exactly once</b> by the cache (e.g., via removalListener). Implementations must:
      * <ol>
-     *   <li>Mark the value as retired so future {@link #tryPin()} fail.</li>
+     *   <li>Mark the value as retired so future {@link #isRetired()} fail.</li>
      *   <li>Drop the cache’s hold on the refcount.</li>
      *   <li>Only free the underlying resource when the refcount reaches zero.</li>
      * </ol>

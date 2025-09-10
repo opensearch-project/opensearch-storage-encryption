@@ -9,7 +9,6 @@ import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SI
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
-import java.util.Optional;
 
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
@@ -18,92 +17,80 @@ import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 @SuppressWarnings("preview")
 public final class PinRegistry {
 
-    // Optimized for CPU cache efficiency with 8KB blocks
-    // 64 slots = 64 * 16 bytes = 1KB metadata (fits well in L1 cache)
-    // Can cache up to 64 * 8KB = 512KB of blocks (good for L2 cache)
-    private static final int SLOT_COUNT = 64;
+    private static final int SLOT_COUNT = 32;
     private static final int SLOT_MASK = SLOT_COUNT - 1;
+
+    private record Slot(long blockIdx, BlockCacheValue<RefCountedMemorySegment> val) {
+    }
 
     private final BlockCache<RefCountedMemorySegment> cache;
     private final Path path;
-    private final MemorySegment[] slots;
-    private final long[] blockIndices;
+    private final Slot[] slots;
 
-    // Cache the last accessed block to avoid repeated lookups
+    // Pre-allocated keys for hot slots to reduce allocation pressure
+    private final DirectIOBlockCacheKey[] slotKeys;
+
     private long lastBlockIdx = -1;
-    private MemorySegment lastSegment;
+    private BlockCacheValue<RefCountedMemorySegment> lastVal;
 
     PinRegistry(BlockCache<RefCountedMemorySegment> cache, Path path, long fileLength) {
         this.cache = cache;
         this.path = path;
-        this.slots = new MemorySegment[SLOT_COUNT];
-        this.blockIndices = new long[SLOT_COUNT];
-        // Initialize with invalid block indices
-        for (int i = 0; i < SLOT_COUNT; i++) {
-            blockIndices[i] = -1;
-        }
+        this.slots = new Slot[SLOT_COUNT];
+        this.slotKeys = new DirectIOBlockCacheKey[SLOT_COUNT];
     }
 
     public MemorySegment acquire(long blockOff) throws IOException {
         final long blockIdx = blockOff >>> CACHE_BLOCK_SIZE_POWER;
 
-        // Fast path: check if same as last accessed block
-        if (blockIdx == lastBlockIdx && lastSegment != null) {
-            return lastSegment;
+        // Fast path: last accessed (avoid slot calculation if possible)
+        if (blockIdx == lastBlockIdx) {
+            BlockCacheValue<RefCountedMemorySegment> val = lastVal;
+            if (val != null && !val.isRetired()) {
+                return val.value().segment();
+            }
         }
 
         final int slotIdx = (int) (blockIdx & SLOT_MASK);
 
-        // Check if this slot contains the block we want
-        if (blockIndices[slotIdx] == blockIdx) {
-            MemorySegment segment = slots[slotIdx];
-            if (segment != null) {
-                // Update last accessed cache
+        // Slot lookup - single memory access, better cache locality
+        Slot slot = slots[slotIdx];
+        if (slot != null && slot.blockIdx == blockIdx) {
+            BlockCacheValue<RefCountedMemorySegment> val = slot.val;
+            if (val != null && !val.isRetired()) {
+                // Cache both slot and last reference atomically
                 lastBlockIdx = blockIdx;
-                lastSegment = segment;
-
-                // This slot proved useful - keep it longer by not updating it
-                return segment;
+                lastVal = val;
+                return val.value().segment();
             }
         }
 
-        final DirectIOBlockCacheKey key = new DirectIOBlockCacheKey(path, blockOff);
+        // Cache miss path - reuse pre-allocated key if possible
+        DirectIOBlockCacheKey key = slotKeys[slotIdx];
+        if (key == null || key.fileOffset() != blockOff) {
+            key = new DirectIOBlockCacheKey(path, blockOff);
+            slotKeys[slotIdx] = key; // Cache for future use
+        }
+        BlockCacheValue<RefCountedMemorySegment> val = cache.get(key);
 
-        Optional<BlockCacheValue<RefCountedMemorySegment>> maybeCache = cache.get(key);
-
-        MemorySegment segment;
-        if (maybeCache.isPresent()) {
-            segment = maybeCache.get().value().segment();
-        } else {
-            segment = cache.getOrLoad(key).value().segment();
+        if (val == null) {
+            val = cache.getOrLoad(key);
         }
 
+        // Single update point - create new slot record
+        slots[slotIdx] = new Slot(blockIdx, val);
         lastBlockIdx = blockIdx;
-        lastSegment = segment;
+        lastVal = val;
 
-        // Update slot only if it's wrong or empty (blocks are immutable)
-        // Since we had a cache miss, this slot either has wrong block or is empty
-        if (blockIndices[slotIdx] != blockIdx) {
-            blockIndices[slotIdx] = blockIdx;
-            slots[slotIdx] = segment;
-        }
-
-        return segment;
+        return val.value().segment();
     }
 
-    /**
-     * Clear all cached slots. Should be called when the IndexInput is closed
-     * to prevent memory leaks and allow GC of MemorySegments.
-     */
     public void clear() {
-        // Clear last accessed cache
         lastBlockIdx = -1;
-        lastSegment = null;
-
-        // Clear all slots
+        lastVal = null;
         for (int i = 0; i < SLOT_COUNT; i++) {
             slots[i] = null;
-            blockIndices[i] = -1;
+            slotKeys[i] = null; // Clear cached keys
         }
     }
 }

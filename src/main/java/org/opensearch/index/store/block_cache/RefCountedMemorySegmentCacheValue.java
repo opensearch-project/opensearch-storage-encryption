@@ -4,7 +4,8 @@
  */
 package org.opensearch.index.store.block_cache;
 
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -13,7 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>Contract:
  * <ul>
  *   <li>Cache owns one reference on construction (segment refcount starts >= 1).</li>
- *   <li>Callers must {@link #tryPin()} before accessing {@link #value()} and always {@link #unpin()} in a finally block.</li>
+ *   <li>Callers must {@link #isRetired()} before accessing {@link #value()} and always {@link #unpin()} in a finally block.</li>
  *   <li>When the cache removes this entry, it invokes {@link #close()} exactly once:
  *       this marks the value as retired (rejecting new pins) and drops the cache’s ref;
  *       the segment is actually freed when the last pin releases.</li>
@@ -26,7 +27,16 @@ public final class RefCountedMemorySegmentCacheValue implements BlockCacheValue<
 
     private final RefCountedMemorySegment seg; // must hold an initial ref on construction
     private final int length;
-    private final AtomicBoolean retired = new AtomicBoolean(false);
+
+    private static final VarHandle RETIRED;
+    static {
+        try {
+            RETIRED = MethodHandles.lookup().findVarHandle(RefCountedMemorySegmentCacheValue.class, "retired", boolean.class);
+        } catch (IllegalAccessException | NoSuchFieldException e) {
+            throw new Error(e);
+        }
+    }
+    private volatile boolean retired = false;
 
     /**
      * @param seg backing segment with a positive initial refcount (the cache’s hold)
@@ -44,26 +54,9 @@ public final class RefCountedMemorySegmentCacheValue implements BlockCacheValue<
         this.length = seg.length();
     }
 
-    public boolean tryPin() {
-        AtomicInteger rc = this.seg.getRefCount();
-        if (rc == null) {
-            return false;
-        }
-
-        while (!this.retired.get()) {
-            int r = rc.get();
-            if (r == 0) {
-                return false; // already released
-            }
-
-            if (rc.compareAndSet(r, r + 1)) {
-                return true; // successfully pinned
-            }
-
-            Thread.onSpinWait();
-        }
-
-        return false; // retired while we were spinning
+    @Override
+    public boolean isRetired() {
+        return retired; // plain volatile read
     }
 
     /** Releases a previously acquired pin. May free the segment if this was the last reference. */
@@ -80,9 +73,8 @@ public final class RefCountedMemorySegmentCacheValue implements BlockCacheValue<
      */
     @Override
     public void close() {
-        if (retired.compareAndSet(false, true)) {
+        if ((boolean) RETIRED.compareAndSet(this, false, true)) {
             // Drop the cache’s ownership reference. If no readers are pinned, this will free now.
-            // the uderlying memory.
             seg.decRef();
         }
     }
@@ -97,18 +89,5 @@ public final class RefCountedMemorySegmentCacheValue implements BlockCacheValue<
     @Override
     public int length() {
         return length;
-    }
-
-    /** True once this value has been removed from the cache and refuses new pins. */
-    @Override
-    public boolean isRetired() {
-        return retired.get();
-    }
-
-    @Override
-    public String toString() {
-        final AtomicInteger rc = seg.getRefCount();
-        final int r = (rc != null) ? rc.get() : -1;
-        return "RefCountedMemorySegmentCacheValue{len=" + length + ", retired=" + retired.get() + ", refs=" + r + "}";
     }
 }

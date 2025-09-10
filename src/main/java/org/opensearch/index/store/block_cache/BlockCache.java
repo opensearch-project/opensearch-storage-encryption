@@ -7,14 +7,13 @@ package org.opensearch.index.store.block_cache;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Map;
-import java.util.Optional;
 
 public interface BlockCache<T> {
 
     /**
      * Returns the block if cached, or null if absent.
      */
-    Optional<BlockCacheValue<T>> get(BlockCacheKey key);
+    BlockCacheValue<T> get(BlockCacheKey key);
 
     /**
      * Returns the block, loading it via `BlockLoader` if absent.

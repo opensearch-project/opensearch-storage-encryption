@@ -12,7 +12,6 @@ import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Optional;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -42,8 +41,8 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     }
 
     @Override
-    public Optional<BlockCacheValue<T>> get(BlockCacheKey key) {
-        return Optional.ofNullable(cache.getIfPresent(key));
+    public BlockCacheValue<T> get(BlockCacheKey key) {
+        return cache.getIfPresent(key);
     }
 
     /**
