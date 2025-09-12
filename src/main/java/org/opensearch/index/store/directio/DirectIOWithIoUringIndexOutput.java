@@ -4,6 +4,12 @@
  */
 package org.opensearch.index.store.directio;
 
+import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
+import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_WRITE_BUFFER_SIZE_POWER;
+
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
@@ -31,11 +37,6 @@ import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegmentCacheValue;
-import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
-import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_WRITE_BUFFER_SIZE_POWER;
 
 import io.netty.channel.IoEventLoopGroup;
 
@@ -220,10 +221,10 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
     private void prepareCacheBlocks(ByteBuffer source, int size, long baseOffset, List<CacheBlock> blocks) {
         int remaining = size;
         int sourcePos = 0;
-        
+
         while (remaining >= CACHE_BLOCK_SIZE) {
             long blockOffset = baseOffset + sourcePos;
-            
+
             // Only cache aligned blocks
             if ((blockOffset & CACHE_BLOCK_MASK) == 0) {
                 ByteBuffer blockSlice = source.duplicate();
@@ -231,7 +232,7 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
                 MemorySegment blockSegment = MemorySegment.ofBuffer(blockSlice);
                 blocks.add(new CacheBlock(blockSegment, blockOffset));
             }
-            
+
             sourcePos += CACHE_BLOCK_SIZE;
             remaining -= CACHE_BLOCK_SIZE;
         }
@@ -264,7 +265,7 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
     private static class CacheBlock {
         final MemorySegment segment;
         final long offset;
-        
+
         CacheBlock(MemorySegment segment, long offset) {
             this.segment = segment;
             this.offset = offset;

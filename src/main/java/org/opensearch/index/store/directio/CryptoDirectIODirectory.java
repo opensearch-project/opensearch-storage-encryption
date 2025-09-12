@@ -4,6 +4,9 @@
  */
 package org.opensearch.index.store.directio;
 
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
+
 import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.foreign.Arena;
@@ -28,8 +31,6 @@ import org.opensearch.index.store.block_cache.BlockLoader;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
@@ -88,6 +89,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         // Pre-generate cache keys for all blocks in this file
         final int totalBlocks = (int) ((size + CACHE_BLOCK_SIZE - 1) >>> CACHE_BLOCK_SIZE_POWER);
         final DirectIOBlockCacheKey[] preGeneratedKeys = new DirectIOBlockCacheKey[totalBlocks];
+
         // for (int i = 0; i < totalBlocks; i++) {
         // final long blockOffset = (long) i << CACHE_BLOCK_SIZE_POWER;
         // preGeneratedKeys[i] = new DirectIOBlockCacheKey(file, blockOffset);
@@ -123,16 +125,15 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-        // return new BufferIOWithCaching(
-        // name,
-        // path,
-        // fos,
-        // this.keyIvResolver.getDataKey().getEncoded(),
-        // keyIvResolver.getIvBytes(),
-        // this.memorySegmentPool,
-        // this.blockCache
-        // );
-        return new DirectIOWithIoUringIndexOutput(path, name, this.memorySegmentPool, this.blockCache, this.ioEventLoopGroup);
+        return new BufferIOWithCaching(
+            name,
+            path,
+            fos,
+            this.keyIvResolver.getDataKey().getEncoded(),
+            keyIvResolver.getIvBytes(),
+            this.memorySegmentPool,
+            this.blockCache
+        );
 
     }
 
@@ -147,17 +148,15 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-        // return new BufferIOWithCaching(
-        // name,
-        // path,
-        // fos,
-        // this.keyIvResolver.getDataKey().getEncoded(),
-        // keyIvResolver.getIvBytes(),
-        // this.memorySegmentPool,
-        // this.blockCache
-        // );
-
-        return new DirectIOWithIoUringIndexOutput(path, name, this.memorySegmentPool, this.blockCache, this.ioEventLoopGroup);
+        return new BufferIOWithCaching(
+            name,
+            path,
+            fos,
+            this.keyIvResolver.getDataKey().getEncoded(),
+            keyIvResolver.getIvBytes(),
+            this.memorySegmentPool,
+            this.blockCache
+        );
     }
 
     // only close resources owned by this directory type.
@@ -166,7 +165,6 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     @SuppressWarnings("ConvertToTryWithResources")
     public synchronized void close() throws IOException {
         readAheadworker.close();
-        blockCache.clear();
     }
 
     @Override

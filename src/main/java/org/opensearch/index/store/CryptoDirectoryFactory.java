@@ -6,7 +6,6 @@ package org.opensearch.index.store;
 
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_INITIAL_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.MAX_CACHE_SIZE;
 import static org.opensearch.index.store.directio.DirectIoConfigs.READ_AHEAD_QUEUE_SIZE;
 import static org.opensearch.index.store.directio.DirectIoConfigs.RESEVERED_POOL_SIZE_IN_BYTES;
 import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
@@ -20,6 +19,9 @@ import java.security.Security;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 import org.apache.logging.log4j.LogManager;
@@ -76,6 +78,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectoryFactory.class);
 
     private static volatile Pool<MemorySegment> sharedSegmentPool;
+    private static volatile BlockCache<RefCountedMemorySegment> sharedBlockCache;
     private static final Object initLock = new Object();
 
     /**
@@ -197,23 +200,20 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         }
     }
 
+    @SuppressWarnings("unchecked")
     private CryptoDirectIODirectory createCryptoDirectIODirectory(
         Path location,
         LockFactory lockFactory,
         Provider provider,
         KeyIvResolver keyIvResolver
     ) throws IOException {
-        ensureSharedPoolInitialized();
-
-        BlockLoader<MemorySegment> loader = new CryptoDirectIOSegmentBlockLoader(sharedSegmentPool, keyIvResolver);
-
         /*
         * ================================
-        * Block Cache with RefCountedMemorySegment
+        * Shared Block Cache with RefCountedMemorySegment
         * ================================
         *
-        * This Caffeine cache stores decrypted MemorySegment blocks for direct I/O access,
-        * using reference counting to ensure safe reuse across multiple readers.
+        * This shared Caffeine cache stores decrypted MemorySegment blocks for direct I/O access,
+        * using reference counting to ensure safe reuse across multiple readers and directories.
         *
         * Cache Type:
         * ------------
@@ -232,24 +232,11 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         *   MemorySegment is released via a `SegmentReleaser` (typically returning
         *   the segment to a pool or freeing it).
         *
-        * Eviction Semantics:
-        * --------------------
-        * - We use `expireAfterAccess` + `maximumSize` to control cache lifecycle.
-        * - When an entry is evicted from the cache:
-        *     → It is removed from the map.
-        *     → Its associated segment is not released immediately if refCount > 1.
-        *     → Only when all holders release the segment (refCount → 0), the memory is returned.
-        *
-        * Implication:
-        * --------------------
-        * - This design decouples **cache visibility** from **memory lifetime**.
-        *   Even if a segment is evicted from cache, it may continue to live
-        *   until all active holders release it.
-        *
-        * - This also means:
-        *     → If the segment is heavily referenced (e.g., during merges), it will stay alive.
-        *     → If the pool is full, new segments may bypass the cache entirely.
-        *     → Under memory pressure, we still maintain correctness by relying on ref-counting.
+        * Global Sharing:
+        * ---------------
+        * - The cache is now shared across all CryptoDirectIODirectory instances per node,
+        *   improving memory efficiency and cache hit rates across different indexes.
+        * - Cache size matches the pool size to ensure optimal memory utilization.
         *
         * Threading:
         * -----------
@@ -258,26 +245,20 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         * 
         */
 
-        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> cache = Caffeine
-            .newBuilder()
-            .initialCapacity(CACHE_INITIAL_SIZE)
-            .recordStats()
-            .maximumSize(MAX_CACHE_SIZE)
-            .removalListener((BlockCacheKey key, BlockCacheValue<RefCountedMemorySegment> value, RemovalCause cause) -> {
-                if (value != null) {
-                    try {
-                        value.close();
-                    } catch (Throwable t) {
-                        LOGGER.warn("Failed to close a cached value during eviction ", t);
-                    }
-                }
-            })
-            .build();
+        // Create a per-directory loader that knows about this specific keyIvResolver
+        BlockLoader<MemorySegment> loader = new CryptoDirectIOSegmentBlockLoader(sharedSegmentPool, keyIvResolver);
 
-        BlockCache<RefCountedMemorySegment> blockCache = new CaffeineBlockCache<>(cache, loader, sharedSegmentPool, MAX_CACHE_SIZE);
+        // Create a directory-specific cache that wraps the shared cache with this directory's loader
+        long maxBlocks = RESEVERED_POOL_SIZE_IN_BYTES / CACHE_BLOCK_SIZE;
+        BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
+            ((CaffeineBlockCache<RefCountedMemorySegment, MemorySegment>) sharedBlockCache).getCache(),
+            loader,
+            sharedSegmentPool,
+            maxBlocks
+        );
 
         int threads = Math.max(4, Runtime.getRuntime().availableProcessors() / 4);
-        Worker readaheadWorker = new QueuingWorker(READ_AHEAD_QUEUE_SIZE, threads, blockCache);
+        Worker readaheadWorker = new QueuingWorker(READ_AHEAD_QUEUE_SIZE, threads, directoryCache);
         IoEventLoopGroup sharedEventLoopGroup = new MultiThreadIoEventLoopGroup(threads, IoUringIoHandler.newFactory());
 
         return new CryptoDirectIODirectory(
@@ -286,34 +267,81 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             provider,
             keyIvResolver,
             sharedSegmentPool,
-            blockCache,
+            directoryCache,
             loader,
             readaheadWorker,
             sharedEventLoopGroup
         );
     }
 
-    private void ensureSharedPoolInitialized() {
-        if (sharedSegmentPool == null) {
+    /**
+     * Initialize the shared MemorySegmentPool and BlockCache once per node.
+     * This method is called from CryptoDirectoryPlugin.createComponents().
+     */
+    @SuppressWarnings("DoubleCheckedLocking")
+    public static void initializeSharedPool() {
+        if (sharedSegmentPool == null || sharedBlockCache == null) {
             synchronized (initLock) {
-                if (sharedSegmentPool == null) {
+                if (sharedSegmentPool == null || sharedBlockCache == null) {
                     long maxBlocks = RESEVERED_POOL_SIZE_IN_BYTES / CACHE_BLOCK_SIZE;
+
+                    // Initialize shared pool
                     sharedSegmentPool = new MemorySegmentPool(RESEVERED_POOL_SIZE_IN_BYTES, CACHE_BLOCK_SIZE);
                     LOGGER
                         .info(
-                            "Creating pool with sizeBytes={}, segmentSize={}, totalSegments={}",
+                            "Creating shared pool with sizeBytes={}, segmentSize={}, totalSegments={}",
                             RESEVERED_POOL_SIZE_IN_BYTES,
                             CACHE_BLOCK_SIZE,
-                            RESEVERED_POOL_SIZE_IN_BYTES / CACHE_BLOCK_SIZE
+                            maxBlocks
                         );
                     sharedSegmentPool.warmUp((long) (maxBlocks * WARM_UP_PERCENTAGE));
+
+                    ThreadPoolExecutor cacheExec = new ThreadPoolExecutor(2, 4, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<>(), r -> {
+                        Thread t = new Thread(r, "block-cache-maint");
+                        t.setDaemon(true);
+                        return t;
+                    },
+                        new ThreadPoolExecutor.CallerRunsPolicy() // drop excess, avoid caller runs
+                    );
+
+                    Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> cache = Caffeine
+                        .newBuilder()
+                        .initialCapacity(CACHE_INITIAL_SIZE)
+                        .recordStats()
+                        .maximumSize(maxBlocks)
+                        .evictionListener((BlockCacheKey key, BlockCacheValue<RefCountedMemorySegment> value, RemovalCause cause) -> {
+                            if (value != null && cause == RemovalCause.SIZE) {
+                                try {
+                                    value.close();
+                                } catch (Throwable t) {
+                                    LOGGER.warn("Failed to close a cached value during eviction ", t);
+                                }
+                            }
+                        })
+                        .removalListener((key, value, cause) -> {
+                            if (value != null && cause != RemovalCause.SIZE) {
+                                cacheExec.execute(() -> {
+                                    try {
+                                        value.close();
+                                    } catch (Throwable t) {
+                                        LOGGER.warn("Failed to close cached value during removal {}", key, t);
+                                    }
+                                });
+                            }
+                        })
+                        .build();
+
+                    sharedBlockCache = new CaffeineBlockCache<>(cache, null, sharedSegmentPool, maxBlocks);
+
+                    LOGGER.info("Creating shared block cache with maxSize={}, poolSize={}", maxBlocks, maxBlocks);
+
                     startTelemetry();
                 }
             }
         }
     }
 
-    private void publishPoolStats() {
+    private static void publishPoolStats() {
         try {
             LOGGER.info("{}", sharedSegmentPool.poolStats());
         } catch (Exception e) {
@@ -321,7 +349,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         }
     }
 
-    private void startTelemetry() {
+    private static void startTelemetry() {
         Thread loggerThread = new Thread(() -> {
             while (true) {
                 try {

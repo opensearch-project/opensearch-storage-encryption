@@ -55,8 +55,31 @@ public final class RefCountedMemorySegmentCacheValue implements BlockCacheValue<
     }
 
     @Override
-    public boolean isRetired() {
-        return retired; // plain volatile read
+    public boolean tryPin() {
+        AtomicInteger rc = this.seg.getRefCount();
+        if (rc == null) {
+            return false;
+        }
+
+        try {
+            while (!this.retired) {
+                int r = rc.get();
+                if (r == 0) {
+                    return false; // already released
+                }
+
+                if (rc.compareAndSet(r, r + 1)) {
+                    return true; // successfully pinned
+                }
+
+                Thread.onSpinWait();
+            }
+
+            return false; // retired while we were spinning
+        } catch (IllegalStateException e) {
+            // Race condition occurred - segment was released during pinning attempt
+            return false;
+        }
     }
 
     /** Releases a previously acquired pin. May free the segment if this was the last reference. */
@@ -89,5 +112,11 @@ public final class RefCountedMemorySegmentCacheValue implements BlockCacheValue<
     @Override
     public int length() {
         return length;
+    }
+
+    /** Returns true if this value has been retired from the cache. */
+    @Override
+    public boolean isRetired() {
+        return this.retired;
     }
 }

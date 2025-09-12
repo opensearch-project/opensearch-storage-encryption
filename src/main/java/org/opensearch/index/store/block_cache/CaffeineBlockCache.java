@@ -225,4 +225,13 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
             );
     }
 
+    /**
+     * Get the underlying Caffeine cache instance.
+     * This is used for sharing the cache storage across multiple BlockCache instances
+     * with different loaders.
+     */
+    public Cache<BlockCacheKey, BlockCacheValue<T>> getCache() {
+        return cache;
+    }
+
 }

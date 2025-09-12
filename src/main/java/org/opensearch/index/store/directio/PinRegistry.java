@@ -40,6 +40,96 @@ public final class PinRegistry {
         this.slotKeys = new DirectIOBlockCacheKey[SLOT_COUNT];
     }
 
+    public BlockCacheValue<RefCountedMemorySegment> acquireRefCountedValue(long blockOff) throws IOException {
+        final long blockIdx = blockOff >>> CACHE_BLOCK_SIZE_POWER;
+
+        // Fast path: last accessed (avoid slot calculation if possible)
+        if (blockIdx == lastBlockIdx) {
+            BlockCacheValue<RefCountedMemorySegment> val = lastVal;
+            if (val != null && !val.isRetired()) {
+                return val;
+            }
+        }
+
+        final int slotIdx = (int) (blockIdx & SLOT_MASK);
+
+        // Slot lookup - single memory access, better cache locality
+        Slot slot = slots[slotIdx];
+        if (slot != null && slot.blockIdx == blockIdx) {
+            BlockCacheValue<RefCountedMemorySegment> val = slot.val;
+            if (val != null && !val.isRetired()) {
+                // Cache both slot and last reference atomically
+                lastBlockIdx = blockIdx;
+                lastVal = val;
+                return val;
+            }
+        }
+
+        // Cache miss path - reuse pre-allocated key if possible
+        DirectIOBlockCacheKey key = slotKeys[slotIdx];
+        if (key == null || key.fileOffset() != blockOff) {
+            key = new DirectIOBlockCacheKey(path, blockOff);
+            slotKeys[slotIdx] = key; // Cache for future use
+        }
+        BlockCacheValue<RefCountedMemorySegment> val = cache.get(key);
+
+        if (val == null) {
+            val = cache.getOrLoad(key);
+        }
+
+        // Single update point - create new slot record
+        slots[slotIdx] = new Slot(blockIdx, val);
+        lastBlockIdx = blockIdx;
+        lastVal = val;
+
+        return val;
+    }
+
+    public RefCountedMemorySegment acquireRefCounted(long blockOff) throws IOException {
+        final long blockIdx = blockOff >>> CACHE_BLOCK_SIZE_POWER;
+
+        // Fast path: last accessed (avoid slot calculation if possible)
+        if (blockIdx == lastBlockIdx) {
+            BlockCacheValue<RefCountedMemorySegment> val = lastVal;
+            if (val != null && !val.isRetired()) {
+                return val.value();
+            }
+        }
+
+        final int slotIdx = (int) (blockIdx & SLOT_MASK);
+
+        // Slot lookup - single memory access, better cache locality
+        Slot slot = slots[slotIdx];
+        if (slot != null && slot.blockIdx == blockIdx) {
+            BlockCacheValue<RefCountedMemorySegment> val = slot.val;
+            if (val != null && !val.isRetired()) {
+                // Cache both slot and last reference atomically
+                lastBlockIdx = blockIdx;
+                lastVal = val;
+                return val.value();
+            }
+        }
+
+        // Cache miss path - reuse pre-allocated key if possible
+        DirectIOBlockCacheKey key = slotKeys[slotIdx];
+        if (key == null || key.fileOffset() != blockOff) {
+            key = new DirectIOBlockCacheKey(path, blockOff);
+            slotKeys[slotIdx] = key; // Cache for future use
+        }
+        BlockCacheValue<RefCountedMemorySegment> val = cache.get(key);
+
+        if (val == null) {
+            val = cache.getOrLoad(key);
+        }
+
+        // Single update point - create new slot record
+        slots[slotIdx] = new Slot(blockIdx, val);
+        lastBlockIdx = blockIdx;
+        lastVal = val;
+
+        return val.value();
+    }
+
     public MemorySegment acquire(long blockOff) throws IOException {
         final long blockIdx = blockOff >>> CACHE_BLOCK_SIZE_POWER;
 

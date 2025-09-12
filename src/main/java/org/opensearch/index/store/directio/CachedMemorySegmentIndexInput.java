@@ -6,18 +6,15 @@ package org.opensearch.index.store.directio;
 
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
 
 import java.io.EOFException;
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.MethodType;
-import java.lang.invoke.VarHandle;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
+import java.util.concurrent.locks.LockSupport;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -26,6 +23,7 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
 import org.apache.lucene.util.GroupVIntUtil;
 import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
@@ -39,13 +37,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     static final ValueLayout.OfInt LAYOUT_LE_INT = ValueLayout.JAVA_INT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
     static final ValueLayout.OfLong LAYOUT_LE_LONG = ValueLayout.JAVA_LONG_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
     static final ValueLayout.OfFloat LAYOUT_LE_FLOAT = ValueLayout.JAVA_FLOAT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
-
-    private static final VarHandle VH_MEMSEG_GET_INT = MethodHandles
-        .filterCoordinates(
-            LAYOUT_LE_INT.varHandle(),
-            0,
-            MethodHandles.identity(Object.class).asType(MethodType.methodType(MemorySegment.class, Object.class))
-        );
 
     final long length;
 
@@ -63,7 +54,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     // Single block cache for current access
     private long currentBlockOffset = -1;
-    private MemorySegment currentBlock = null;
+    private BlockCacheValue<RefCountedMemorySegment> currentBlock = null;
 
     // Cached offset from last getCacheBlockWithOffset call (avoid BlockAccess allocation)
     private int lastOffsetInBlock;
@@ -73,24 +64,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     // PinRegistry for per-file block caching
     private final PinRegistry pinRegistry;
-
-    private RefCountedMemorySegment pinSegment(RefCountedMemorySegment segment) {
-        if (segment != null) {
-            // segment.incRef(); // Direct pin without cache lookup
-        }
-        return segment;
-    }
-
-    private DirectIOBlockCacheKey getCacheKey(long blockOffset) {
-        final int index = (int) (blockOffset >>> CACHE_BLOCK_SIZE_POWER);
-        return preGeneratedKeys[index];
-    }
-
-    private void unpinSegment(RefCountedMemorySegment segment) {
-        if (segment != null) {
-            segment.decRef();
-        }
-    }
 
     public static CachedMemorySegmentIndexInput newInstance(
         String resourceDescription,
@@ -167,38 +140,68 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     }
 
     /**
-     * Optimized method to get both cache block and offset in one operation.
-     * Eliminates redundant position calculations between getCacheBlock() and getOffsetInBlock().
-     *
-     * @param pos position relative to this input
-     * @return MemorySegment for the cache block (offset available in lastOffsetInBlock)
-     * @throws IOException if cache loading fails
-     */
+    * Optimized method to get both cache block and offset in one operation.
+    * Handles cache eviction races by retrying pin attempts a bounded number of times.
+    *
+    * @param pos position relative to this input
+    * @return MemorySegment for the cache block (offset available in lastOffsetInBlock)
+    * @throws IOException if the block cannot be pinned after retries
+    */
     private MemorySegment getCacheBlockWithOffset(long pos) throws IOException {
         final long fileOffset = absoluteBaseOffset + pos;
         final long blockOffset = fileOffset & ~CACHE_BLOCK_MASK;
         final int offsetInBlock = (int) (fileOffset - blockOffset);
 
-        // Check current block cache
-        if (blockOffset == currentBlockOffset && currentBlock != null) {
+        // Fast path: reuse current block if still valid
+        if (blockOffset == currentBlockOffset && currentBlock != null && !currentBlock.isRetired()) {
             lastOffsetInBlock = offsetInBlock;
-            return currentBlock;
+            return currentBlock.value().segment();
         }
 
-        // Cache miss - use PinRegistry to acquire block
-        MemorySegment block = pinRegistry.acquire(blockOffset);
+        final int maxAttempts = 3;
+        BlockCacheValue<RefCountedMemorySegment> cacheValue = null;
 
-        // Update current block cache
+        for (int attempts = 0; attempts < maxAttempts; attempts++) {
+            // First attempt via PinRegistry, retries via cache loader
+            cacheValue = (attempts == 0)
+                ? pinRegistry.acquireRefCountedValue(blockOffset)
+                : blockCache.getOrLoad(new DirectIOBlockCacheKey(path, blockOffset));
+
+            if (cacheValue != null && cacheValue.tryPin()) {
+                // Successfully pinned
+                break;
+            }
+
+            if (attempts == maxAttempts - 1) {
+                throw new IOException(
+                    "Unable to pin memory segment for block at offset " + blockOffset + " after " + maxAttempts + " attempts"
+                );
+            }
+
+            // Brief backoff to allow eviction race to resolve
+            LockSupport.parkNanos(10_000L); // ~10µs
+        }
+
+        if (cacheValue == null) {
+            throw new IOException("Failed to acquire cache value for block at offset " + blockOffset);
+        }
+
+        RefCountedMemorySegment pinnedBlock = cacheValue.value();
+
+        // Swap in new block, unpin old
+        if (currentBlock != null) {
+            currentBlock.unpin();
+        }
         currentBlockOffset = blockOffset;
-        currentBlock = block;
+        currentBlock = cacheValue;
 
-        // Notify readahead manager about the cache miss
+        // Notify readahead manager (if needed)
         // if (readaheadManager != null && readaheadContext != null) {
         // readaheadManager.onCacheMiss(readaheadContext, blockOffset);
         // }
 
         lastOffsetInBlock = offsetInBlock;
-        return block;
+        return pinnedBlock.segment();
     }
 
     @Override
@@ -213,6 +216,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         } catch (IndexOutOfBoundsException ioobe) {
             throw handlePositionalIOOBE(ioobe, "read", currentPos);
         } catch (NullPointerException | IllegalStateException e) {
+            LOGGER.error("=====Hit an error {}=====", e);
+
             throw alreadyClosed(e);
         }
     }
@@ -256,6 +261,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         } catch (IndexOutOfBoundsException ioobe) {
             throw handlePositionalIOOBE(ioobe, "read", startPos);
         } catch (NullPointerException | IllegalStateException e) {
+            LOGGER.error("=====Hit an error {}=====", e);
             throw alreadyClosed(e);
         }
     }
@@ -667,6 +673,12 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
                 } catch (@SuppressWarnings("unused") IllegalStateException e) {
                     Thread.onSpinWait();
                 }
+            }
+
+            // Unpin current block before cleanup
+            if (currentBlock != null) {
+                currentBlock.unpin();
+                currentBlock = null;
             }
 
             // Clear pin registry slots to prevent memory leaks

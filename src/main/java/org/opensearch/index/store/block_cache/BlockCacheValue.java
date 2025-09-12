@@ -32,7 +32,7 @@ public interface BlockCacheValue<T> extends AutoCloseable {
      *
      * @return {@code true} if the caller acquired a pin and may access {@link #value()}, {@code false} otherwise
      */
-    boolean isRetired();
+    boolean tryPin();
 
     /**
      * Releases a previously acquired pin.
@@ -53,6 +53,12 @@ public interface BlockCacheValue<T> extends AutoCloseable {
      * @return logical size of this value in bytes (e.g., block length).
      */
     int length();
+
+    /**
+     * @return {@code true} if this value has been retired by the cache (removed/invalidated/evicted)
+     *         and will not accept new pins; existing pins may still be active until released.
+     */
+    boolean isRetired();
 
     /**
      * Retires this value from the cache and drops the cache’s reference.
