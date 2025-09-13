@@ -34,9 +34,9 @@ import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.async_io.IoUringFile;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
-import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegmentCacheValue;
+import org.opensearch.index.store.pool.Pool;
 
 import io.netty.channel.IoEventLoopGroup;
 

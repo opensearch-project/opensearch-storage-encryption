@@ -8,7 +8,6 @@ import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SI
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -17,6 +16,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.directio.DirectIOBlockCacheKey;
+import org.opensearch.index.store.pool.Pool;
 
 import com.github.benmanes.caffeine.cache.Cache;
 
@@ -188,8 +188,13 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
             throw new IllegalArgumentException("BlockLoader returned null segment");
         }
 
-        if (loadedBlock instanceof MemorySegment memSeg) {
-            RefCountedMemorySegment refSegment = new RefCountedMemorySegment(memSeg, CACHE_BLOCK_SIZE, seg -> segmentPool.release((V) seg));
+        // Handle SegmentHandle from MemorySegmentPool
+        if (loadedBlock instanceof org.opensearch.index.store.pool.MemorySegmentPool.SegmentHandle handle) {
+            RefCountedMemorySegment refSegment = new RefCountedMemorySegment(
+                handle.segment(),
+                CACHE_BLOCK_SIZE,
+                seg -> segmentPool.release(loadedBlock)
+            );
             return (BlockCacheValue<T>) new RefCountedMemorySegmentCacheValue(refSegment);
         }
 

@@ -10,7 +10,6 @@ import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SI
 import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.foreign.Arena;
-import java.lang.foreign.MemorySegment;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -29,9 +28,10 @@ import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockLoader;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
-import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.pool.MemorySegmentPool;
+import org.opensearch.index.store.pool.Pool;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
 import org.opensearch.index.store.read_ahead.Worker;
@@ -45,7 +45,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIODirectory.class);
     private final AtomicLong nextTempFileCounter = new AtomicLong();
 
-    private final Pool<MemorySegment> memorySegmentPool;
+    private final Pool<MemorySegmentPool.SegmentHandle> memorySegmentPool;
     private final BlockCache<RefCountedMemorySegment> blockCache;
     private final Worker readAheadworker;
     private final KeyIvResolver keyIvResolver;
@@ -56,9 +56,9 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         LockFactory lockFactory,
         Provider provider,
         KeyIvResolver keyIvResolver,
-        Pool<MemorySegment> memorySegmentPool,
+        Pool<MemorySegmentPool.SegmentHandle> memorySegmentPool,
         BlockCache<RefCountedMemorySegment> blockCache,
-        BlockLoader<MemorySegment> blockLoader,
+        BlockLoader<MemorySegmentPool.SegmentHandle> blockLoader,
         Worker worker,
         IoEventLoopGroup ioEventLoopGroup
     )

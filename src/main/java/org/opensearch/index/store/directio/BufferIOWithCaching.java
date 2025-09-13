@@ -21,10 +21,11 @@ import org.apache.lucene.store.OutputStreamIndexOutput;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
-import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegmentCacheValue;
 import org.opensearch.index.store.mmap.PanamaNativeAccess;
+import org.opensearch.index.store.pool.MemorySegmentPool;
+import org.opensearch.index.store.pool.Pool;
 
 /**
  * An IndexOutput implementation that encrypts data before writing using native
@@ -60,7 +61,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         OutputStream os,
         byte[] key,
         byte[] iv,
-        Pool<MemorySegment> memorySegmentPool,
+        Pool<MemorySegmentPool.SegmentHandle> memorySegmentPool,
         BlockCache<RefCountedMemorySegment> blockCache
     )
         throws IOException {
@@ -78,7 +79,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         private final byte[] iv;
         private final byte[] buffer;
         private final Path path;
-        private final Pool<MemorySegment> memorySegmentPool;
+        private final Pool<MemorySegmentPool.SegmentHandle> memorySegmentPool;
         private final BlockCache<RefCountedMemorySegment> blockCache;
 
         private int bufferPosition = 0;
@@ -90,7 +91,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             Path path,
             byte[] key,
             byte[] iv,
-            Pool<MemorySegment> memorySegmentPool,
+            Pool<MemorySegmentPool.SegmentHandle> memorySegmentPool,
             BlockCache<RefCountedMemorySegment> blockCache
         ) {
             super(os);
@@ -189,24 +190,24 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                 // Cache only fully-aligned full blocks
                 if (blockOffset == 0 && chunkLen == CACHE_BLOCK_SIZE) {
                     try {
-                        if (!memorySegmentPool.isUnderPressure()) {
-                            final MemorySegment pooled = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
-                            if (pooled != null) {
-                                final MemorySegment pooledSlice = pooled.asSlice(0, CACHE_BLOCK_SIZE);
-                                MemorySegment.copy(full, arrayOffset + offsetInBuffer, pooledSlice, 0, CACHE_BLOCK_SIZE);
+                        final MemorySegmentPool.SegmentHandle handle = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
+                        if (handle != null) {
+                            final MemorySegment pooled = handle.segment();
+                            final MemorySegment pooledSlice = pooled.asSlice(0, CACHE_BLOCK_SIZE);
+                            MemorySegment.copy(full, arrayOffset + offsetInBuffer, pooledSlice, 0, CACHE_BLOCK_SIZE);
 
-                                BlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, blockAlignedOffset);
-                                RefCountedMemorySegment refSegment = new RefCountedMemorySegment(
-                                    pooled,
-                                    CACHE_BLOCK_SIZE,
-                                    seg -> memorySegmentPool.release(pooled)
-                                );
-                                RefCountedMemorySegmentCacheValue cacheValue = new RefCountedMemorySegmentCacheValue(refSegment);
-                                blockCache.put(cacheKey, cacheValue);
-                            } else {
-                                LOGGER.info("Failed to acquire from pool within specificed timeout path={} {} ms", path, 5);
-                            }
+                            BlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, blockAlignedOffset);
+                            RefCountedMemorySegment refSegment = new RefCountedMemorySegment(
+                                pooled,
+                                CACHE_BLOCK_SIZE,
+                                seg -> handle.release()  // Release back to the correct tier!
+                            );
+                            RefCountedMemorySegmentCacheValue cacheValue = new RefCountedMemorySegmentCacheValue(refSegment);
+                            blockCache.put(cacheKey, cacheValue);
+                        } else {
+                            LOGGER.info("Failed to acquire from pool within specificed timeout path={} {} ms", path, 5);
                         }
+
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                         LOGGER.warn("Interrupted while acquiring segment for cache.");

@@ -21,23 +21,24 @@ import java.util.concurrent.TimeUnit;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.index.store.block_cache.BlockLoader;
-import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.pool.MemorySegmentPool;
+import org.opensearch.index.store.pool.Pool;
 
 @SuppressWarnings("preview")
-public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegment> {
+public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegmentPool.SegmentHandle> {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOSegmentBlockLoader.class);
 
-    private final Pool<MemorySegment> segmentPool;
+    private final Pool<MemorySegmentPool.SegmentHandle> segmentPool;
     private final KeyIvResolver keyIvResolver;
 
-    public CryptoDirectIOSegmentBlockLoader(Pool<MemorySegment> segmentPool, KeyIvResolver keyIvResolver) {
+    public CryptoDirectIOSegmentBlockLoader(Pool<MemorySegmentPool.SegmentHandle> segmentPool, KeyIvResolver keyIvResolver) {
         this.segmentPool = segmentPool;
         this.keyIvResolver = keyIvResolver;
     }
 
     @Override
-    public MemorySegment[] load(Path filePath, long startOffset, long blockCount) throws Exception {
+    public MemorySegmentPool.SegmentHandle[] load(Path filePath, long startOffset, long blockCount) throws Exception {
         if (!Files.exists(filePath)) {
             throw new NoSuchFileException(filePath.toString());
         }
@@ -50,11 +51,7 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
             throw new IllegalArgumentException("blockCount must be positive: " + blockCount);
         }
 
-        if (segmentPool.isUnderPressure()) {
-            throw new PoolPressureException("Memory segment pool is under pressure");
-        }
-
-        MemorySegment[] result = new MemorySegment[(int) blockCount];
+        MemorySegmentPool.SegmentHandle[] result = new MemorySegmentPool.SegmentHandle[(int) blockCount];
         long readLength = blockCount << CACHE_BLOCK_SIZE_POWER;
 
         try (
@@ -65,7 +62,7 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
             long bytesRead = bulkEncrypted.byteSize();
 
             if (bytesRead == 0) {
-                throw new BlockLoadFailedException("EOF or empty read at offset " + startOffset);
+                throw new RuntimeException("EOF or empty read at offset " + startOffset);
             }
 
             int blockIndex = 0;
@@ -73,10 +70,12 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
 
             try {
                 while (blockIndex < blockCount && bytesCopied < bytesRead) {
-                    MemorySegment pooled = segmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
-                    if (pooled == null) {
-                        throw new PoolAcquireFailedException("Timeout acquiring segment from pool");
+                    MemorySegmentPool.SegmentHandle handle = segmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
+                    if (handle == null) {
+                        throw new RuntimeException("Timeout acquiring segment from pool");
                     }
+
+                    MemorySegment pooled = handle.segment();
 
                     int remaining = (int) (bytesRead - bytesCopied);
                     int toCopy = Math.min(CACHE_BLOCK_SIZE, remaining);
@@ -85,13 +84,13 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
                         MemorySegment.copy(bulkEncrypted, bytesCopied, pooled, 0, toCopy);
                     }
 
-                    result[blockIndex++] = pooled;
+                    result[blockIndex++] = handle;  // Store the handle, not the segment
                     bytesCopied += toCopy;
                 }
 
-            } catch (InterruptedException | PoolAcquireFailedException e) {
-                releaseSegments(result, blockIndex);
-                throw new BlockLoadFailedException("Failed to load blocks", e);
+            } catch (InterruptedException e) {
+                releaseHandles(result, blockIndex);
+                throw new RuntimeException("Failed to load blocks", e);
             }
 
             LOGGER
@@ -114,12 +113,11 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
         }
     }
 
-    private void releaseSegments(MemorySegment[] segments, int upTo) {
+    private void releaseHandles(MemorySegmentPool.SegmentHandle[] handles, int upTo) {
         for (int i = 0; i < upTo; i++) {
-            if (segments[i] != null) {
-                segmentPool.release(segments[i]);
+            if (handles[i] != null) {
+                handles[i].release();  // Release back to correct tier
             }
         }
     }
-
 }

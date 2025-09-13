@@ -2,7 +2,7 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.block_cache;
+package org.opensearch.index.store.pool;
 
 import java.util.concurrent.TimeUnit;
 
@@ -26,4 +26,6 @@ public interface Pool<T> {
     String poolStats();
 
     void close();
+
+    boolean isClosed();
 }

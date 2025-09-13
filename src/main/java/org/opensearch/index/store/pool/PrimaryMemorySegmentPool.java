@@ -2,7 +2,7 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.block_cache;
+package org.opensearch.index.store.pool;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -18,7 +18,7 @@ import org.opensearch.common.SuppressForbidden;
 
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "uses custom DirectIO")
-public class MemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
+public class PrimaryMemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
     private static final Logger LOGGER = LogManager.getLogger(MemorySegmentPool.class);
 
     private final ReentrantLock lock = new ReentrantLock();
@@ -39,8 +39,8 @@ public class MemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
     /**
      * Creates a pool with lazy allocation and optional zeroing
      */
-    public MemorySegmentPool(long totalMemory, int segmentSize) {
-        this(totalMemory, segmentSize, false, true);
+    public PrimaryMemorySegmentPool(long totalMemory, int segmentSize) {
+        this(totalMemory, segmentSize, true);
     }
 
     /**
@@ -48,10 +48,9 @@ public class MemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
      * 
      * @param totalMemory total memory to manage
      * @param segmentSize size of each segment
-     * @param preallocate if true, allocate all segments upfront; if false, allocate lazily
      * @param requiresZeroing if true, zero segments on release; if false, skip for performance
      */
-    public MemorySegmentPool(long totalMemory, int segmentSize, boolean preallocate, boolean requiresZeroing) {
+    public PrimaryMemorySegmentPool(long totalMemory, int segmentSize, boolean requiresZeroing) {
         if (totalMemory % segmentSize != 0) {
             throw new IllegalArgumentException("Total memory must be a multiple of segment size");
         }
@@ -60,44 +59,32 @@ public class MemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
         this.maxSegments = (int) (totalMemory / segmentSize);
         this.sharedArena = Arena.ofShared();
         this.requiresZeroing = requiresZeroing;
-
-        if (preallocate) {
-            // Pre-allocate all segments for predictable performance
-            lock.lock();
-            try {
-                for (int i = 0; i < maxSegments; i++) {
-                    freeList.add(sharedArena.allocate(segmentSize));
-                }
-                allocatedSegments = maxSegments;
-                cachedFreeListSize = maxSegments;
-            } finally {
-                lock.unlock();
-            }
-        }
     }
 
     @Override
     public MemorySegment acquire() throws InterruptedException {
         lock.lock();
         try {
-            while (freeList.isEmpty()) {
-                if (allocatedSegments < maxSegments) {
-                    MemorySegment segment = sharedArena.allocate(segmentSize);
-                    allocatedSegments++;
-                    return segment;
-                }
-
-                if (closed) {
-                    throw new IllegalStateException("Pool is closed");
-                }
-
-                // Wait for a segment to be released
-                notEmpty.await();
+            // Try to get from free list first
+            if (!freeList.isEmpty()) {
+                MemorySegment segment = freeList.removeFirst();
+                cachedFreeListSize = freeList.size();
+                return segment;
             }
 
-            MemorySegment segment = freeList.removeFirst();
-            cachedFreeListSize = freeList.size();
-            return segment;
+            // Try to allocate new segment if under capacity
+            if (allocatedSegments < maxSegments) {
+                MemorySegment segment = sharedArena.allocate(segmentSize);
+                allocatedSegments++;
+                LOGGER.trace("Allocated new segment, total allocated: {}", allocatedSegments);
+                return segment;
+            }
+
+            if (closed) {
+                throw new IllegalStateException("Pool is closed");
+            }
+
+            throw new PrimaryPoolExhaustedException();
         } finally {
             lock.unlock();
         }
@@ -107,40 +94,33 @@ public class MemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
     public MemorySegment tryAcquire(long timeout, TimeUnit unit) throws InterruptedException {
         lock.lock();
         try {
-            long nanos = unit.toNanos(timeout);
-
-            while (freeList.isEmpty()) {
-                if (allocatedSegments < maxSegments) {
-                    MemorySegment segment = sharedArena.allocate(segmentSize);
-                    allocatedSegments++;
-                    return segment;
-                }
-
-                if (closed) {
-                    LOGGER.error("Pool is closed - cannot acquire segment");
-                    throw new IllegalStateException("Pool is closed");
-                }
-
-                if (nanos <= 0) {
-                    LOGGER
-                        .debug(
-                            "Pool exhausted: Failed to acquire segment within {}ms. "
-                                + "Pool stats: allocated={}/{}, free={}, waiting for segments to be released",
-                            unit.toMillis(timeout),
-                            allocatedSegments,
-                            maxSegments,
-                            freeList.size()
-                        );
-                    return null;
-                }
-                nanos = notEmpty.awaitNanos(nanos);
+            if (!freeList.isEmpty()) {
+                MemorySegment segment = freeList.removeFirst();
+                cachedFreeListSize = freeList.size();
+                LOGGER.trace("Acquired segment from free list: remaining free={}", cachedFreeListSize);
+                return segment;
             }
 
-            MemorySegment segment = freeList.removeFirst();
-            cachedFreeListSize = freeList.size();
+            // Try to allocate new segment if under capacity
+            if (allocatedSegments < maxSegments) {
+                MemorySegment segment = sharedArena.allocate(segmentSize);
+                allocatedSegments++;
+                return segment;
+            }
 
-            LOGGER.trace("Acquired segment from free list: remaining free={}", cachedFreeListSize);
-            return segment;
+            if (closed) {
+                LOGGER.error("Pool is closed - cannot acquire segment");
+                throw new IllegalStateException("Pool is closed");
+            }
+
+            LOGGER
+                .debug(
+                    "Pool exhausted: no free segments available. Pool stats: allocated={}/{}, free={}",
+                    allocatedSegments,
+                    maxSegments,
+                    freeList.size()
+                );
+            throw new PrimaryPoolExhaustedException();
         } finally {
             lock.unlock();
         }
@@ -322,5 +302,10 @@ public class MemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
                     pressureRatio * 100
                 );
         }
+    }
+
+    @Override
+    public boolean isClosed() {
+        return closed;
     }
 }

@@ -11,7 +11,6 @@ import static org.opensearch.index.store.directio.DirectIoConfigs.RESEVERED_POOL
 import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
 
 import java.io.IOException;
-import java.lang.foreign.MemorySegment;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Provider;
@@ -45,8 +44,6 @@ import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.BlockLoader;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
-import org.opensearch.index.store.block_cache.MemorySegmentPool;
-import org.opensearch.index.store.block_cache.Pool;
 import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
 import org.opensearch.index.store.directio.CryptoDirectIODirectory;
 import org.opensearch.index.store.directio.CryptoDirectIOSegmentBlockLoader;
@@ -56,6 +53,8 @@ import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.mmap.EagerDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.mmap.LazyDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
+import org.opensearch.index.store.pool.MemorySegmentPool;
+import org.opensearch.index.store.pool.Pool;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.index.store.read_ahead.impl.QueuingWorker;
 import org.opensearch.plugins.IndexStorePlugin;
@@ -77,7 +76,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
 
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectoryFactory.class);
 
-    private static volatile Pool<MemorySegment> sharedSegmentPool;
+    private static volatile Pool<MemorySegmentPool.SegmentHandle> sharedSegmentPool;
     private static volatile BlockCache<RefCountedMemorySegment> sharedBlockCache;
     private static final Object initLock = new Object();
 
@@ -246,12 +245,12 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         */
 
         // Create a per-directory loader that knows about this specific keyIvResolver
-        BlockLoader<MemorySegment> loader = new CryptoDirectIOSegmentBlockLoader(sharedSegmentPool, keyIvResolver);
+        BlockLoader<MemorySegmentPool.SegmentHandle> loader = new CryptoDirectIOSegmentBlockLoader(sharedSegmentPool, keyIvResolver);
 
         // Create a directory-specific cache that wraps the shared cache with this directory's loader
         long maxBlocks = RESEVERED_POOL_SIZE_IN_BYTES / CACHE_BLOCK_SIZE;
         BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
-            ((CaffeineBlockCache<RefCountedMemorySegment, MemorySegment>) sharedBlockCache).getCache(),
+            ((CaffeineBlockCache<RefCountedMemorySegment, MemorySegmentPool.SegmentHandle>) sharedBlockCache).getCache(),
             loader,
             sharedSegmentPool,
             maxBlocks
