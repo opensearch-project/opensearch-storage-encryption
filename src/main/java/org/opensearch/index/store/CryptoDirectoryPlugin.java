@@ -10,6 +10,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
+import java.util.Optional;
 
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
@@ -18,6 +19,10 @@ import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
+import org.opensearch.index.IndexModule;
+import org.opensearch.index.IndexSettings;
+import org.opensearch.index.engine.EngineFactory;
+import org.opensearch.plugins.EnginePlugin;
 import org.opensearch.plugins.IndexStorePlugin;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.repositories.RepositoriesService;
@@ -29,7 +34,7 @@ import org.opensearch.watcher.ResourceWatcherService;
 /**
  * A plugin that enables index level encryption and decryption.
  */
-public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin {
+public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, EnginePlugin {
 
     /**
      * The default constructor.
@@ -51,7 +56,19 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin {
      */
     @Override
     public Map<String, DirectoryFactory> getDirectoryFactories() {
-        return java.util.Collections.singletonMap("cryptofs", new CryptoDirectoryFactory());
+        return Collections.singletonMap("cryptofs", new CryptoDirectoryFactory());
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {
+        // Only provide our custom engine factory for cryptofs indices
+        if ("cryptofs".equals(indexSettings.getValue(IndexModule.INDEX_STORE_TYPE_SETTING))) {
+            return Optional.of(new CryptoEngineFactory());
+        }
+        return Optional.empty();
     }
 
     @Override

@@ -4,7 +4,7 @@ This guide helps developers get started with building and testing the OpenSearch
 
 ## Prerequisites
 
-1. JDK 21 or higher
+1. JDK 24 or higher
 2. Git
 3. Gradle
 4. AWS Account (for KMS integration testing)
@@ -130,8 +130,6 @@ add_jvm_option() {
 }
 
 # Add required JVM options
-add_jvm_option "--enable-preview"
-add_jvm_option "--enable-native-access=ALL-UNNAMED"
 add_jvm_option "-XX:MaxDirectMemorySize=${JVM_DIRECT_MEM_SIZE}"
 ```
 

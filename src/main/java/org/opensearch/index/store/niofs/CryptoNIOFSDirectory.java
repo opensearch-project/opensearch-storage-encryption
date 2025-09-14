@@ -13,15 +13,12 @@ import java.nio.file.StandardOpenOption;
 import java.security.Provider;
 import java.util.concurrent.atomic.AtomicLong;
 
-import javax.crypto.Cipher;
-
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.apache.lucene.store.NIOFSDirectory;
 import org.opensearch.common.util.io.IOUtils;
-import org.opensearch.index.store.cipher.AesCipherFactory;
 import org.opensearch.index.store.iv.KeyIvResolver;
 
 /**
@@ -54,14 +51,10 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         boolean success = false;
 
         try {
-            Cipher cipher = AesCipherFactory.getCipher(provider);
-            AesCipherFactory.initCipher(cipher, keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), Cipher.DECRYPT_MODE, 0);
-
             final IndexInput indexInput = new CryptoBufferedIndexInput(
                 "CryptoBufferedIndexInput(path=\"" + path + "\")",
                 fc,
                 context,
-                cipher,
                 this.keyIvResolver
             );
             success = true;
@@ -84,7 +77,7 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
 
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-        return new CryptoOutputStreamIndexOutput(name, path, fos, this.keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
+        return new CryptoOutputStreamIndexOutput(name, path, fos, this.keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), provider);
     }
 
     @Override
@@ -98,7 +91,7 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-        return new CryptoOutputStreamIndexOutput(name, path, fos, this.keyIvResolver.getDataKey().getEncoded(), keyIvResolver.getIvBytes());
+        return new CryptoOutputStreamIndexOutput(name, path, fos, this.keyIvResolver.getDataKey(), keyIvResolver.getIvBytes(), provider);
     }
 
     @Override

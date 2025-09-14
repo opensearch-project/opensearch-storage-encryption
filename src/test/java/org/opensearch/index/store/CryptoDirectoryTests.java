@@ -4,6 +4,8 @@
  */
 package org.opensearch.index.store;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -158,5 +160,54 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
             writer.join();
             reader.join();
         } */
+    }
+
+    public void testRandomAccessWithCryptoOutput() throws Exception {
+        try (Directory dir = getDirectory(createTempDir())) {
+            String fileName = "test-random-access";
+            int blockSize = 16;
+            int dataSize = blockSize * 3;
+
+            // Generate predictable random data
+            byte[] testData = new byte[dataSize];
+            java.util.Random rnd = new java.util.Random(42); // Fixed seed for predictability
+            rnd.nextBytes(testData);
+
+            // Write data using CryptoOutput
+            try (IndexOutput output = dir.createOutput(fileName, newIOContext(random()))) {
+                output.writeBytes(testData, testData.length);
+            }
+
+            // Read randomly at different positions
+            try (IndexInput input = dir.openInput(fileName, newIOContext(random()))) {
+                // Test reading from start
+                input.seek(0);
+                assertEquals(testData[0], input.readByte());
+
+                // Test reading from middle of first block
+                input.seek(8);
+                assertEquals(testData[8], input.readByte());
+
+                // Test reading from start of second block
+                input.seek(blockSize);
+                assertEquals(testData[blockSize], input.readByte());
+
+                // Test reading from middle of second block
+                input.seek(blockSize + 8);
+                assertEquals(testData[blockSize + 8], input.readByte());
+
+                // Test reading from start of third block
+                input.seek(blockSize * 2);
+                assertEquals(testData[blockSize * 2], input.readByte());
+
+                // Test reading multiple bytes at random position
+                input.seek(5);
+                byte[] buffer = new byte[10];
+                input.readBytes(buffer, 0, 10);
+                for (int i = 0; i < 10; i++) {
+                    assertEquals(testData[5 + i], buffer[i]);
+                }
+            }
+        }
     }
 }

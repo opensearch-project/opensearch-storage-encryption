@@ -11,13 +11,13 @@
 
 buildscript {
     ext {
-        opensearch_version = System.getProperty("opensearch.version", "3.1.0-SNAPSHOT")
+        opensearch_version = System.getProperty("opensearch.version", "3.2.0-SNAPSHOT")
     }
 
     repositories {
         mavenCentral()
         mavenLocal()
-        maven { url "https://aws.oss.sonatype.org/content/repositories/snapshots" }
+        maven { url "https://central.sonatype.com/repository/maven-snapshots/" }
     }
 
     dependencies {
@@ -47,6 +47,7 @@ opensearchplugin {
     name 'storage-encryption'
     description 'Encrypts and decrypts index data at rest.'
     classname 'org.opensearch.index.store.CryptoDirectoryPlugin'
+    version opensearch_version
 }
 
 repositories {
@@ -57,9 +58,7 @@ repositories {
 
 dependencies {
     compileOnly "org.opensearch:opensearch:${opensearch_version}"
-    
     runtimeOnly "org.apache.logging.log4j:log4j-slf4j-impl:${versions.log4j}"
-    
     testImplementation "org.opensearch.test:framework:${opensearch_version}"
     testImplementation "commons-io:commons-io:2.13.0"
 
@@ -87,10 +86,6 @@ test {
         showStandardStreams = true
     }
     systemProperty 'tests.security.manager', 'false'
-    jvmArgs += [
-        '--enable-preview',
-        '--enable-native-access=ALL-UNNAMED'
-    ]
 }
 
 tasks.named('internalClusterTest').configure {
@@ -100,39 +95,25 @@ tasks.named('internalClusterTest').configure {
         events "passed", "skipped", "failed"
         showStandardStreams = true
     }
-    jvmArgs += [
-        '--enable-preview',
-        '--enable-native-access=ALL-UNNAMED'
-    ]
-}
-
-tasks.named("yamlRestTest").configure {
-    jvmArgs += "--enable-preview"
-    jvmArgs += "--enable-native-access=ALL-UNNAMED"
 }
 
 compileJava {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = JavaVersion.VERSION_24
+    targetCompatibility = JavaVersion.VERSION_24
     options.encoding = 'UTF-8'
     options.compilerArgs << '-Xlint:unchecked' << '-Xlint:deprecation' << '-Werror'
-    options.compilerArgs += ['--enable-preview']
 }
 
 compileTestJava {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
-    options.compilerArgs += ['--enable-preview']
+    sourceCompatibility = JavaVersion.VERSION_24
+    targetCompatibility = JavaVersion.VERSION_24
 }
 
 tasks.withType(JavaCompile).configureEach {
+    sourceCompatibility = JavaVersion.VERSION_24
+    targetCompatibility = JavaVersion.VERSION_24
     options.encoding = 'UTF-8'
-    options.compilerArgs += "--enable-preview"
-    options.release = 21
-}
-
-tasks.withType(Test).configureEach {
-    jvmArgs += "--enable-preview"
+    options.release = 24
 }
 
 javadoc {
@@ -140,13 +121,12 @@ javadoc {
     options.charSet = 'UTF-8'
     options.addStringOption('Xdoclint:all', '-quiet')
     options.addStringOption('tag', 'opensearch.internal:a:Internal:')
-    options.addStringOption("source", "21")
-    options.addBooleanOption("-enable-preview", true)
+    options.addStringOption("source", "24")
     failOnError = true
 }
 
 jacoco {
-    toolVersion = "0.8.12"
+    toolVersion = "0.8.13"
 }
 
 jacocoTestReport {
@@ -162,6 +142,7 @@ dependencyLicenses.enabled = false
 thirdPartyAudit.enabled = false
 loggerUsageCheck.enabled = false
 validateNebulaPom.enabled = false
+testingConventions.enabled = false
 
 task allTests {
     dependsOn test, internalClusterTest, yamlRestTest
