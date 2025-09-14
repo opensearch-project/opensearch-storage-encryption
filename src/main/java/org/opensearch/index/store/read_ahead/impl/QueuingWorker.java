@@ -22,10 +22,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
-import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
-import org.opensearch.index.store.directio.DirectIOBlockCacheKey;
+import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.read_ahead.Worker;
 
 public class QueuingWorker implements Worker {
@@ -230,7 +230,7 @@ public class QueuingWorker implements Worker {
         for (long i = 0; i < blockCount; i++) {
             long blockIndex = startBlockIndex + i;
             long blockOffset = blockIndex << CACHE_BLOCK_SIZE_POWER;
-            BlockCacheKey key = new DirectIOBlockCacheKey(path, blockOffset);
+            BlockCacheKey key = new FileBlockCacheKey(path, blockOffset);
 
             if (blockCache.get(key) != null) {
                 if (currentGapStartIndex == -1) {

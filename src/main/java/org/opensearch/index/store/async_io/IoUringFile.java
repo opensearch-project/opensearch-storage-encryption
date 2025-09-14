@@ -35,7 +35,7 @@ public class IoUringFile implements AutoCloseable {
         try {
             final Class<? extends OpenOption> clazz = Class.forName("com.sun.nio.file.ExtendedOpenOption").asSubclass(OpenOption.class);
             option = Arrays.stream(clazz.getEnumConstants()).filter(e -> e.toString().equalsIgnoreCase("DIRECT")).findFirst().orElse(null);
-        } catch (@SuppressWarnings("unused") Exception e) {
+        } catch (ClassNotFoundException e) {
             option = null;
         }
         ExtendedOpenOption_DIRECT = option;

@@ -15,12 +15,12 @@ import java.util.Map;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
-import org.opensearch.index.store.directio.DirectIOBlockCacheKey;
+import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.pool.Pool;
 
 import com.github.benmanes.caffeine.cache.Cache;
 
-@SuppressWarnings("preview")
 @SuppressForbidden(reason = "uses custom DirectIO")
 public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     private static final Logger LOGGER = LogManager.getLogger(CaffeineBlockCache.class);
@@ -112,7 +112,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
             .asMap()
             .keySet()
             .stream()
-            .filter(key -> key instanceof DirectIOBlockCacheKey directIOKey && directIOKey.filePath().equals(normalized))
+            .filter(key -> key instanceof FileBlockCacheKey directIOKey && directIOKey.filePath().equals(normalized))
             .toList();
 
         // invalidateAll to trigger removal listener for proper segment cleanup
@@ -141,7 +141,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     public Map<BlockCacheKey, BlockCacheValue<T>> loadBulk(Path filePath, long startOffset, long blockCount) throws IOException {
         Map<BlockCacheKey, BlockCacheValue<T>> loaded = new LinkedHashMap<>();
 
-        V[] loadedBlocks = null;
+        V[] loadedBlocks;
 
         try {
             loadedBlocks = blockLoader.load(filePath, startOffset, blockCount);
@@ -176,9 +176,9 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         return loaded;
     }
 
-    // Helper method to create appropriate cache key for DirectIO
+    // Helper method to create appropriate cache key for file blocks
     private BlockCacheKey createBlockKey(Path filePath, long offset) {
-        return new DirectIOBlockCacheKey(filePath, offset);
+        return new FileBlockCacheKey(filePath, offset);
     }
 
     @SuppressWarnings("unchecked")
@@ -195,7 +195,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 CACHE_BLOCK_SIZE,
                 seg -> segmentPool.release(loadedBlock)
             );
-            return (BlockCacheValue<T>) new RefCountedMemorySegmentCacheValue(refSegment);
+            return (BlockCacheValue<T>) refSegment;
         }
 
         // For non-MemorySegment types, return the segment directly

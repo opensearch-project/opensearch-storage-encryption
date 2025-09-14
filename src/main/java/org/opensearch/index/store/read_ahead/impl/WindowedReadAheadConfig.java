@@ -17,15 +17,15 @@ package org.opensearch.index.store.read_ahead.impl;
 public final class WindowedReadAheadConfig {
 
     private final int initialWindow;
-    private final int maxWindowSegments;
+    private final int maxWindowBlocks;
     private final int hitStreakThreshold;
     private final int shrinkOnRandomThreshold;
 
-    private WindowedReadAheadConfig(Builder builder) {
-        this.initialWindow = builder.initialWindow;
-        this.maxWindowSegments = builder.maxWindowSegments;
-        this.hitStreakThreshold = builder.hitStreakThreshold;
-        this.shrinkOnRandomThreshold = builder.shrinkOnRandomThreshold;
+    private WindowedReadAheadConfig(int initialWindow, int maxWindowBlocks, int hitStreakThreshold, int shrinkOnRandomThreshold) {
+        this.initialWindow = initialWindow;
+        this.maxWindowBlocks = maxWindowBlocks;
+        this.hitStreakThreshold = hitStreakThreshold;
+        this.shrinkOnRandomThreshold = shrinkOnRandomThreshold;
     }
 
     /**
@@ -39,7 +39,7 @@ public final class WindowedReadAheadConfig {
      * @return the maximum number of segments to prefetch in a window.
      */
     public int maxWindowSegments() {
-        return maxWindowSegments;
+        return maxWindowBlocks;
     }
 
     /**
@@ -57,68 +57,20 @@ public final class WindowedReadAheadConfig {
     }
 
     /**
-     * Builder pattern for {@link WindowedReadAheadConfig}.
+     * Creates a config with default values:
+     * - initialWindow: 1
+     * - maxWindowBlocks: 8  
+     * - hitStreakThreshold: 4
+     * - shrinkOnRandomThreshold: 2
      */
-    public static class Builder {
+    public static WindowedReadAheadConfig defaultConfig() {
+        return new WindowedReadAheadConfig(1, 8, 4, 2);
+    }
 
-        /**
-        * Initial number of segments to prefetch on first sequential read.
-        * Default: 1
-        */
-        private int initialWindow = 1;
-
-        /**
-         * Maximum number of segments to prefetch in a single window.
-         * Limits the growth of read-ahead.
-         * Default: 8
-         */
-        private int maxWindowSegments = 8;
-
-        /**
-         * Number of consecutive sequential reads required
-         * to grow the prefetch window.
-         * Default: 4
-         */
-        private int hitStreakThreshold = 4;
-
-        /**
-         * Number of random (non-sequential) reads after which
-         * the prefetch window will shrink.
-         * Default: 2
-         */
-        private int shrinkOnRandomThreshold = 2;
-
-        /** Sets the initial window size for prefetching. */
-        public Builder initialWindow(int val) {
-            this.initialWindow = val;
-            return this;
-        }
-
-        /** Sets the maximum window size for prefetching. */
-        public Builder maxWindowSegments(int val) {
-            this.maxWindowSegments = val;
-            return this;
-        }
-
-        /** Sets the number of sequential hits before growing the window. */
-        public Builder hitStreakThreshold(int val) {
-            this.hitStreakThreshold = val;
-            return this;
-        }
-
-        /** Sets the number of random accesses before shrinking the window. */
-        public Builder shrinkOnRandomThreshold(int val) {
-            this.shrinkOnRandomThreshold = val;
-            return this;
-        }
-
-        /**
-         * Builds the {@link WindowedReadAheadConfig} instance.
-         *
-         * @return a new AdaptiveReadaheadConfig
-         */
-        public WindowedReadAheadConfig build() {
-            return new WindowedReadAheadConfig(this);
-        }
+    /**
+     * Creates a config with custom values.
+     */
+    public static WindowedReadAheadConfig of(int initialWindow, int maxWindowBlocks, int hitStreakThreshold, int shrinkOnRandomThreshold) {
+        return new WindowedReadAheadConfig(initialWindow, maxWindowBlocks, hitStreakThreshold, shrinkOnRandomThreshold);
     }
 }

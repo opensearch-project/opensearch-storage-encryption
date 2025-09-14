@@ -14,11 +14,15 @@ import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
 import java.util.Optional;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.index.store.directio.BufferIOWithCaching;
 
 @SuppressForbidden(reason = "temporary bypass")
 @SuppressWarnings("preview")
 public class PanamaNativeAccess {
+    private static final Logger LOGGER = LogManager.getLogger(BufferIOWithCaching.class);
     private static final Linker LINKER = Linker.nativeLinker();
 
     public static final MethodHandle MMAP;
@@ -33,39 +37,17 @@ public class PanamaNativeAccess {
     public static final MethodHandle PWRITE;
     public static final MethodHandle POSIX_FADVISE;
 
-    public static final int O_RDONLY = 0;
-    public static final int O_DIRECT = 040000;
-    public static final int O_SYNC = 04010000;
-
-    private static final SymbolLookup LIBC = loadLibc();
+    private static final SymbolLookup LIBC = LINKER.defaultLookup();
 
     public static final int MADV_WILLNEED = 3;
     public static final int PROT_READ = 0x1;
     public static final int PROT_WRITE = 0x2;
     public static final int MAP_PRIVATE = 0x02;
-
     public static final int POSIX_FADV_DONTNEED = 4;
 
-    private static SymbolLookup loadLibc() {
-        String os = System.getProperty("os.name").toLowerCase();
-        if (os.contains("mac")) {
-            return SymbolLookup.libraryLookup("/usr/lib/libSystem.B.dylib", Arena.global());
-        } else if (os.contains("linux")) {
-            try {
-                // Try the 64-bit version first
-                return SymbolLookup.libraryLookup("/lib64/libc.so.6", Arena.global());
-            } catch (Exception e) {
-                try {
-                    // Fall back to the 32-bit version
-                    return SymbolLookup.libraryLookup("/lib/libc.so.6", Arena.global());
-                } catch (Exception e2) {
-                    throw new RuntimeException("Could not load libc from either /lib64/libc.so.6 or /lib/libc.so.6", e2);
-                }
-            }
-        } else {
-            throw new UnsupportedOperationException("Unsupported OS: " + os);
-        }
-    }
+    public static final int O_RDONLY = 0;
+    public static final int O_DIRECT = 040000;
+    public static final int O_SYNC = 04010000;
 
     static {
         try {
@@ -216,6 +198,7 @@ public class PanamaNativeAccess {
 
     public static int openFileWithODirect(String path, boolean direct, Arena arena) throws Throwable {
         MemorySegment cPath = arena.allocateUtf8String(path);
+        @SuppressWarnings("PointlessBitwiseExpression")
         int flags = O_RDONLY | (direct ? O_DIRECT : 0);
 
         return (int) OPEN.invoke(cPath, flags);
@@ -236,27 +219,28 @@ public class PanamaNativeAccess {
         CLOSE.invoke(fd);
     }
 
-    public static void dropFileCache(String filePath) {
+    public static boolean dropFileCache(String filePath) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment cPath = arena.allocateUtf8String(filePath);
             int fd = (int) OPEN.invoke(cPath, O_RDONLY);
             if (fd < 0) {
-                return; // Cannot open file - may already be deleted
+                return false; // Cannot open file - may already be deleted
             }
 
             try {
                 // 0, 0 means "entire file" - let kernel drop all cached pages
                 int rc = (int) POSIX_FADVISE.invoke(fd, 0L, 0L, POSIX_FADV_DONTNEED);
                 if (rc != 0) {
-                    // Non-fatal: POSIX_FADV_DONTNEED is advisory, not guaranteed
-                    // Some filesystems or kernel configurations may ignore it
+                    LOGGER.warn("posix_fadvise failed with rc={} for file: {}", rc, filePath);
                 }
+                return rc == 0; // Success if posix_fadvise returns 0
             } finally {
                 CLOSE.invoke(fd);
             }
         } catch (Throwable t) {
             // Best-effort operation: file may be deleted, permissions changed, etc.
             // This is expected and should not affect application functionality
+            return false;
         }
     }
 }

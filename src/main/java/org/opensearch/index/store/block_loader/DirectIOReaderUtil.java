@@ -2,7 +2,7 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.directio;
+package org.opensearch.index.store.block_loader;
 
 import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
 
@@ -13,29 +13,23 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.OpenOption;
 import java.util.Arrays;
-import java.util.stream.IntStream;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
-import org.opensearch.index.store.cipher.OpenSslNativeCipher;
 import org.opensearch.index.store.mmap.PanamaNativeAccess;
 
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "uses custom DirectIO")
-public class DirectIOReader {
-    private static final Logger LOGGER = LogManager.getLogger(DirectIOReader.class);
-
+public class DirectIOReaderUtil {
     private static final OpenOption ExtendedOpenOption_DIRECT; // visible for test
 
-    private DirectIOReader() {}
+    private DirectIOReaderUtil() {}
 
     static {
         OpenOption option;
         try {
             final Class<? extends OpenOption> clazz = Class.forName("com.sun.nio.file.ExtendedOpenOption").asSubclass(OpenOption.class);
             option = Arrays.stream(clazz.getEnumConstants()).filter(e -> e.toString().equalsIgnoreCase("DIRECT")).findFirst().orElse(null);
-        } catch (@SuppressWarnings("unused") Exception e) {
+        } catch (@SuppressWarnings("unused") ClassNotFoundException e) {
             option = null;
         }
         ExtendedOpenOption_DIRECT = option;
@@ -127,55 +121,4 @@ public class DirectIOReader {
         buf.flip();
         return MemorySegment.ofBuffer(buf).reinterpret(size, arena, null);
     }
-
-    public static void decryptSegment(Arena arena, MemorySegment segment, long segmentOffsetInFile, byte[] key, byte[] iv)
-        throws Throwable {
-        final long size = segment.byteSize();
-
-        final int twoMB = 1 << 21; // 2 MiB
-        final int fourMB = 1 << 22; // 4 MiB
-        final int eightMB = 1 << 23; // 8 MiB
-        final int sixteenMB = 1 << 24; // 16 MiB
-
-        // Fast-path: no parallelism for ≤ 4 MiB
-        if (size <= (4L << 20)) {
-            long start = System.nanoTime();
-
-            OpenSslNativeCipher.decryptInPlace(arena, segment.address(), size, key, iv, segmentOffsetInFile);
-
-            long end = System.nanoTime();
-            long durationMs = (end - start) / 1_000_000;
-            LOGGER.debug("Eager decryption of {} MiB at offset {} took {} ms", size / 1048576.0, segmentOffsetInFile, durationMs);
-            return;
-        }
-
-        // Use Openssl for large block decrytion.
-        final int chunkSize;
-        if (size <= (8L << 20)) {
-            chunkSize = twoMB;
-        } else if (size <= (32L << 20)) {
-            chunkSize = fourMB;
-        } else if (size <= (64L << 20)) {
-            chunkSize = eightMB;
-        } else {
-            chunkSize = sixteenMB;
-        }
-
-        final int numChunks = (int) ((size + chunkSize - 1) / chunkSize);
-
-        // parallel decryptions.
-        IntStream.range(0, numChunks).parallel().forEach(i -> {
-            long offset = (long) i * chunkSize;
-            long length = Math.min(chunkSize, size - offset);
-            long fileOffset = segmentOffsetInFile + offset;
-            long addr = segment.address() + offset;
-
-            try {
-                OpenSslNativeCipher.decryptInPlace(addr, length, key, iv, fileOffset);
-            } catch (Throwable t) {
-                throw new RuntimeException("Decryption failed at offset: " + fileOffset, t);
-            }
-        });
-    }
-
 }

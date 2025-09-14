@@ -9,12 +9,10 @@ import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SI
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.lang.foreign.Arena;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.Provider;
-import java.time.Duration;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.logging.log4j.LogManager;
@@ -25,10 +23,10 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
-import org.opensearch.index.store.block_cache.BlockLoader;
-import org.opensearch.index.store.block_cache.CaffeineBlockCache;
-import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
+import org.opensearch.index.store.block_cache.FileBlockCacheKey;
+import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.pool.MemorySegmentPool;
 import org.opensearch.index.store.pool.Pool;
@@ -37,9 +35,6 @@ import org.opensearch.index.store.read_ahead.ReadaheadManager;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.index.store.read_ahead.impl.ReadaheadManagerImpl;
 
-import io.netty.channel.IoEventLoopGroup;
-
-@SuppressWarnings("preview")
 @SuppressForbidden(reason = "uses custom DirectIO")
 public final class CryptoDirectIODirectory extends FSDirectory {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIODirectory.class);
@@ -49,7 +44,6 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     private final BlockCache<RefCountedMemorySegment> blockCache;
     private final Worker readAheadworker;
     private final KeyIvResolver keyIvResolver;
-    private final IoEventLoopGroup ioEventLoopGroup;
 
     public CryptoDirectIODirectory(
         Path path,
@@ -59,8 +53,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         Pool<MemorySegmentPool.SegmentHandle> memorySegmentPool,
         BlockCache<RefCountedMemorySegment> blockCache,
         BlockLoader<MemorySegmentPool.SegmentHandle> blockLoader,
-        Worker worker,
-        IoEventLoopGroup ioEventLoopGroup
+        Worker worker
     )
         throws IOException {
         super(path, lockFactory);
@@ -68,8 +61,6 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         this.memorySegmentPool = memorySegmentPool;
         this.blockCache = blockCache;
         this.readAheadworker = worker;
-        this.ioEventLoopGroup = ioEventLoopGroup;
-        startCacheStatsTelemetry(path);
     }
 
     @Override
@@ -83,34 +74,18 @@ public final class CryptoDirectIODirectory extends FSDirectory {
             throw new IOException("Cannot open empty file with DirectIO: " + file);
         }
 
-        boolean confined = context == IOContext.READONCE;
-        Arena arena = confined ? Arena.ofConfined() : Arena.ofShared();
-
-        // Pre-generate cache keys for all blocks in this file
-        final int totalBlocks = (int) ((size + CACHE_BLOCK_SIZE - 1) >>> CACHE_BLOCK_SIZE_POWER);
-        final DirectIOBlockCacheKey[] preGeneratedKeys = new DirectIOBlockCacheKey[totalBlocks];
-
-        // for (int i = 0; i < totalBlocks; i++) {
-        // final long blockOffset = (long) i << CACHE_BLOCK_SIZE_POWER;
-        // preGeneratedKeys[i] = new DirectIOBlockCacheKey(file, blockOffset);
-        // }
-
         ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker);
         ReadaheadContext readAheadContext = readAheadManager.register(file, size);
-
-        // Create PinRegistry for this file's block caching
-        PinRegistry pinRegistry = new PinRegistry(blockCache, file, size);
+        BlockSlotTinyCache pinRegistry = new BlockSlotTinyCache(blockCache, file, size);
 
         return CachedMemorySegmentIndexInput
             .newInstance(
                 "CachedMemorySegmentIndexInput(path=\"" + file + "\")",
                 file,
-                arena,
                 size,
                 blockCache,
                 readAheadManager,
                 readAheadContext,
-                preGeneratedKeys,
                 pinRegistry
             );
     }
@@ -178,7 +153,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                     final int totalBlocks = (int) ((fileSize + CACHE_BLOCK_SIZE - 1) >>> CACHE_BLOCK_SIZE_POWER);
                     for (int i = 0; i < totalBlocks; i++) {
                         final long blockOffset = (long) i << CACHE_BLOCK_SIZE_POWER;
-                        DirectIOBlockCacheKey key = new DirectIOBlockCacheKey(file, blockOffset);
+                        FileBlockCacheKey key = new FileBlockCacheKey(file, blockOffset);
                         blockCache.invalidate(key);
                     }
                 }
@@ -189,38 +164,5 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         }
 
         super.deleteFile(name);
-    }
-
-    private void logCacheAndPoolStats(Path path) {
-        try {
-
-            if (blockCache instanceof CaffeineBlockCache) {
-                String cacheStats = ((CaffeineBlockCache<?, ?>) blockCache).cacheStats();
-                LOGGER.info("{}", cacheStats);
-            }
-
-        } catch (Exception e) {
-            LOGGER.warn("Failed to log cache/pool stats", e);
-        }
-    }
-
-    private void startCacheStatsTelemetry(Path path) {
-        Thread loggerThread = new Thread(() -> {
-            while (true) {
-                try {
-                    Thread.sleep(Duration.ofMinutes(1));
-                    logCacheAndPoolStats(path);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return;
-                } catch (Throwable t) {
-                    LOGGER.warn("Error in collecting cache stats", t);
-                }
-            }
-        });
-
-        loggerThread.setDaemon(true);
-        loggerThread.setName("DirectIOBufferPoolStatsLogger");
-        loggerThread.start();
     }
 }

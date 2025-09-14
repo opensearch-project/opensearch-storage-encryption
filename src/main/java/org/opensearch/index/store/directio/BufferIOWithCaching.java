@@ -19,10 +19,11 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.OutputStreamIndexOutput;
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
-import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
-import org.opensearch.index.store.block_cache.RefCountedMemorySegmentCacheValue;
+import org.opensearch.index.store.block_cache.FileBlockCacheKey;
+import org.opensearch.index.store.cipher.OpenSslNativeCipher;
 import org.opensearch.index.store.mmap.PanamaNativeAccess;
 import org.opensearch.index.store.pool.MemorySegmentPool;
 import org.opensearch.index.store.pool.Pool;
@@ -187,44 +188,77 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                 int blockOffset = (int) (absoluteOffset & CACHE_BLOCK_MASK);
                 int chunkLen = Math.min(length - offsetInBuffer, CACHE_BLOCK_SIZE - blockOffset);
 
-                // Cache only fully-aligned full blocks
-                if (blockOffset == 0 && chunkLen == CACHE_BLOCK_SIZE) {
-                    try {
-                        final MemorySegmentPool.SegmentHandle handle = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
-                        if (handle != null) {
-                            final MemorySegment pooled = handle.segment();
-                            final MemorySegment pooledSlice = pooled.asSlice(0, CACHE_BLOCK_SIZE);
-                            MemorySegment.copy(full, arrayOffset + offsetInBuffer, pooledSlice, 0, CACHE_BLOCK_SIZE);
+                // Cache plaintext data for reads
+                cacheBlockIfEligible(path, full, arrayOffset + offsetInBuffer, blockAlignedOffset, blockOffset, chunkLen);
 
-                            BlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, blockAlignedOffset);
-                            RefCountedMemorySegment refSegment = new RefCountedMemorySegment(
-                                pooled,
-                                CACHE_BLOCK_SIZE,
-                                seg -> handle.release()  // Release back to the correct tier!
-                            );
-                            RefCountedMemorySegmentCacheValue cacheValue = new RefCountedMemorySegmentCacheValue(refSegment);
-                            blockCache.put(cacheKey, cacheValue);
-                        } else {
-                            LOGGER.info("Failed to acquire from pool within specificed timeout path={} {} ms", path, 5);
-                        }
-
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        LOGGER.warn("Interrupted while acquiring segment for cache.");
-                    } catch (IllegalStateException e) {
-                        LOGGER.debug("Failed to acquire segment from pool; skipping cache.");
-                    }
-                }
-
-                // Always write the chunk to disk
-                out.write(data, arrayOffset + offsetInBuffer, chunkLen);
+                // Encrypt and write to disk
+                writeEncryptedChunk(data, arrayOffset + offsetInBuffer, chunkLen, absoluteOffset);
                 offsetInBuffer += chunkLen;
             }
 
             streamOffset += length;
         }
 
+        private void cacheBlockIfEligible(
+            Path path,
+            MemorySegment sourceData,
+            int sourceOffset,
+            long blockAlignedOffset,
+            int blockOffset,
+            int chunkLen
+        ) {
+            // Cache only fully-aligned full blocks
+            if (blockOffset == 0 && chunkLen == CACHE_BLOCK_SIZE) {
+                try {
+                    final MemorySegmentPool.SegmentHandle handle = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
+                    if (handle != null) {
+                        final MemorySegment pooled = handle.segment();
+                        final MemorySegment pooledSlice = pooled.asSlice(0, CACHE_BLOCK_SIZE);
+                        // Cache plaintext data
+                        MemorySegment.copy(sourceData, sourceOffset, pooledSlice, 0, CACHE_BLOCK_SIZE);
+
+                        BlockCacheKey cacheKey = new FileBlockCacheKey(path, blockAlignedOffset);
+                        RefCountedMemorySegment refSegment = new RefCountedMemorySegment(
+                            pooled,
+                            CACHE_BLOCK_SIZE,
+                            seg -> handle.release()  // Release back to the correct tier!
+                        );
+                        blockCache.put(cacheKey, refSegment);
+                    } else {
+                        LOGGER.info("Failed to acquire from pool within specificed timeout path={} {} ms", path, 5);
+                    }
+
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    LOGGER.warn("Interrupted while acquiring segment for cache.");
+                } catch (IllegalStateException e) {
+                    LOGGER.debug("Failed to acquire segment from pool; skipping cache.");
+                }
+            }
+        }
+
+        private void writeEncryptedChunk(byte[] data, int offset, int length, long absoluteOffset) throws IOException {
+            try {
+                // Encrypt data for disk write using OpenSSL native cipher
+                byte[] chunkToEncrypt = slice(data, offset, length);
+                byte[] encrypted = OpenSslNativeCipher.encrypt(key, iv, chunkToEncrypt, absoluteOffset);
+                out.write(encrypted);
+            } catch (Throwable t) {
+                throw new IOException("Encryption failed at offset " + absoluteOffset, t);
+            }
+        }
+
+        private byte[] slice(byte[] data, int offset, int length) {
+            if (offset == 0 && length == data.length) {
+                return data;
+            }
+            byte[] sliced = new byte[length];
+            System.arraycopy(data, offset, sliced, 0, length);
+            return sliced;
+        }
+
         @Override
+        @SuppressWarnings("ConvertToTryWithResources")
         public void close() throws IOException {
             IOException exception = null;
 
@@ -262,8 +296,8 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                     return;
 
                 long finalBlockOffset = (streamOffset - 1) & ~CACHE_BLOCK_MASK;
-                BlockCacheKey key = new DirectIOBlockCacheKey(path, finalBlockOffset);
-                blockCache.getOrLoad(key);
+                BlockCacheKey blockKey = new FileBlockCacheKey(path, finalBlockOffset);
+                blockCache.getOrLoad(blockKey);
 
             } catch (IOException e) {
                 LOGGER.debug("Failed to load final block into cache for path={}: {}", path, e.toString());

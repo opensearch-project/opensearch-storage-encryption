@@ -4,7 +4,7 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIOReader.getDirectOpenOption;
+import static org.opensearch.index.store.block_loader.DirectIOReaderUtil.getDirectOpenOption;
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
 import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
@@ -21,7 +21,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.CRC32;
 import java.util.zip.Checksum;
@@ -32,10 +34,10 @@ import org.apache.lucene.store.BufferedChecksum;
 import org.apache.lucene.store.IndexOutput;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.async_io.IoUringFile;
+import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
-import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
-import org.opensearch.index.store.block_cache.RefCountedMemorySegmentCacheValue;
+import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.pool.Pool;
 
 import io.netty.channel.IoEventLoopGroup;
@@ -46,10 +48,6 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
     private static final Logger LOGGER = LogManager.getLogger(DirectIOWithIoUringIndexOutput.class);
 
     private static final int BUFFER_SIZE = 1 << DIRECT_IO_WRITE_BUFFER_SIZE_POWER;
-
-    // Debug tracking
-    private final ByteBuffer debugTracker = ByteBuffer.allocate(1024 * 1024); // Track first 1MB for verification
-
     private final Pool<MemorySegment> memorySegmentPool;
     private final BlockCache<RefCountedMemorySegment> blockCache;
     private final FileChannel channel;          // for sync operations (truncate)
@@ -118,11 +116,6 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
         }
         buffer.put(b);
         digest.update(b);
-
-        // Track data for verification
-        if (debugTracker.hasRemaining()) {
-            debugTracker.put(b);
-        }
     }
 
     @Override
@@ -137,12 +130,6 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
             int chunk = Math.min(left, toWrite);
             buffer.put(src, offset, chunk);
             digest.update(src, offset, chunk);
-
-            // Track data for verification
-            int trackChunk = Math.min(chunk, debugTracker.remaining());
-            if (trackChunk > 0) {
-                debugTracker.put(src, offset, trackChunk);
-            }
 
             offset += chunk;
             toWrite -= chunk;
@@ -249,10 +236,9 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
             final MemorySegment pooledSlice = pooled.asSlice(0, size);
             MemorySegment.copy(cacheSegment, 0, pooledSlice, 0, size);
 
-            BlockCacheKey cacheKey = new DirectIOBlockCacheKey(path, offset);
+            BlockCacheKey cacheKey = new FileBlockCacheKey(path, offset);
             RefCountedMemorySegment refSegment = new RefCountedMemorySegment(pooled, size, seg -> memorySegmentPool.release(pooled));
-            RefCountedMemorySegmentCacheValue cacheValue = new RefCountedMemorySegmentCacheValue(refSegment);
-            blockCache.put(cacheKey, cacheValue);
+            blockCache.put(cacheKey, refSegment);
 
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
@@ -299,7 +285,7 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
             try {
                 // Wait with timeout to avoid indefinite blocking
                 allWrites.get(30, TimeUnit.SECONDS);
-            } catch (Exception e) {
+            } catch (InterruptedException | ExecutionException | TimeoutException e) {
                 throw new IOException("Failed to complete pending writes", e);
             }
 
@@ -307,14 +293,8 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
             try {
                 channel.truncate(logicalSize);
             } catch (IOException ioe) {
-                if (thrown == null)
-                    thrown = ioe;
-                else
-                    thrown.addSuppressed(ioe);
+                thrown = ioe;
             }
-
-            // Verify written data matches intended data
-            // verifyWrittenData();
 
         } finally {
             try {
@@ -338,71 +318,4 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
         if (thrown != null)
             throw thrown;
     }
-
-    @SuppressWarnings("unused")
-    private void verifyWrittenData() throws IOException {
-        if (logicalSize == 0)
-            return;
-
-        // Read back data and compare with what we intended to write
-        try (FileChannel readChannel = FileChannel.open(path, StandardOpenOption.READ)) {
-            long readSize = Math.min(logicalSize, debugTracker.position());
-            if (readSize == 0)
-                return;
-
-            ByteBuffer readBuffer = ByteBuffer.allocate((int) readSize);
-            int totalRead = 0;
-            while (totalRead < readSize) {
-                int bytesRead = readChannel.read(readBuffer);
-                if (bytesRead == -1)
-                    break;
-                totalRead += bytesRead;
-            }
-
-            readBuffer.flip();
-            debugTracker.flip();
-
-            // Compare byte by byte
-            boolean mismatch = false;
-            int mismatchOffset = -1;
-            for (int i = 0; i < Math.min(readBuffer.remaining(), debugTracker.remaining()); i++) {
-                byte written = readBuffer.get(i);
-                byte intended = debugTracker.get(i);
-                if (written != intended) {
-                    mismatch = true;
-                    mismatchOffset = i;
-                    break;
-                }
-            }
-
-            if (mismatch) {
-                LOGGER
-                    .error(
-                        "DATA CORRUPTION DETECTED in {}: Mismatch at offset {}, intended=0x{}, actual=0x{}, fileLength={}, expectedLength={}",
-                        path,
-                        mismatchOffset,
-                        Integer.toHexString(debugTracker.get(mismatchOffset) & 0xFF),
-                        Integer.toHexString(readBuffer.get(mismatchOffset) & 0xFF),
-                        totalRead,
-                        logicalSize
-                    );
-
-                // Log context around mismatch
-                int start = Math.max(0, mismatchOffset - 16);
-                int end = Math.min(readBuffer.limit(), mismatchOffset + 16);
-                StringBuilder intended = new StringBuilder();
-                StringBuilder actual = new StringBuilder();
-                for (int i = start; i < end; i++) {
-                    intended.append(String.format("%02x ", debugTracker.get(i) & 0xFF));
-                    actual.append(String.format("%02x ", readBuffer.get(i) & 0xFF));
-                }
-                LOGGER.error("Context around offset {}:\nIntended: {}\nActual:   {}", mismatchOffset, intended, actual);
-
-                throw new IOException("Data corruption detected: written data does not match intended data");
-            } else {
-                LOGGER.info("Data verification PASSED for {} (verified {} bytes)", path, readSize);
-            }
-        }
-    }
-
 }

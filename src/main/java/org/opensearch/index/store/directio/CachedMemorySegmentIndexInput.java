@@ -9,7 +9,6 @@ import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SI
 
 import java.io.EOFException;
 import java.io.IOException;
-import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
@@ -22,9 +21,10 @@ import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
 import org.apache.lucene.util.GroupVIntUtil;
+import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
-import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
+import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
 
@@ -41,7 +41,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     final long length;
 
     final Path path;
-    final Arena arena;
     final BlockCache<RefCountedMemorySegment> blockCache;
     final ReadaheadManager readaheadManager;
     final ReadaheadContext readaheadContext;
@@ -59,64 +58,52 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     // Cached offset from last getCacheBlockWithOffset call (avoid BlockAccess allocation)
     private int lastOffsetInBlock;
 
-    // Pre-generated cache keys to avoid allocation overhead during reads
-    private final DirectIOBlockCacheKey[] preGeneratedKeys;
-
-    // PinRegistry for per-file block caching
-    private final PinRegistry pinRegistry;
+    private final BlockSlotTinyCache blockSlotTinyCache;
 
     public static CachedMemorySegmentIndexInput newInstance(
         String resourceDescription,
         Path path,
-        Arena arena,
         long length,
         BlockCache<RefCountedMemorySegment> blockCache,
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
-        DirectIOBlockCacheKey[] preGeneratedKeys,
-        PinRegistry pinRegistry
+        BlockSlotTinyCache blockSlotTinyCache
     ) {
 
         return new MultiSegmentImpl(
             resourceDescription,
             path,
-            arena,
             0,
             0,
             length,
             blockCache,
             readaheadManager,
             readaheadContext,
-            preGeneratedKeys,
             false,
-            pinRegistry
+            blockSlotTinyCache
         );
     }
 
     private CachedMemorySegmentIndexInput(
         String resourceDescription,
         Path path,
-        Arena arena,
         long absoluteBaseOffset,
         long length,
         BlockCache<RefCountedMemorySegment> blockCache,
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
-        DirectIOBlockCacheKey[] preGeneratedKeys,
         boolean isSlice,
-        PinRegistry pinRegistry
+        BlockSlotTinyCache blockSlotTinyCache
     ) {
         super(resourceDescription);
         this.path = path;
-        this.arena = arena;
         this.absoluteBaseOffset = absoluteBaseOffset;
         this.length = length;
         this.blockCache = blockCache;
         this.readaheadManager = readaheadManager;
         this.readaheadContext = readaheadContext;
-        this.preGeneratedKeys = preGeneratedKeys;
         this.isSlice = isSlice;
-        this.pinRegistry = pinRegistry;
+        this.blockSlotTinyCache = blockSlotTinyCache;
     }
 
     void ensureOpen() {
@@ -164,8 +151,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         for (int attempts = 0; attempts < maxAttempts; attempts++) {
             // First attempt via PinRegistry, retries via cache loader
             cacheValue = (attempts == 0)
-                ? pinRegistry.acquireRefCountedValue(blockOffset)
-                : blockCache.getOrLoad(new DirectIOBlockCacheKey(path, blockOffset));
+                ? blockSlotTinyCache.acquireRefCountedValue(blockOffset)
+                : blockCache.getOrLoad(new FileBlockCacheKey(path, blockOffset));
 
             if (cacheValue != null && cacheValue.tryPin()) {
                 // Successfully pinned
@@ -636,20 +623,19 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         return new MultiSegmentImpl(
             newResourceDescription,
             path,
-            null, // clones don't have an Arena, as they can't close)
             0, // slice offset is always 0 (slice starts at its beginning)
             sliceAbsoluteBaseOffset,
             length,
             blockCache,
             readaheadManager,
             readaheadContext,
-            preGeneratedKeys,
             true,
-            pinRegistry // reuse the same PinRegistry instance
+            blockSlotTinyCache // reuse the same PinRegistry instance
         );
     }
 
     @Override
+    @SuppressWarnings("ConvertToTryWithResources")
     public final void close() throws IOException {
         if (!isOpen) {
             return;
@@ -658,22 +644,9 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         // Mark as closed to ensure all future accesses throw AlreadyClosedException
         isOpen = false;
 
-        // the master IndexInput has an Arena and is able
-        // to release all resources (unmap segments) - a
-        // side effect is that other threads still using clones
-        // will throw IllegalStateException
-        if (arena != null) {
+        if (!isSlice) {
             // Assertions for master instance
             assert !isSlice : "Master instance should not be marked as slice";
-
-            while (arena.scope().isAlive()) {
-                try {
-                    arena.close();
-                    break;
-                } catch (@SuppressWarnings("unused") IllegalStateException e) {
-                    Thread.onSpinWait();
-                }
-            }
 
             // Unpin current block before cleanup
             if (currentBlock != null) {
@@ -681,9 +654,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
                 currentBlock = null;
             }
 
-            // Clear pin registry slots to prevent memory leaks
-            if (pinRegistry != null) {
-                pinRegistry.clear();
+            if (blockSlotTinyCache != null) {
+                blockSlotTinyCache.clear();
             }
 
             readaheadManager.close();
@@ -700,29 +672,25 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         MultiSegmentImpl(
             String resourceDescription,
             Path path,
-            Arena arena,
             long offset,
             long absoluteBaseOffset,
             long length,
             BlockCache<RefCountedMemorySegment> blockCache,
             ReadaheadManager readaheadManager,
             ReadaheadContext readaheadContext,
-            DirectIOBlockCacheKey[] preGeneratedKeys,
             boolean isSlice,
-            PinRegistry pinRegistry
+            BlockSlotTinyCache blockSlotTinyCache
         ) {
             super(
                 resourceDescription,
                 path,
-                arena,
                 absoluteBaseOffset,
                 length,
                 blockCache,
                 readaheadManager,
                 readaheadContext,
-                preGeneratedKeys,
                 isSlice,
-                pinRegistry
+                blockSlotTinyCache
             );
             this.offset = offset;
             try {

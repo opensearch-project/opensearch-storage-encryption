@@ -40,12 +40,7 @@ public class ReadaheadManagerImpl implements ReadaheadManager {
             throw new IllegalStateException("ReadaheadContext already registered");
         }
 
-        WindowedReadAheadConfig config = new WindowedReadAheadConfig.Builder()
-            .initialWindow(4)
-            .maxWindowSegments(16)
-            .hitStreakThreshold(4)
-            .shrinkOnRandomThreshold(50)
-            .build();
+        WindowedReadAheadConfig config = WindowedReadAheadConfig.of(4, 16, 4, 50);
 
         this.context = WindowedReadAheadContext.build(path, fileLength, worker, config);
 

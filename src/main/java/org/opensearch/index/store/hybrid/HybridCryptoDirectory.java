@@ -8,8 +8,6 @@ import java.io.IOException;
 import java.security.Provider;
 import java.util.Set;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.FileSwitchDirectory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
@@ -22,15 +20,12 @@ import org.opensearch.index.store.mmap.LazyDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 
 public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
-    private static final Logger LOGGER = LogManager.getLogger(CryptoNIOFSDirectory.class);
 
-    private final LazyDecryptedCryptoMMapDirectory lazyDecryptedCryptoMMapDirectoryDelegate;
     private final EagerDecryptedCryptoMMapDirectory eagerDecryptedCryptoMMapDirectory;
     private final CryptoDirectIODirectory cryptoDirectIODirectory;
 
     // Only these extensions get special routing - everything else goes to NIOFS
     private final Set<String> specialExtensions;
-    private final Set<String> stillMmaped;
 
     public HybridCryptoDirectory(
         LockFactory lockFactory,
@@ -43,11 +38,11 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
     )
         throws IOException {
         super(lockFactory, delegate.getDirectory(), provider, keyIvResolver);
-        this.lazyDecryptedCryptoMMapDirectoryDelegate = delegate;
         this.eagerDecryptedCryptoMMapDirectory = eagerDecryptedCryptoMMapDirectory;
         this.cryptoDirectIODirectory = cryptoDirectIODirectory;
-        this.stillMmaped = Set.of("kdm", "tip", "tmd", "psm", "fdm");
-        this.specialExtensions = Set.of("kdd", "cfs", "doc", "dvd");
+        // todo can be moved to buffer-io with caching
+        // "kdm", "tip", "tmd", "psm", "fdm", "kdi");
+        this.specialExtensions = Set.of("kdd", "cfs", "doc", "dvd", "nvd", "tim");
     }
 
     @Override
@@ -61,10 +56,6 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
             return cryptoDirectIODirectory.openInput(name, context);
         }
 
-        if (!stillMmaped.contains(extension)) {
-            return eagerDecryptedCryptoMMapDirectory.openInput(name, context);
-        }
-
         return super.openInput(name, context);
     }
 
@@ -73,6 +64,8 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         String extension = FileSwitchDirectory.getExtension(name);
 
         ensureOpen();
+        ensureCanRead(name);
+
         if (specialExtensions.contains(extension)) {
             return cryptoDirectIODirectory.createOutput(name, context);
         }

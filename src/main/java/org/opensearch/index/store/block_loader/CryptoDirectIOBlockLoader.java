@@ -2,9 +2,9 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.directio;
+package org.opensearch.index.store.block_loader;
 
-import static org.opensearch.index.store.directio.DirectIOReader.directIOReadAligned;
+import static org.opensearch.index.store.block_loader.DirectIOReaderUtil.directIOReadAligned;
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
@@ -20,19 +20,19 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.opensearch.index.store.block_cache.BlockLoader;
+import org.opensearch.index.store.cipher.MemorySegmentDecryptor;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.pool.MemorySegmentPool;
 import org.opensearch.index.store.pool.Pool;
 
 @SuppressWarnings("preview")
-public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegmentPool.SegmentHandle> {
-    private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOSegmentBlockLoader.class);
+public class CryptoDirectIOBlockLoader implements BlockLoader<MemorySegmentPool.SegmentHandle> {
+    private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOBlockLoader.class);
 
     private final Pool<MemorySegmentPool.SegmentHandle> segmentPool;
     private final KeyIvResolver keyIvResolver;
 
-    public CryptoDirectIOSegmentBlockLoader(Pool<MemorySegmentPool.SegmentHandle> segmentPool, KeyIvResolver keyIvResolver) {
+    public CryptoDirectIOBlockLoader(Pool<MemorySegmentPool.SegmentHandle> segmentPool, KeyIvResolver keyIvResolver) {
         this.segmentPool = segmentPool;
         this.keyIvResolver = keyIvResolver;
     }
@@ -56,10 +56,21 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
 
         try (
             Arena arena = Arena.ofConfined();
-            FileChannel channel = FileChannel.open(filePath, StandardOpenOption.READ, DirectIOReader.getDirectOpenOption())
+            FileChannel channel = FileChannel.open(filePath, StandardOpenOption.READ, DirectIOReaderUtil.getDirectOpenOption())
         ) {
-            MemorySegment bulkEncrypted = directIOReadAligned(channel, startOffset, readLength, arena);
-            long bytesRead = bulkEncrypted.byteSize();
+            MemorySegment readBytes = directIOReadAligned(channel, startOffset, readLength, arena);
+            long bytesRead = readBytes.byteSize();
+
+            // decrypt the block to cache.
+            MemorySegmentDecryptor
+                .decryptInPlace(
+                    arena,
+                    readBytes.address(),
+                    readBytes.byteSize(),
+                    keyIvResolver.getDataKey().getEncoded(),
+                    keyIvResolver.getIvBytes(),
+                    startOffset
+                );
 
             if (bytesRead == 0) {
                 throw new RuntimeException("EOF or empty read at offset " + startOffset);
@@ -72,7 +83,7 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
                 while (blockIndex < blockCount && bytesCopied < bytesRead) {
                     MemorySegmentPool.SegmentHandle handle = segmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
                     if (handle == null) {
-                        throw new RuntimeException("Timeout acquiring segment from pool");
+                        throw new RuntimeException("Failed to acquire a block");
                     }
 
                     MemorySegment pooled = handle.segment();
@@ -81,7 +92,7 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
                     int toCopy = Math.min(CACHE_BLOCK_SIZE, remaining);
 
                     if (toCopy > 0) {
-                        MemorySegment.copy(bulkEncrypted, bytesCopied, pooled, 0, toCopy);
+                        MemorySegment.copy(readBytes, bytesCopied, pooled, 0, toCopy);
                     }
 
                     result[blockIndex++] = handle;  // Store the handle, not the segment
@@ -92,16 +103,6 @@ public class CryptoDirectIOSegmentBlockLoader implements BlockLoader<MemorySegme
                 releaseHandles(result, blockIndex);
                 throw new RuntimeException("Failed to load blocks", e);
             }
-
-            LOGGER
-                .debug(
-                    "Bulk read (no padding): path={} offset={} bytesRead={} blocks={}/{}",
-                    filePath,
-                    startOffset,
-                    bytesRead,
-                    blockIndex,
-                    blockCount
-                );
 
             return result;
 

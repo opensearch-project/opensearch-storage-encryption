@@ -39,14 +39,14 @@ import org.opensearch.crypto.CryptoHandlerRegistry;
 import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.shard.ShardPath;
+import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
-import org.opensearch.index.store.block_cache.BlockLoader;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
-import org.opensearch.index.store.block_cache.RefCountedMemorySegment;
+import org.opensearch.index.store.block_loader.BlockLoader;
+import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.directio.CryptoDirectIODirectory;
-import org.opensearch.index.store.directio.CryptoDirectIOSegmentBlockLoader;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
 import org.opensearch.index.store.iv.DefaultKeyIvResolver;
 import org.opensearch.index.store.iv.KeyIvResolver;
@@ -63,11 +63,6 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.RemovalCause;
 
-import io.netty.channel.IoEventLoopGroup;
-import io.netty.channel.MultiThreadIoEventLoopGroup;
-import io.netty.channel.uring.IoUringIoHandler;
-
-@SuppressWarnings("preview")
 @SuppressForbidden(reason = "temporary")
 /**
  * Factory for an encrypted filesystem directory
@@ -245,7 +240,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         */
 
         // Create a per-directory loader that knows about this specific keyIvResolver
-        BlockLoader<MemorySegmentPool.SegmentHandle> loader = new CryptoDirectIOSegmentBlockLoader(sharedSegmentPool, keyIvResolver);
+        BlockLoader<MemorySegmentPool.SegmentHandle> loader = new CryptoDirectIOBlockLoader(sharedSegmentPool, keyIvResolver);
 
         // Create a directory-specific cache that wraps the shared cache with this directory's loader
         long maxBlocks = RESEVERED_POOL_SIZE_IN_BYTES / CACHE_BLOCK_SIZE;
@@ -258,7 +253,6 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
 
         int threads = Math.max(4, Runtime.getRuntime().availableProcessors() / 4);
         Worker readaheadWorker = new QueuingWorker(READ_AHEAD_QUEUE_SIZE, threads, directoryCache);
-        IoEventLoopGroup sharedEventLoopGroup = new MultiThreadIoEventLoopGroup(threads, IoUringIoHandler.newFactory());
 
         return new CryptoDirectIODirectory(
             location,
@@ -268,8 +262,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             sharedSegmentPool,
             directoryCache,
             loader,
-            readaheadWorker,
-            sharedEventLoopGroup
+            readaheadWorker
         );
     }
 
@@ -277,7 +270,6 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * Initialize the shared MemorySegmentPool and BlockCache once per node.
      * This method is called from CryptoDirectoryPlugin.createComponents().
      */
-    @SuppressWarnings("DoubleCheckedLocking")
     public static void initializeSharedPool() {
         if (sharedSegmentPool == null || sharedBlockCache == null) {
             synchronized (initLock) {
@@ -295,12 +287,13 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                         );
                     sharedSegmentPool.warmUp((long) (maxBlocks * WARM_UP_PERCENTAGE));
 
-                    ThreadPoolExecutor cacheExec = new ThreadPoolExecutor(2, 4, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<>(), r -> {
+                    @SuppressWarnings("resource")
+                    ThreadPoolExecutor removalExec = new ThreadPoolExecutor(4, 8, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<>(), r -> {
                         Thread t = new Thread(r, "block-cache-maint");
                         t.setDaemon(true);
                         return t;
                     },
-                        new ThreadPoolExecutor.CallerRunsPolicy() // drop excess, avoid caller runs
+                        new ThreadPoolExecutor.CallerRunsPolicy() // useless since we have an unbounded queue.
                     );
 
                     Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> cache = Caffeine
@@ -319,7 +312,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                         })
                         .removalListener((key, value, cause) -> {
                             if (value != null && cause != RemovalCause.SIZE) {
-                                cacheExec.execute(() -> {
+                                removalExec.execute(() -> {
                                     try {
                                         value.close();
                                     } catch (Throwable t) {
