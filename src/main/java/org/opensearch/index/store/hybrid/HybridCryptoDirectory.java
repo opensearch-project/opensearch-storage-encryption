@@ -15,13 +15,10 @@ import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.index.store.directio.CryptoDirectIODirectory;
 import org.opensearch.index.store.iv.KeyIvResolver;
-import org.opensearch.index.store.mmap.EagerDecryptedCryptoMMapDirectory;
-import org.opensearch.index.store.mmap.LazyDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 
 public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
 
-    private final EagerDecryptedCryptoMMapDirectory eagerDecryptedCryptoMMapDirectory;
     private final CryptoDirectIODirectory cryptoDirectIODirectory;
 
     // Only these extensions get special routing - everything else goes to NIOFS
@@ -29,17 +26,13 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
 
     public HybridCryptoDirectory(
         LockFactory lockFactory,
-        LazyDecryptedCryptoMMapDirectory delegate,
-        EagerDecryptedCryptoMMapDirectory eagerDecryptedCryptoMMapDirectory,
-        CryptoDirectIODirectory cryptoDirectIODirectory,
+        CryptoDirectIODirectory delegate,
         Provider provider,
-        KeyIvResolver keyIvResolver,
-        Set<String> nioExtensions
+        KeyIvResolver keyIvResolver
     )
         throws IOException {
         super(lockFactory, delegate.getDirectory(), provider, keyIvResolver);
-        this.eagerDecryptedCryptoMMapDirectory = eagerDecryptedCryptoMMapDirectory;
-        this.cryptoDirectIODirectory = cryptoDirectIODirectory;
+        this.cryptoDirectIODirectory = delegate;
         // todo can be moved to buffer-io with caching
         // "kdm", "tip", "tmd", "psm", "fdm", "kdi");
         this.specialExtensions = Set.of("kdd", "cfs", "doc", "dvd", "nvd", "tim");

@@ -2,7 +2,7 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.mmap;
+package org.opensearch.index.store;
 
 import java.io.IOException;
 import java.lang.foreign.Arena;
@@ -196,14 +196,6 @@ public class PanamaNativeAccess {
         }
     }
 
-    public static int openFileWithODirect(String path, boolean direct, Arena arena) throws Throwable {
-        MemorySegment cPath = arena.allocateUtf8String(path);
-        @SuppressWarnings("PointlessBitwiseExpression")
-        int flags = O_RDONLY | (direct ? O_DIRECT : 0);
-
-        return (int) OPEN.invoke(cPath, flags);
-    }
-
     public static void pwrite(int fd, MemorySegment segment, long length, long offset) throws IOException {
         try {
             long written = (long) PWRITE.invokeExact(fd, segment.address(), length, offset);
@@ -221,7 +213,8 @@ public class PanamaNativeAccess {
 
     public static boolean dropFileCache(String filePath) {
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment cPath = arena.allocateUtf8String(filePath);
+            MemorySegment cPath = arena.allocateFrom(filePath);
+
             int fd = (int) OPEN.invoke(cPath, O_RDONLY);
             if (fd < 0) {
                 return false; // Cannot open file - may already be deleted

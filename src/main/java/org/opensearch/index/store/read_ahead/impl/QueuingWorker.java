@@ -79,11 +79,6 @@ public class QueuingWorker implements Worker {
             this.blockIndex = blockIndex;
             this.blockCount = blockCount;
         }
-
-        @Override
-        public String toString() {
-            return String.format("CacheGap{blockIndex=%d, blocks=%d}", blockIndex, blockCount);
-        }
     }
 
     public QueuingWorker(int queueCapacity, int threads, BlockCache<RefCountedMemorySegment> blockCache) {

@@ -9,6 +9,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.common.SuppressForbidden;
 
 /**
  * Exception hierarchy for memory pool exhaustion
@@ -44,6 +45,7 @@ class NoOffHeapMemoryException extends PoolExhaustedException {
 }
 
 @SuppressWarnings("preview")
+@SuppressForbidden(reason = "temporary")
 public class MemorySegmentPool implements Pool<MemorySegmentPool.SegmentHandle>, AutoCloseable {
     private static final Logger LOGGER = LogManager.getLogger(MemorySegmentPool.class);
     private final Object secondaryLock = new Object();

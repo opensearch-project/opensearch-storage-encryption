@@ -4,7 +4,7 @@
  */
 package org.opensearch.index.store.directio;
 
-import org.opensearch.index.store.mmap.PanamaNativeAccess;
+import org.opensearch.index.store.PanamaNativeAccess;
 
 public class DirectIoConfigs {
     public static final int DIRECT_IO_ALIGNMENT = Math.max(512, PanamaNativeAccess.getPageSize());

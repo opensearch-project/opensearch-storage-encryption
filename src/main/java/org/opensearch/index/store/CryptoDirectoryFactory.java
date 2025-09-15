@@ -4,20 +4,12 @@
  */
 package org.opensearch.index.store;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_INITIAL_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.READ_AHEAD_QUEUE_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.RESEVERED_POOL_SIZE_IN_BYTES;
-import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
-
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Provider;
 import java.security.Security;
 import java.time.Duration;
-import java.util.HashSet;
-import java.util.Set;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -47,11 +39,14 @@ import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.directio.CryptoDirectIODirectory;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_INITIAL_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.READ_AHEAD_QUEUE_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.RESEVERED_POOL_SIZE_IN_BYTES;
+import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
 import org.opensearch.index.store.iv.DefaultKeyIvResolver;
 import org.opensearch.index.store.iv.KeyIvResolver;
-import org.opensearch.index.store.mmap.EagerDecryptedCryptoMMapDirectory;
-import org.opensearch.index.store.mmap.LazyDecryptedCryptoMMapDirectory;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 import org.opensearch.index.store.pool.MemorySegmentPool;
 import org.opensearch.index.store.pool.Pool;
@@ -145,23 +140,10 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         KeyIvResolver keyIvResolver = new DefaultKeyIvResolver(baseDir, provider, getKeyProvider(indexSettings));
 
         IndexModule.Type type = IndexModule.defaultStoreType(IndexModule.NODE_STORE_ALLOW_MMAP.get(indexSettings.getNodeSettings()));
-        Set<String> preLoadExtensions = new HashSet<>(indexSettings.getValue(IndexModule.INDEX_STORE_PRE_LOAD_SETTING));
-        // [cfe, tvd, fnm, nvm, write.lock, dii, pay, segments_N, pos, si, fdt, tvx, liv, dvm, fdx, vem]
-        Set<String> nioExtensions = new HashSet<>(indexSettings.getValue(IndexModule.INDEX_STORE_HYBRID_NIO_EXTENSIONS));
 
         switch (type) {
             case HYBRIDFS -> {
                 LOGGER.debug("Using HYBRIDFS directory");
-                LazyDecryptedCryptoMMapDirectory lazyDecryptedCryptoMMapDirectory = new LazyDecryptedCryptoMMapDirectory(
-                    location,
-                    provider,
-                    keyIvResolver
-                );
-                EagerDecryptedCryptoMMapDirectory eagerDecryptedCryptoMMapDirectory = new EagerDecryptedCryptoMMapDirectory(
-                    location,
-                    provider,
-                    keyIvResolver
-                );
 
                 CryptoDirectIODirectory cryptoDirectIODirectory = createCryptoDirectIODirectory(
                     location,
@@ -169,22 +151,10 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                     provider,
                     keyIvResolver
                 );
-
-                return new HybridCryptoDirectory(
-                    lockFactory,
-                    lazyDecryptedCryptoMMapDirectory,
-                    eagerDecryptedCryptoMMapDirectory,
-                    cryptoDirectIODirectory,
-                    provider,
-                    keyIvResolver,
-                    nioExtensions
-                );
+                return new HybridCryptoDirectory(lockFactory, cryptoDirectIODirectory, provider, keyIvResolver);
             }
             case MMAPFS -> {
-                LOGGER.debug("Using MMAPFS directory");
-                LazyDecryptedCryptoMMapDirectory cryptoMMapDir = new LazyDecryptedCryptoMMapDirectory(location, provider, keyIvResolver);
-                cryptoMMapDir.setPreloadExtensions(preLoadExtensions);
-                return cryptoMMapDir;
+                throw new AssertionError("MMAPFS not supported with index level encryption");
             }
             case SIMPLEFS, NIOFS -> {
                 LOGGER.debug("Using NIOFS directory");

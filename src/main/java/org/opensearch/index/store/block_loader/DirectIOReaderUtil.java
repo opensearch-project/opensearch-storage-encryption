@@ -15,7 +15,7 @@ import java.nio.file.OpenOption;
 import java.util.Arrays;
 
 import org.opensearch.common.SuppressForbidden;
-import org.opensearch.index.store.mmap.PanamaNativeAccess;
+import org.opensearch.index.store.PanamaNativeAccess;
 
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "uses custom DirectIO")

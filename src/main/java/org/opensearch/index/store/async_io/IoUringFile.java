@@ -15,6 +15,8 @@ import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.opensearch.common.SuppressForbidden;
+
 import io.netty.channel.IoEvent;
 import io.netty.channel.IoEventLoop;
 import io.netty.channel.IoRegistration;
@@ -26,6 +28,7 @@ import io.netty.util.collection.IntObjectHashMap;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 
+@SuppressForbidden(reason = "doesn't uses nio")
 public class IoUringFile implements AutoCloseable {
 
     private static final OpenOption ExtendedOpenOption_DIRECT;

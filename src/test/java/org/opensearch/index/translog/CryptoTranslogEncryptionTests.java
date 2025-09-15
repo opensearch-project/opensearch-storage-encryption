@@ -14,8 +14,6 @@ import java.nio.file.StandardOpenOption;
 import java.security.Provider;
 import java.security.Security;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
@@ -27,9 +25,6 @@ import org.opensearch.test.OpenSearchTestCase;
  * Verify that translog data encryption actually works.
  */
 public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
-
-    private static final Logger logger = LogManager.getLogger(CryptoTranslogEncryptionTests.class);
-
     private Path tempDir;
     private KeyIvResolver keyIvResolver;
     private MasterKeyProvider keyProvider;
