@@ -6,16 +6,18 @@ package org.opensearch.index.store;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.security.Provider;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
+import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.index.engine.Engine;
 import org.opensearch.index.engine.EngineConfig;
 import org.opensearch.index.engine.EngineFactory;
 import org.opensearch.index.engine.InternalEngine;
-import org.opensearch.index.store.iv.DefaultKeyIvResolver;
+import org.opensearch.index.store.iv.IndexKeyResolverRegistry;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.translog.CryptoTranslogFactory;
 
@@ -58,25 +60,29 @@ public class CryptoEngineFactory implements EngineFactory {
         }
     }
 
-    /**
-     * Create a separate KeyIvResolver for translog encryption.
-     */
     private KeyIvResolver createTranslogKeyIvResolver(EngineConfig config) throws IOException {
-        // Create a separate key resolver for translog files
-
-        // Use the translog location for key storage
+        // Use index-level keys for translog encryption - same as directory encryption
         Path translogPath = config.getTranslogConfig().getTranslogPath();
-        Directory keyDirectory = FSDirectory.open(translogPath);
+        Path indexDirectory = translogPath.getParent().getParent(); // Go up two levels: translog -> shard -> index
 
-        // Create crypto directory factory to get the key provider
-        CryptoDirectoryFactory directoryFactory = new CryptoDirectoryFactory();
+        // Get the same settings that CryptoDirectoryFactory uses
+        Provider provider = config.getIndexSettings().getValue(CryptoDirectoryFactory.INDEX_CRYPTO_PROVIDER_SETTING);
+        MasterKeyProvider keyProvider = getKeyProvider(config);
 
-        // Create a dedicated key resolver for translog
-        return new DefaultKeyIvResolver(
-            keyDirectory,
-            config.getIndexSettings().getValue(CryptoDirectoryFactory.INDEX_CRYPTO_PROVIDER_SETTING),
-            directoryFactory.getKeyProvider(config.getIndexSettings())
-        );
+        // Create directory for index-level keys (same as CryptoDirectoryFactory)
+        Directory indexKeyDirectory = FSDirectory.open(indexDirectory);
+
+        // Use shared resolver registry to get the SAME resolver instance as CryptoDirectoryFactory
+        String indexUuid = config.getIndexSettings().getIndex().getUUID();
+        return IndexKeyResolverRegistry.getOrCreateResolver(indexUuid, indexKeyDirectory, provider, keyProvider);
+    }
+
+    /**
+     * Get the MasterKeyProvider - copied from CryptoDirectoryFactory logic
+     */
+    private MasterKeyProvider getKeyProvider(EngineConfig config) {
+        // Reuse the same logic as CryptoDirectoryFactory
+        return new CryptoDirectoryFactory().getKeyProvider(config.getIndexSettings());
     }
 
 }

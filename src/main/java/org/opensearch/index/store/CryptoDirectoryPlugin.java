@@ -22,6 +22,7 @@ import org.opensearch.env.NodeEnvironment;
 import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.EngineFactory;
+import org.opensearch.index.store.iv.NodeLevelKeyCache;
 import org.opensearch.plugins.EnginePlugin;
 import org.opensearch.plugins.IndexStorePlugin;
 import org.opensearch.plugins.Plugin;
@@ -48,7 +49,12 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
      */
     @Override
     public List<Setting<?>> getSettings() {
-        return Arrays.asList(CryptoDirectoryFactory.INDEX_KMS_TYPE_SETTING, CryptoDirectoryFactory.INDEX_CRYPTO_PROVIDER_SETTING);
+        return Arrays
+            .asList(
+                CryptoDirectoryFactory.INDEX_KMS_TYPE_SETTING,
+                CryptoDirectoryFactory.INDEX_CRYPTO_PROVIDER_SETTING,
+                CryptoDirectoryFactory.NODE_DATA_KEY_TTL_SECONDS_SETTING
+            );
     }
 
     /**
@@ -86,6 +92,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         Supplier<RepositoriesService> repositoriesServiceSupplier
     ) {
         CryptoDirectoryFactory.initializeSharedPool();
+        NodeLevelKeyCache.initialize(environment.settings());
 
         return Collections.emptyList();
     }

@@ -24,12 +24,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
     // Only these extensions get special routing - everything else goes to NIOFS
     private final Set<String> specialExtensions;
 
-    public HybridCryptoDirectory(
-        LockFactory lockFactory,
-        CryptoDirectIODirectory delegate,
-        Provider provider,
-        KeyIvResolver keyIvResolver
-    )
+    public HybridCryptoDirectory(LockFactory lockFactory, CryptoDirectIODirectory delegate, Provider provider, KeyIvResolver keyIvResolver)
         throws IOException {
         super(lockFactory, delegate.getDirectory(), provider, keyIvResolver);
         this.cryptoDirectIODirectory = delegate;

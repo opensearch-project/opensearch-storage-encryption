@@ -26,6 +26,9 @@ import org.opensearch.index.store.cipher.AesCipherFactory;
  * the encryption key and initialization vector (IV) used in encrypting and decrypting
  * Lucene index files.
  *
+ * Uses node-level cache for TTL-based key management with automatic refresh.
+ * Always returns the last known key if Master Key Provider is unavailable to ensure operations can continue.
+ *
  * Metadata files:
  * - "keyfile" stores the encrypted data key
  * - "ivFile" stores the base64-encoded IV
@@ -34,10 +37,10 @@ import org.opensearch.index.store.cipher.AesCipherFactory;
  */
 public class DefaultKeyIvResolver implements KeyIvResolver {
 
+    private final String indexUuid;
     private final Directory directory;
     private final MasterKeyProvider keyProvider;
 
-    private Key dataKey;
     private String iv;
 
     private static final String IV_FILE = "ivFile";
@@ -46,25 +49,35 @@ public class DefaultKeyIvResolver implements KeyIvResolver {
     /**
      * Constructs a new {@link DefaultKeyIvResolver} and ensures the key and IV are initialized.
      *
+     * @param indexUuid the unique identifier for the index
      * @param directory the Lucene directory to read/write metadata files
      * @param provider the JCE provider used for cipher operations
      * @param keyProvider the master key provider used to encrypt/decrypt data keys
      * @throws IOException if an I/O error occurs while reading or writing key/IV metadata
      */
-    public DefaultKeyIvResolver(Directory directory, Provider provider, MasterKeyProvider keyProvider) throws IOException {
+    public DefaultKeyIvResolver(String indexUuid, Directory directory, Provider provider, MasterKeyProvider keyProvider)
+        throws IOException {
+        this.indexUuid = indexUuid;
         this.directory = directory;
         this.keyProvider = keyProvider;
+
         initialize();
     }
 
     /**
      * Attempts to load the IV and encrypted key from the directory.
      * If not present, it generates and persists new values.
+     * Initializes cache with initial key load.
      */
     private void initialize() throws IOException {
         try {
             iv = readStringFile(IV_FILE);
-            dataKey = new SecretKeySpec(keyProvider.decryptKey(readByteArrayFile(KEY_FILE)), "AES");
+            // Load initial key into cache to verify it works
+            try {
+                NodeLevelKeyCache.getInstance().get(indexUuid, this);
+            } catch (Exception e) {
+                throw new IOException("Failed to load initial key from Master Key Provider", e);
+            }
         } catch (java.nio.file.NoSuchFileException e) {
             initNewKeyAndIv();
         }
@@ -74,15 +87,21 @@ public class DefaultKeyIvResolver implements KeyIvResolver {
      * Generates a new AES data key and IV (if not present), and writes them to metadata files.
      */
     private void initNewKeyAndIv() throws IOException {
-        DataKeyPair pair = keyProvider.generateDataPair();
-        dataKey = new SecretKeySpec(pair.getRawKey(), "AES");
-        writeByteArrayFile(KEY_FILE, pair.getEncryptedKey());
+        try {
+            DataKeyPair pair = keyProvider.generateDataPair();
+            writeByteArrayFile(KEY_FILE, pair.getEncryptedKey());
 
-        byte[] ivBytes = new byte[AesCipherFactory.IV_ARRAY_LENGTH];
-        SecureRandom random = Randomness.createSecure();
-        random.nextBytes(ivBytes);
-        iv = Base64.getEncoder().encodeToString(ivBytes);
-        writeStringFile(IV_FILE, iv);
+            byte[] ivBytes = new byte[AesCipherFactory.IV_ARRAY_LENGTH];
+            SecureRandom random = Randomness.createSecure();
+            random.nextBytes(ivBytes);
+            iv = Base64.getEncoder().encodeToString(ivBytes);
+            writeStringFile(IV_FILE, iv);
+
+            // Load initial key into cache to verify it works
+            NodeLevelKeyCache.getInstance().get(indexUuid, this);
+        } catch (Exception e) {
+            throw new IOException("Failed to initialize new key and IV", e);
+        }
     }
 
     /**
@@ -126,11 +145,32 @@ public class DefaultKeyIvResolver implements KeyIvResolver {
     }
 
     /**
+     * Loads key from Master Key provider by decrypting the stored encrypted key.
+     * This method is called by the node-level cache.
+     * Exceptions are allowed to bubble up - the cache will handle fallback to old value.
+     */
+    Key loadKeyFromMasterKeyProvider() throws Exception {
+        // Attempt decryption
+        byte[] encryptedKey = readByteArrayFile(KEY_FILE);
+        byte[] decryptedKey = keyProvider.decryptKey(encryptedKey);
+        Key newKey = new SecretKeySpec(decryptedKey, "AES");
+
+        return newKey;
+    }
+
+    /**
      * {@inheritDoc}
+     * Returns the data key for all operations.
+     * The cache handles MasterKey Provider failures by returning the last known key.
      */
     @Override
     public Key getDataKey() {
-        return dataKey;
+        try {
+            // Get key from cache
+            return NodeLevelKeyCache.getInstance().get(indexUuid, this);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to get encryption key", e);
+        }
     }
 
     /**
@@ -140,4 +180,5 @@ public class DefaultKeyIvResolver implements KeyIvResolver {
     public byte[] getIvBytes() {
         return Base64.getDecoder().decode(iv);
     }
+
 }

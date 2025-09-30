@@ -4,6 +4,12 @@
  */
 package org.opensearch.index.store;
 
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_INITIAL_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.READ_AHEAD_QUEUE_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.RESEVERED_POOL_SIZE_IN_BYTES;
+import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,8 +24,8 @@ import java.util.function.Function;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.LockFactory;
-import org.apache.lucene.store.NIOFSDirectory;
 import org.opensearch.cluster.metadata.CryptoMetadata;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.common.crypto.MasterKeyProvider;
@@ -39,13 +45,8 @@ import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.directio.CryptoDirectIODirectory;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_INITIAL_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.READ_AHEAD_QUEUE_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.RESEVERED_POOL_SIZE_IN_BYTES;
-import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
-import org.opensearch.index.store.iv.DefaultKeyIvResolver;
+import org.opensearch.index.store.iv.IndexKeyResolverRegistry;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 import org.opensearch.index.store.pool.MemorySegmentPool;
@@ -97,6 +98,13 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         }
     }, Property.NodeScope, Property.IndexScope);
 
+    /**
+     * Specifies the node-level TTL for data keys in seconds. Default is 3600 seconds (1 hour).
+     * This setting applies globally to all indices.
+     */
+    public static final Setting<Integer> NODE_DATA_KEY_TTL_SECONDS_SETTING = Setting
+        .intSetting("node.store.data_key_ttl_seconds", 3600, 1, Property.NodeScope);
+
     MasterKeyProvider getKeyProvider(IndexSettings indexSettings) {
         final String KEY_PROVIDER_TYPE = indexSettings.getValue(INDEX_KMS_TYPE_SETTING);
         final Settings settings = Settings.builder().put(indexSettings.getNodeSettings(), false).build();
@@ -136,8 +144,18 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      */
     protected Directory newFSDirectory(Path location, LockFactory lockFactory, IndexSettings indexSettings) throws IOException {
         final Provider provider = indexSettings.getValue(INDEX_CRYPTO_PROVIDER_SETTING);
-        Directory baseDir = new NIOFSDirectory(location, lockFactory);
-        KeyIvResolver keyIvResolver = new DefaultKeyIvResolver(baseDir, provider, getKeyProvider(indexSettings));
+
+        // Use index-level key resolver - store keys at index level
+
+        Path indexDirectory = location.getParent().getParent(); // Go up two levels: index -> shard -> index
+        MasterKeyProvider keyProvider = getKeyProvider(indexSettings);
+
+        // Create a directory for the index-level keys
+        Directory indexKeyDirectory = FSDirectory.open(indexDirectory);
+
+        // Use shared resolver registry to prevent race conditions
+        String indexUuid = indexSettings.getIndex().getUUID();
+        KeyIvResolver keyIvResolver = IndexKeyResolverRegistry.getOrCreateResolver(indexUuid, indexKeyDirectory, provider, keyProvider);
 
         IndexModule.Type type = IndexModule.defaultStoreType(IndexModule.NODE_STORE_ALLOW_MMAP.get(indexSettings.getNodeSettings()));
 
