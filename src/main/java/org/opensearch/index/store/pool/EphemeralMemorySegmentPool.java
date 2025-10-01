@@ -9,10 +9,11 @@ import java.lang.foreign.MemorySegment;
 import java.util.concurrent.TimeUnit;
 
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.index.store.block.RefCountedMemorySegment;
 
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "allocates standalone arenas per segment")
-public class EphemeralMemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
+public class EphemeralMemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoCloseable {
     private final Arena arena;
     private final int segmentSize;
 
@@ -22,23 +23,24 @@ public class EphemeralMemorySegmentPool implements Pool<MemorySegment>, AutoClos
     }
 
     @Override
-    public MemorySegment acquire() {
-        return arena.allocate(segmentSize);
+    public RefCountedMemorySegment acquire() {
+        MemorySegment segment = arena.allocate(segmentSize);
+        RefCountedMemorySegment refSegment = new RefCountedMemorySegment(segment, segmentSize, this::release);
+        return refSegment;
     }
 
     @Override
-    public void release(MemorySegment segment) {
+    public void release(RefCountedMemorySegment refSegment) {
         close();
     }
 
     @Override
     public void close() {
         arena.close();
-
     }
 
     @Override
-    public MemorySegment tryAcquire(long timeout, TimeUnit unit) throws InterruptedException {
+    public RefCountedMemorySegment tryAcquire(long timeout, TimeUnit unit) throws InterruptedException {
         return acquire();
     }
 

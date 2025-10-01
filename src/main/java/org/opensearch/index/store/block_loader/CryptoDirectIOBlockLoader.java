@@ -20,25 +20,24 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.cipher.MemorySegmentDecryptor;
 import org.opensearch.index.store.iv.KeyIvResolver;
-import org.opensearch.index.store.pool.MemorySegmentPool;
 import org.opensearch.index.store.pool.Pool;
 
-@SuppressWarnings("preview")
-public class CryptoDirectIOBlockLoader implements BlockLoader<MemorySegmentPool.SegmentHandle> {
+public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySegment> {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOBlockLoader.class);
 
-    private final Pool<MemorySegmentPool.SegmentHandle> segmentPool;
+    private final Pool<RefCountedMemorySegment> segmentPool;
     private final KeyIvResolver keyIvResolver;
 
-    public CryptoDirectIOBlockLoader(Pool<MemorySegmentPool.SegmentHandle> segmentPool, KeyIvResolver keyIvResolver) {
+    public CryptoDirectIOBlockLoader(Pool<RefCountedMemorySegment> segmentPool, KeyIvResolver keyIvResolver) {
         this.segmentPool = segmentPool;
         this.keyIvResolver = keyIvResolver;
     }
 
     @Override
-    public MemorySegmentPool.SegmentHandle[] load(Path filePath, long startOffset, long blockCount) throws Exception {
+    public RefCountedMemorySegment[] load(Path filePath, long startOffset, long blockCount) throws Exception {
         if (!Files.exists(filePath)) {
             throw new NoSuchFileException(filePath.toString());
         }
@@ -51,7 +50,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<MemorySegmentPool.
             throw new IllegalArgumentException("blockCount must be positive: " + blockCount);
         }
 
-        MemorySegmentPool.SegmentHandle[] result = new MemorySegmentPool.SegmentHandle[(int) blockCount];
+        RefCountedMemorySegment[] result = new RefCountedMemorySegment[(int) blockCount];
         long readLength = blockCount << CACHE_BLOCK_SIZE_POWER;
 
         try (
@@ -81,7 +80,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<MemorySegmentPool.
 
             try {
                 while (blockIndex < blockCount && bytesCopied < bytesRead) {
-                    MemorySegmentPool.SegmentHandle handle = segmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
+                    RefCountedMemorySegment handle = segmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
                     if (handle == null) {
                         throw new RuntimeException("Failed to acquire a block");
                     }
@@ -114,10 +113,10 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<MemorySegmentPool.
         }
     }
 
-    private void releaseHandles(MemorySegmentPool.SegmentHandle[] handles, int upTo) {
+    private void releaseHandles(RefCountedMemorySegment[] handles, int upTo) {
         for (int i = 0; i < upTo; i++) {
             if (handles[i] != null) {
-                handles[i].release();  // Release back to correct tier
+                handles[i].decRef();
             }
         }
     }

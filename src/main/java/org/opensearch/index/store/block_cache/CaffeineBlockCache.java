@@ -4,8 +4,6 @@
  */
 package org.opensearch.index.store.block_cache;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
-
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
@@ -15,8 +13,8 @@ import java.util.Map;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_loader.BlockLoader;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
 import org.opensearch.index.store.pool.Pool;
 
 import com.github.benmanes.caffeine.cache.Cache;
@@ -65,7 +63,9 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
             BlockCacheValue<T> value = cache.get(key, k -> {
                 try {
                     V segment = blockLoader.load(k);
-                    return maybeWrapValueForRefCounting(segment);
+                    @SuppressWarnings("unchecked")
+                    BlockCacheValue<T> result = (BlockCacheValue<T>) segment;
+                    return result;
                 } catch (Exception e) {
                     return handleLoadException(k, e);
                 }
@@ -85,14 +85,22 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
 
     @Override
     public void prefetch(BlockCacheKey key) {
-        cache.asMap().computeIfAbsent(key, k -> {
-            try {
-                V segment = blockLoader.load(k);
-                return maybeWrapValueForRefCounting(segment);
-            } catch (Exception e) {
-                return handleLoadException(k, e);
-            }
-        });
+        try {
+            cache.get(key, k -> {
+                try {
+                    V segment = blockLoader.load(k);
+                    // Direct cast - BlockLoader contract guarantees V is BlockCacheValue<T>
+                    @SuppressWarnings("unchecked")
+                    BlockCacheValue<T> result = (BlockCacheValue<T>) segment;
+                    return result;
+                } catch (Exception e) {
+                    return handleLoadException(k, e);
+                }
+            });
+        } catch (Exception e) {
+            // Prefetch failures are non-fatal - log and continue
+            LOGGER.debug("Prefetch failed for key: {}", key, e);
+        }
     }
 
     @Override
@@ -148,18 +156,20 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
 
             for (int i = 0; i < loadedBlocks.length; i++) {
                 V block = loadedBlocks[i];
-                if (block == null) {
-                    throw new IOException("BlockLoader returned null at index " + i + " for path " + filePath);
-                }
 
                 long blockOffset = startOffset + i * CACHE_BLOCK_SIZE;
                 BlockCacheKey key = createBlockKey(filePath, blockOffset);
-                BlockCacheValue<T> wrapped = maybeWrapValueForRefCounting(block);
+
+                // Direct cast - BlockLoader contract guarantees V is BlockCacheValue<T>
+                @SuppressWarnings("unchecked")
+                BlockCacheValue<T> wrapped = (BlockCacheValue<T>) block;
                 loaded.put(key, wrapped);
 
                 if (cache.asMap().putIfAbsent(key, wrapped) != null) {
-                    // already cached → release immediateky as we won't use it in the cache.
-                    segmentPool.release(block);
+                    // already cached → release our newly loaded segment as we won't use it
+                    // we use decRef() not close() - this segment was never inserted into cache,
+                    // so we shouldn't increment generation.
+                    wrapped.decRef();
                 }
             }
 
@@ -179,27 +189,6 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     // Helper method to create appropriate cache key for file blocks
     private BlockCacheKey createBlockKey(Path filePath, long offset) {
         return new FileBlockCacheKey(filePath, offset);
-    }
-
-    @SuppressWarnings("unchecked")
-    private BlockCacheValue<T> maybeWrapValueForRefCounting(V loadedBlock) {
-        if (loadedBlock == null) {
-            LOGGER.error("BlockLoader returned null segment");
-            throw new IllegalArgumentException("BlockLoader returned null segment");
-        }
-
-        // Handle SegmentHandle from MemorySegmentPool
-        if (loadedBlock instanceof org.opensearch.index.store.pool.MemorySegmentPool.SegmentHandle handle) {
-            RefCountedMemorySegment refSegment = new RefCountedMemorySegment(
-                handle.segment(),
-                CACHE_BLOCK_SIZE,
-                seg -> segmentPool.release(loadedBlock)
-            );
-            return (BlockCacheValue<T>) refSegment;
-        }
-
-        // For non-MemorySegment types, return the segment directly
-        return (BlockCacheValue<T>) loadedBlock;
     }
 
     private BlockCacheValue<T> handleLoadException(BlockCacheKey key, Exception e) {

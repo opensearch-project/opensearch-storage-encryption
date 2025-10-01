@@ -25,7 +25,6 @@ import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
-import org.opensearch.index.store.pool.MemorySegmentPool;
 import org.opensearch.index.store.pool.Pool;
 
 /**
@@ -62,7 +61,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         OutputStream os,
         byte[] key,
         byte[] iv,
-        Pool<MemorySegmentPool.SegmentHandle> memorySegmentPool,
+        Pool<RefCountedMemorySegment> memorySegmentPool,
         BlockCache<RefCountedMemorySegment> blockCache
     )
         throws IOException {
@@ -80,7 +79,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         private final byte[] iv;
         private final byte[] buffer;
         private final Path path;
-        private final Pool<MemorySegmentPool.SegmentHandle> memorySegmentPool;
+        private final Pool<RefCountedMemorySegment> memorySegmentPool;
         private final BlockCache<RefCountedMemorySegment> blockCache;
 
         private int bufferPosition = 0;
@@ -92,7 +91,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             Path path,
             byte[] key,
             byte[] iv,
-            Pool<MemorySegmentPool.SegmentHandle> memorySegmentPool,
+            Pool<RefCountedMemorySegment> memorySegmentPool,
             BlockCache<RefCountedMemorySegment> blockCache
         ) {
             super(os);
@@ -210,19 +209,14 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             // Cache only fully-aligned full blocks
             if (blockOffset == 0 && chunkLen == CACHE_BLOCK_SIZE) {
                 try {
-                    final MemorySegmentPool.SegmentHandle handle = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
-                    if (handle != null) {
-                        final MemorySegment pooled = handle.segment();
+                    final RefCountedMemorySegment refSegment = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
+                    if (refSegment != null) {
+                        final MemorySegment pooled = refSegment.segment();
                         final MemorySegment pooledSlice = pooled.asSlice(0, CACHE_BLOCK_SIZE);
                         // Cache plaintext data
                         MemorySegment.copy(sourceData, sourceOffset, pooledSlice, 0, CACHE_BLOCK_SIZE);
 
                         BlockCacheKey cacheKey = new FileBlockCacheKey(path, blockAlignedOffset);
-                        RefCountedMemorySegment refSegment = new RefCountedMemorySegment(
-                            pooled,
-                            CACHE_BLOCK_SIZE,
-                            seg -> handle.release()  // Release back to the correct tier!
-                        );
                         blockCache.put(cacheKey, refSegment);
                     } else {
                         LOGGER.info("Failed to acquire from pool within specificed timeout path={} {} ms", path, 5);

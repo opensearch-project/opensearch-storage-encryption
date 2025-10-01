@@ -48,7 +48,7 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
     private static final Logger LOGGER = LogManager.getLogger(DirectIOWithIoUringIndexOutput.class);
 
     private static final int BUFFER_SIZE = 1 << DIRECT_IO_WRITE_BUFFER_SIZE_POWER;
-    private final Pool<MemorySegment> memorySegmentPool;
+    private final Pool<RefCountedMemorySegment> memorySegmentPool;
     private final BlockCache<RefCountedMemorySegment> blockCache;
     private final FileChannel channel;          // for sync operations (truncate)
     private final IoUringFile ioUringFile;      // for async write operations
@@ -71,7 +71,7 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
     public DirectIOWithIoUringIndexOutput(
         Path path,
         String name,
-        Pool<MemorySegment> memorySegmentPool,
+        Pool<RefCountedMemorySegment> memorySegmentPool,
         BlockCache<RefCountedMemorySegment> blockCache,
         IoEventLoopGroup group
     )
@@ -227,17 +227,16 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
 
     private void tryCachePlaintextSegment(MemorySegment cacheSegment, int size, long offset) {
         try {
-            final MemorySegment pooled = memorySegmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
-            if (pooled == null) {
+            final RefCountedMemorySegment refSegment = memorySegmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
+            if (refSegment == null) {
                 LOGGER.debug("Memory pool segment not available within timeout; skipping cache for {}", path);
                 return;
             }
 
-            final MemorySegment pooledSlice = pooled.asSlice(0, size);
+            final MemorySegment pooledSlice = refSegment.segment().asSlice(0, size);
             MemorySegment.copy(cacheSegment, 0, pooledSlice, 0, size);
 
             BlockCacheKey cacheKey = new FileBlockCacheKey(path, offset);
-            RefCountedMemorySegment refSegment = new RefCountedMemorySegment(pooled, size, seg -> memorySegmentPool.release(pooled));
             blockCache.put(cacheKey, refSegment);
 
         } catch (InterruptedException ie) {

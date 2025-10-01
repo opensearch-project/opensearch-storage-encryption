@@ -17,24 +17,25 @@ import java.util.concurrent.locks.ReentrantLock;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.index.store.block.RefCountedMemorySegment;
 
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "uses cleanup for memory pool")
-public class SecondaryMemorySegmentPool implements Pool<MemorySegment>, AutoCloseable {
+public class SecondaryMemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoCloseable {
     private static final Logger LOGGER = LogManager.getLogger(SecondaryMemorySegmentPool.class);
     private static final long CLEANUP_INTERVAL_MINUTES = 15;
 
+    private volatile boolean closed = false;
+
     private final ReentrantLock lock = new ReentrantLock();
     private final Condition notEmpty = lock.newCondition();
-    private final Deque<MemorySegment> freeList = new ArrayDeque<>();
+    private final Deque<RefCountedMemorySegment> freeList = new ArrayDeque<>();
     private Arena sharedArena;  // Non-final to allow recreation during renewal
     private final int segmentSize;
     private final int maxSegments;
     private final long totalMemory;
     private final boolean requiresZeroing;
 
-    private volatile boolean retired = false;  // No new allocations, but accepts releases
-    private volatile boolean closed = false;   // All resources closed, can be renewed
     private int allocatedSegments = 0;
 
     // Cached values to reduce lock overhead
@@ -75,34 +76,34 @@ public class SecondaryMemorySegmentPool implements Pool<MemorySegment>, AutoClos
     }
 
     @Override
-    public MemorySegment acquire() throws InterruptedException {
+    public RefCountedMemorySegment acquire() throws InterruptedException {
         lock.lock();
         try {
-            // Check if pool is retired - no new allocations allowed
-            if (retired) {
-                throw new IllegalStateException("Secondary pool is retired: no new allocations accepted");
+            // Check pool state - only accept allocations if ACTIVE
+            if (closed) {
+                throw new IllegalStateException("Secondary pool is closed no new allocations accepted");
             }
 
             // Try to get from free list first
             if (!freeList.isEmpty()) {
-                MemorySegment segment = freeList.removeFirst();
+                RefCountedMemorySegment refSegment = freeList.removeFirst();
                 cachedFreeListSize = freeList.size();
-                return segment;
+                // Reset to fresh state (refCount=1, retired=false)
+                refSegment.reset();
+                LOGGER.trace("Acquired RefCountedMemorySegment from free list - free: {}", cachedFreeListSize);
+                return refSegment;
             }
 
             // Try to allocate new segment if under capacity
             if (allocatedSegments < maxSegments) {
                 MemorySegment segment = sharedArena.allocate(segmentSize);
+                RefCountedMemorySegment refSegment = new RefCountedMemorySegment(segment, segmentSize, this::release);
                 allocatedSegments++;
-                LOGGER.trace("Allocated new segment in secondary pool, total allocated: {}", allocatedSegments);
-                return segment;
+                LOGGER.trace("Allocated new RefCountedMemorySegment in secondary pool - allocated: {}", allocatedSegments);
+                return refSegment;
             }
 
-            // Pool is full - throw exception instead of waiting
-            if (closed) {
-                throw new IllegalStateException("Pool is closed");
-            }
-
+            // Pool is full - throw exception
             throw new SecondaryPoolExhaustedException();
         } finally {
             lock.unlock();
@@ -110,70 +111,33 @@ public class SecondaryMemorySegmentPool implements Pool<MemorySegment>, AutoClos
     }
 
     @Override
-    public MemorySegment tryAcquire(long timeout, TimeUnit unit) throws InterruptedException {
-        lock.lock();
-        try {
-            // Check if pool is retired - no new allocations allowed
-            if (retired) {
-                throw new IllegalStateException("Secondary pool is retired: no new allocations accepted");
-            }
-
-            // Try to get from free list first
-            if (!freeList.isEmpty()) {
-                MemorySegment segment = freeList.removeFirst();
-                cachedFreeListSize = freeList.size();
-                return segment;
-            }
-
-            // Try to allocate new segment if under capacity
-            if (allocatedSegments < maxSegments) {
-                MemorySegment segment = sharedArena.allocate(segmentSize);
-                allocatedSegments++;
-                return segment;
-            }
-
-            // Pool is full - throw exception instead of waiting
-            if (closed) {
-                throw new IllegalStateException("Pool is closed");
-            }
-
-            LOGGER
-                .debug(
-                    "Secondary pool exhausted: no free segments available. Pool stats: allocated={}/{}, free={}",
-                    allocatedSegments,
-                    maxSegments,
-                    freeList.size()
-                );
-            throw new SecondaryPoolExhaustedException();
-        } finally {
-            lock.unlock();
-        }
+    public RefCountedMemorySegment tryAcquire(long timeout, TimeUnit unit) throws InterruptedException {
+        return acquire();
     }
 
     @Override
-    public void release(MemorySegment segment) {
-        if (segment == null) {
+    public void release(RefCountedMemorySegment refSegment) {
+        if (refSegment == null) {
             return;
         }
 
         lock.lock();
         try {
-            // Don't accept releases if fully closed
             if (closed) {
                 return;
             }
 
-            // Accept releases even if retired (but no new allocations)
             // Optional zeroing for security
             if (requiresZeroing) {
-                segment.fill((byte) 0);
+                refSegment.segment().fill((byte) 0);
             }
 
-            freeList.addLast(segment);
+            // Add back to free list (refCount is 0, will be reset to 1 in acquire())
+            freeList.addLast(refSegment);
             cachedFreeListSize = freeList.size();
             notEmpty.signal();
 
-            LOGGER.trace("Released segment to secondary pool, free list size: {}", cachedFreeListSize);
+            LOGGER.trace("RefCountedMemorySegment returned to secondary pool - free: {}", cachedFreeListSize);
         } finally {
             lock.unlock();
         }
@@ -198,9 +162,19 @@ public class SecondaryMemorySegmentPool implements Pool<MemorySegment>, AutoClos
         return segmentSize;
     }
 
+    /**
+     * Check if pool is under memory pressure.
+     * Returns true when available capacity (free + unallocated) is low.
+     */
     @Override
     public boolean isUnderPressure() {
-        return allocatedSegments > (maxSegments * 0.9) && cachedFreeListSize < (maxSegments * 0.1);
+        // Calculate available segments (can be served immediately without blocking)
+        int free = cachedFreeListSize;
+        int unallocated = maxSegments - allocatedSegments;
+        int available = free + unallocated;
+
+        // Under pressure if less than x% of pool capacity is available
+        return available < (maxSegments * 0.1);
     }
 
     @Override
@@ -214,14 +188,17 @@ public class SecondaryMemorySegmentPool implements Pool<MemorySegment>, AutoClos
         int free = cachedFreeListSize;
         int allocated = allocatedSegments;
         int unallocated = maxSegments - allocated;
+        double utilization = (double) (allocated - free) / maxSegments * 100;
+        double allocation = (double) allocated / maxSegments * 100;
         return String
             .format(
-                "SecondaryPool[max=%d, allocated=%d, free=%d, unallocated=%d, utilization=%.1f%%, cleanup=enabled]",
+                "SecondaryPool[max=%d, allocated=%d, free=%d, unallocated=%d, utilization=%.1f%%, allocation=%.1f%%, cleanup=enabled]",
                 maxSegments,
                 allocated,
                 free,
                 unallocated,
-                (double) allocated / maxSegments * 100
+                utilization,
+                allocation
             );
     }
 
@@ -236,16 +213,6 @@ public class SecondaryMemorySegmentPool implements Pool<MemorySegment>, AutoClos
         // Take the same lock that acquire() uses to block new allocations
         lock.lock();
         try {
-            double utilization = (double) allocatedSegments / maxSegments;
-
-            LOGGER
-                .debug(
-                    "Secondary pool cleanup cycle: utilization={}%, free={}, allocated={}",
-                    String.format("%.1f", utilization * 100),
-                    cachedFreeListSize,
-                    allocatedSegments
-                );
-
             if (allocatedSegments == 0 && cachedFreeListSize == 0) {
                 consecutiveIdleCycles++;
                 if (consecutiveIdleCycles >= 4) {
@@ -256,8 +223,7 @@ public class SecondaryMemorySegmentPool implements Pool<MemorySegment>, AutoClos
                             consecutiveIdleCycles * CLEANUP_INTERVAL_MINUTES
                         );
 
-                    closeArena();
-                    cleanupExecutor.shutdownNow();
+                    tryFreeArena();
                 }
             } else {
                 consecutiveIdleCycles = 0;
@@ -270,34 +236,34 @@ public class SecondaryMemorySegmentPool implements Pool<MemorySegment>, AutoClos
     /**
      * Close arena to release memory back to OS
      */
-    private void closeArena() {
-        // Mark closed under lock to prevent new acquisitions
+    private void tryFreeArena() {
         lock.lock();
         try {
-            retired = true;  // Transition through retired to closed
+            int active = allocatedSegments - freeList.size();
+            if (active > 0) {
+                LOGGER.debug("Cannot free arena: {} active segments still in use", active);
+                return;
+            }
+
             closed = true;
             freeList.clear();
             cachedFreeListSize = 0;
             notEmpty.signalAll();
-        } finally {
-            lock.unlock();
-        }
 
-        // Close arena outside lock to avoid blocking
-        try {
             if (sharedArena.scope().isAlive()) {
                 sharedArena.close();
-                LOGGER.info("Secondary pool memory released to OS");
+                LOGGER.info("Secondary pool memory safely released to OS");
             }
         } catch (Exception e) {
             LOGGER.warn("Error closing secondary pool arena", e);
+        } finally {
+            lock.unlock();
         }
     }
 
     @Override
     public void close() {
         cleanupExecutor.shutdown();
-
         try {
             if (!cleanupExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
                 cleanupExecutor.shutdownNow();
@@ -309,76 +275,38 @@ public class SecondaryMemorySegmentPool implements Pool<MemorySegment>, AutoClos
 
         lock.lock();
         try {
-            retired = true;  // Transition through retired to closed
+            if (closed)
+                return;
             closed = true;
             freeList.clear();
             cachedFreeListSize = 0;
             notEmpty.signalAll();
+            int active = allocatedSegments - freeList.size();
+            if (active > 0) {
+                LOGGER
+                    .warn(
+                        "Closing with {} active segments still in use (allocated={}, free={})",
+                        active,
+                        allocatedSegments,
+                        freeList.size()
+                    );
+            }
         } finally {
             lock.unlock();
         }
 
-        if (sharedArena.scope().isAlive()) {
-            sharedArena.close();
+        try {
+            if (sharedArena.scope().isAlive()) {
+                sharedArena.close();
+                LOGGER.info("Secondary pool memory released to OS");
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Error closing secondary pool arena", e);
         }
-
-        LOGGER.info("Secondary pool with cleanup closed");
     }
 
     @Override
     public boolean isClosed() {
         return closed;
-    }
-
-    /**
-     * Retire the pool - no new allocations, but releases are still accepted.
-     * This allows existing segments to be returned while preventing new allocations.
-     */
-    public void retire() {
-        lock.lock();
-        try {
-            if (!closed) {
-                retired = true;
-                LOGGER.info("Secondary pool retired: no new allocations accepted, releases still accepted");
-            }
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    /**
-     * Check if the pool is in retired state.
-     */
-    public boolean isRetired() {
-        return retired;
-    }
-
-    /**
-     * Renew a closed pool by creating a new arena and resetting state.
-     * Only works if the pool is fully closed.
-     */
-    public synchronized void renew() {
-        if (!closed) {
-            LOGGER.debug("Cannot renew pool that is not closed");
-            return;
-        }
-
-        lock.lock();
-        try {
-            // Create new arena to replace the closed one
-            sharedArena = Arena.ofShared();
-
-            // Reset all state
-            retired = false;
-            closed = false;
-            allocatedSegments = 0;
-            freeList.clear();
-            cachedFreeListSize = 0;
-            consecutiveIdleCycles = 0;
-
-            LOGGER.info("Secondary pool renewed: new arena created, ready for allocations");
-        } finally {
-            lock.unlock();
-        }
     }
 }
