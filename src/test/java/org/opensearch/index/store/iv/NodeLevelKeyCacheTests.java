@@ -13,7 +13,9 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.lang.reflect.Field;
 import java.security.Key;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -40,7 +42,7 @@ public class NodeLevelKeyCacheTests {
     private static final String TEST_INDEX_UUID = "test-index-123";
 
     @Before
-    public void setUp() {
+    public void setUp() throws Exception {
         MockitoAnnotations.openMocks(this);
 
         // Create test keys
@@ -50,12 +52,30 @@ public class NodeLevelKeyCacheTests {
 
         // Reset singleton before each test
         NodeLevelKeyCache.reset();
+
+        // Clear the IndexKeyResolverRegistry cache
+        IndexKeyResolverRegistry.clearCache();
+
+        // Setup mock resolver
+        when(mockResolver.loadKeyFromMasterKeyProvider()).thenReturn(testKey1);
     }
 
     @After
     public void tearDown() {
         // Clean up after each test
         NodeLevelKeyCache.reset();
+        IndexKeyResolverRegistry.clearCache();
+    }
+
+    /**
+     * Helper method to register a mock resolver in the IndexKeyResolverRegistry
+     */
+    private void registerMockResolver(String indexUuid) throws Exception {
+        Field resolverCacheField = IndexKeyResolverRegistry.class.getDeclaredField("resolverCache");
+        resolverCacheField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        ConcurrentMap<String, KeyIvResolver> resolverCache = (ConcurrentMap<String, KeyIvResolver>) resolverCacheField.get(null);
+        resolverCache.put(indexUuid, mockResolver);
     }
 
     @Test
@@ -74,14 +94,15 @@ public class NodeLevelKeyCacheTests {
 
     @Test
     public void testInitialKeyLoad() throws Exception {
-        when(mockResolver.loadKeyFromMasterKeyProvider()).thenReturn(testKey1);
-
         Settings settings = Settings.EMPTY;
         NodeLevelKeyCache.initialize(settings);
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
-        Key retrievedKey = cache.get(TEST_INDEX_UUID, mockResolver);
-        
+        // Register the mock resolver before using the cache
+        registerMockResolver(TEST_INDEX_UUID);
+
+        Key retrievedKey = cache.get(TEST_INDEX_UUID);
+
         assertEquals(testKey1, retrievedKey);
         verify(mockResolver, times(1)).loadKeyFromMasterKeyProvider();
     }
@@ -95,9 +116,12 @@ public class NodeLevelKeyCacheTests {
         NodeLevelKeyCache.initialize(settings);
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
         
+        // Register the mock resolver
+        registerMockResolver(TEST_INDEX_UUID);
+        
         Exception thrown = null;
         try {
-            cache.get(TEST_INDEX_UUID, mockResolver);
+            cache.get(TEST_INDEX_UUID);
             fail("Expected exception not thrown");
         } catch (Exception e) {
             thrown = e;
@@ -109,17 +133,18 @@ public class NodeLevelKeyCacheTests {
 
     @Test
     public void testCacheHit() throws Exception {
-        when(mockResolver.loadKeyFromMasterKeyProvider()).thenReturn(testKey1);
-        
         Settings settings = Settings.EMPTY;
         NodeLevelKeyCache.initialize(settings);
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
-        
+
+        // Register the mock resolver
+        registerMockResolver(TEST_INDEX_UUID);
+
         // First call should load
-        Key key1 = cache.get(TEST_INDEX_UUID, mockResolver);
+        Key key1 = cache.get(TEST_INDEX_UUID);
         // Second call should hit cache
-        Key key2 = cache.get(TEST_INDEX_UUID, mockResolver);
-        
+        Key key2 = cache.get(TEST_INDEX_UUID);
+
         assertEquals(key1, key2);
         // Should only load once
         verify(mockResolver, times(1)).loadKeyFromMasterKeyProvider();
@@ -137,21 +162,24 @@ public class NodeLevelKeyCacheTests {
         NodeLevelKeyCache.initialize(settings);
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
+        // Register the mock resolver
+        registerMockResolver(TEST_INDEX_UUID);
+
         // Initial load
-        Key initialKey = cache.get(TEST_INDEX_UUID, mockResolver);
+        Key initialKey = cache.get(TEST_INDEX_UUID);
         assertEquals(testKey1, initialKey);
 
         // Wait for refresh to trigger and complete
         Thread.sleep(1500);
 
         // Force a get to ensure refresh is complete
-        cache.get(TEST_INDEX_UUID, mockResolver);
+        cache.get(TEST_INDEX_UUID);
 
         // Wait a bit more for async refresh to complete
         Thread.sleep(500);
 
         // Access again - should get refreshed key
-        Key refreshedKey = cache.get(TEST_INDEX_UUID, mockResolver);
+        Key refreshedKey = cache.get(TEST_INDEX_UUID);
         assertEquals(testKey2, refreshedKey);
 
         verify(mockResolver, atLeast(2)).loadKeyFromMasterKeyProvider();
@@ -169,15 +197,18 @@ public class NodeLevelKeyCacheTests {
         NodeLevelKeyCache.initialize(settings);
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
+        // Register the mock resolver
+        registerMockResolver(TEST_INDEX_UUID);
+
         // Initial load
-        Key initialKey = cache.get(TEST_INDEX_UUID, mockResolver);
+        Key initialKey = cache.get(TEST_INDEX_UUID);
         assertEquals(testKey1, initialKey);
 
         // Wait for refresh to trigger
         Thread.sleep(1500);
 
         // Access again - should still get old key since refresh failed
-        Key stillOldKey = cache.get(TEST_INDEX_UUID, mockResolver);
+        Key stillOldKey = cache.get(TEST_INDEX_UUID);
         assertEquals(testKey1, stillOldKey);
 
         verify(mockResolver, times(2)).loadKeyFromMasterKeyProvider();
@@ -197,14 +228,17 @@ public class NodeLevelKeyCacheTests {
         NodeLevelKeyCache.initialize(settings);
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
+        // Register the mock resolver
+        registerMockResolver(TEST_INDEX_UUID);
+
         // Initial load
-        Key initialKey = cache.get(TEST_INDEX_UUID, mockResolver);
+        Key initialKey = cache.get(TEST_INDEX_UUID);
         assertEquals(testKey1, initialKey);
 
         // Multiple accesses with failed refreshes
         for (int i = 0; i < 3; i++) {
             Thread.sleep(1200);
-            Key key = cache.get(TEST_INDEX_UUID, mockResolver);
+            Key key = cache.get(TEST_INDEX_UUID);
             assertEquals(testKey1, key); // Should always return original key
         }
 
@@ -213,55 +247,60 @@ public class NodeLevelKeyCacheTests {
 
     @Test
     public void testEviction() throws Exception {
-        when(mockResolver.loadKeyFromMasterKeyProvider()).thenReturn(testKey1);
-        
         Settings settings = Settings.EMPTY;
         NodeLevelKeyCache.initialize(settings);
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
-        
+
+        // Register the mock resolver
+        registerMockResolver(TEST_INDEX_UUID);
+
         // Load key
-        cache.get(TEST_INDEX_UUID, mockResolver);
+        cache.get(TEST_INDEX_UUID);
         assertEquals(1, cache.size());
-        
+
         // Evict
         cache.evict(TEST_INDEX_UUID);
-        
+
         // Key should be loaded again
-        cache.get(TEST_INDEX_UUID, mockResolver);
-        
+        cache.get(TEST_INDEX_UUID);
+
         // Should have loaded twice (once before eviction, once after)
         verify(mockResolver, times(2)).loadKeyFromMasterKeyProvider();
     }
 
     @Test
     public void testSize() throws Exception {
-        when(mockResolver.loadKeyFromMasterKeyProvider()).thenReturn(testKey1);
-        
         Settings settings = Settings.EMPTY;
         NodeLevelKeyCache.initialize(settings);
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
-        
+
         assertEquals(0, cache.size());
-        
-        cache.get("index1", mockResolver);
+
+        // Register resolvers for both indices
+        registerMockResolver("index1");
+        registerMockResolver("index2");
+
+        cache.get("index1");
         assertEquals(1, cache.size());
-        
-        cache.get("index2", mockResolver);
+
+        cache.get("index2");
         assertEquals(2, cache.size());
     }
 
     @Test
     public void testClear() throws Exception {
-        when(mockResolver.loadKeyFromMasterKeyProvider()).thenReturn(testKey1);
-        
         Settings settings = Settings.EMPTY;
         NodeLevelKeyCache.initialize(settings);
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
-        
-        cache.get("index1", mockResolver);
-        cache.get("index2", mockResolver);
+
+        // Register resolvers for both indices
+        registerMockResolver("index1");
+        registerMockResolver("index2");
+
+        cache.get("index1");
+        cache.get("index2");
         assertEquals(2, cache.size());
-        
+
         cache.clear();
         assertEquals(0, cache.size());
     }
@@ -299,6 +338,9 @@ public class NodeLevelKeyCacheTests {
         NodeLevelKeyCache.initialize(settings);
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
+        // Register the mock resolver
+        registerMockResolver(TEST_INDEX_UUID);
+
         int threadCount = 10;
         ExecutorService executor = Executors.newFixedThreadPool(threadCount);
         CountDownLatch latch = new CountDownLatch(threadCount);
@@ -306,7 +348,7 @@ public class NodeLevelKeyCacheTests {
         for (int i = 0; i < threadCount; i++) {
             executor.submit(() -> {
                 try {
-                    Key key = cache.get(TEST_INDEX_UUID, mockResolver);
+                    Key key = cache.get(TEST_INDEX_UUID);
                     assertEquals(testKey1, key);
                 } catch (Exception e) {
                     fail("Unexpected exception: " + e.getMessage());
@@ -332,22 +374,12 @@ public class NodeLevelKeyCacheTests {
         // Test null index UUID
         Exception thrown = null;
         try {
-            cache.get(null, mockResolver);
+            cache.get(null);
         } catch (NullPointerException e) {
             thrown = e;
         }
         assertNotNull(thrown);
         assertTrue(thrown.getMessage().contains("indexUuid cannot be null"));
-
-        // Test null resolver
-        thrown = null;
-        try {
-            cache.get(TEST_INDEX_UUID, null);
-        } catch (NullPointerException e) {
-            thrown = e;
-        }
-        assertNotNull(thrown);
-        assertTrue(thrown.getMessage().contains("resolver cannot be null"));
 
         // Test evict with null
         thrown = null;
@@ -381,15 +413,18 @@ public class NodeLevelKeyCacheTests {
         NodeLevelKeyCache.initialize(settings);
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
+        // Register the mock resolver
+        registerMockResolver(TEST_INDEX_UUID);
+
         // Initial load
-        Key initialKey = cache.get(TEST_INDEX_UUID, mockResolver);
+        Key initialKey = cache.get(TEST_INDEX_UUID);
         assertEquals(testKey1, initialKey);
 
         // Wait for what would be a refresh period
         Thread.sleep(2000);
 
         // Access again - should still get same key (no refresh)
-        Key sameKey = cache.get(TEST_INDEX_UUID, mockResolver);
+        Key sameKey = cache.get(TEST_INDEX_UUID);
         assertEquals(testKey1, sameKey);
 
         // Should only load once (no refresh)

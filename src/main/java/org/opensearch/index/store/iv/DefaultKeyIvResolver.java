@@ -74,7 +74,7 @@ public class DefaultKeyIvResolver implements KeyIvResolver {
             iv = readStringFile(IV_FILE);
             // Load initial key into cache to verify it works
             try {
-                NodeLevelKeyCache.getInstance().get(indexUuid, this);
+                NodeLevelKeyCache.getInstance().get(indexUuid);
             } catch (Exception e) {
                 throw new IOException("Failed to load initial key from Master Key Provider", e);
             }
@@ -98,7 +98,7 @@ public class DefaultKeyIvResolver implements KeyIvResolver {
             writeStringFile(IV_FILE, iv);
 
             // Load initial key into cache to verify it works
-            NodeLevelKeyCache.getInstance().get(indexUuid, this);
+            NodeLevelKeyCache.getInstance().get(indexUuid);
         } catch (Exception e) {
             throw new IOException("Failed to initialize new key and IV", e);
         }
@@ -166,8 +166,7 @@ public class DefaultKeyIvResolver implements KeyIvResolver {
     @Override
     public Key getDataKey() {
         try {
-            // Get key from cache
-            return NodeLevelKeyCache.getInstance().get(indexUuid, this);
+            return NodeLevelKeyCache.getInstance().get(indexUuid);
         } catch (Exception e) {
             throw new RuntimeException("Failed to get encryption key", e);
         }

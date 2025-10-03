@@ -36,16 +36,14 @@ public class NodeLevelKeyCache {
     private final long globalTtlSeconds;
 
     /**
-     * Cache key that includes index UUID and resolver reference.
-     * The resolver is used for callbacks to load keys from MasterKeyProvider.
+     * Cache key that contains only the index UUID.
+     * The resolver is obtained from IndexKeyResolverRegistry when needed.
      */
     static class CacheKey {
         final String indexUuid;
-        final DefaultKeyIvResolver resolver; // For callback to load key
 
-        CacheKey(String indexUuid, DefaultKeyIvResolver resolver) {
+        CacheKey(String indexUuid) {
             this.indexUuid = Objects.requireNonNull(indexUuid, "indexUuid cannot be null");
-            this.resolver = resolver;
         }
 
         @Override
@@ -82,9 +80,9 @@ public class NodeLevelKeyCache {
             INSTANCE = new NodeLevelKeyCache((long) globalTtlSeconds);
 
             if (globalTtlSeconds == -1) {
-                logger.info("Initialized NodeLevelKeyCache with refresh disabled (TTL: -1)");
+                logger.debug("Initialized NodeLevelKeyCache with refresh disabled (TTL: -1)");
             } else {
-                logger.info("Initialized NodeLevelKeyCache with global TTL: {} seconds", globalTtlSeconds);
+                logger.debug("Initialized NodeLevelKeyCache with global TTL: {} seconds", globalTtlSeconds);
             }
         }
     }
@@ -104,21 +102,45 @@ public class NodeLevelKeyCache {
 
     /**
      * Constructs the cache with global TTL configuration.
-     * 
-     * @param globalTtlSeconds the global TTL in seconds (-1 means never refresh)
+     * <p>
      * This implements a non-expiring cache with asynchronous refresh semantics:
+     * <ul>
+     *  <li> When a key is first requested, it is loaded synchronously from the MasterKey Provider.
      * 
-     *  - When a key is first requested, it is loaded synchronously from the MasterKey Provider.
-     * 
-     *  - After the key has been in the cache for the configured TTL duration, 
+     *  <li> After the key has been in the cache for the configured TTL duration, 
      *    the next access will trigger an asynchronous reload in the background.
      * 
-     *  - While the reload is in progress, it continues to return the 
+     *  <li> While the reload is in progress, it continues to return the 
      *   previously cached (stale) value to avoid blocking operations.
      * 
-     *  - If the reload fails due to any exception (e.g., MasterKeyProvider unavailable), 
+     *  <li> If the reload fails due to any exception (e.g., MasterKeyProvider unavailable), 
      *   the cache retains and continues to serve the old value instead of 
      *   evicting it, ensuring operations can continue with the last known good key.
+     * </ul>
+     * @param globalTtlSeconds the global TTL in seconds (-1 means never refresh)
+    
+     */
+    /* 
+     * Future Enhancement: Stricter Failed Refresh Model
+     * In the next iteration of PRs, when we move toward stricter model of failed reloads,
+     * we could introduce a cache policy using refreshAfterWrite(X) plus expireAfterWrite(Y)
+     * where Y > X and Y = nX (maybe Y = 3X).
+     * 
+     * With this approach:
+     *   - The cache will continue to serve the existing resolver for some failures
+     *   - If refreshes have failed across Y consecutive intervals (i.e., the key being revoked),
+     *       the entry will be auto-evicted
+     *   - At eviction time, we could also mutate the associated resolver instance to null or 
+     *       a dummy value (sentinel), ensuring that any new access on this dummy resolver from 
+     *       index input and output fails and consults the cache, triggering a load
+     *   - This prevents us from building any background task
+     *   - One more advantage is we prevent any unnecessary checks if customer has stopped 
+     *       sending traffic
+     * 
+     * 
+     * DOS Protection: We have to be careful that too many loads (DOS) on a failed key may DOS the cache. 
+     * Hence, we should only attempt a load from cache if the last attempt for a resolver failed 
+     * for more than X minutes.
      * 
      */
     private NodeLevelKeyCache(long globalTtlSeconds) {
@@ -133,7 +155,12 @@ public class NodeLevelKeyCache {
                 .build(new CacheLoader<CacheKey, Key>() {
                     @Override
                     public Key load(CacheKey key) throws Exception {
-                        return loadKey(key);
+                        // Get resolver from registry
+                        KeyIvResolver resolver = IndexKeyResolverRegistry.getResolver(key.indexUuid);
+                        if (resolver == null) {
+                            throw new IllegalStateException("No resolver registered for index: " + key.indexUuid);
+                        }
+                        return ((DefaultKeyIvResolver) resolver).loadKeyFromMasterKeyProvider();
                     }
                     // No reload method needed since refresh is disabled
                 });
@@ -146,14 +173,25 @@ public class NodeLevelKeyCache {
                 .build(new CacheLoader<CacheKey, Key>() {
                     @Override
                     public Key load(CacheKey key) throws Exception {
-                        return loadKey(key);
+                        // Get resolver from registry
+                        KeyIvResolver resolver = IndexKeyResolverRegistry.getResolver(key.indexUuid);
+                        if (resolver == null) {
+                            throw new IllegalStateException("No resolver registered for index: " + key.indexUuid);
+                        }
+                        return ((DefaultKeyIvResolver) resolver).loadKeyFromMasterKeyProvider();
                     }
 
                     @Override
                     public Key reload(CacheKey key, Key oldValue) throws Exception {
                         try {
-                            Key newKey = key.resolver.loadKeyFromMasterKeyProvider();
+                            // Get resolver from registry
+                            KeyIvResolver resolver = IndexKeyResolverRegistry.getResolver(key.indexUuid);
+                            if (resolver == null) {
+                                // Index might have been deleted, keep using old key
+                                return oldValue;
+                            }
 
+                            Key newKey = ((DefaultKeyIvResolver) resolver).loadKeyFromMasterKeyProvider();
                             return newKey;
                         } catch (Exception e) {
                             return oldValue;
@@ -164,34 +202,17 @@ public class NodeLevelKeyCache {
     }
 
     /**
-     * Loads a key by delegating to the resolver's loadKeyFromMasterKeyProvider method.
-     * 
-     * @param cacheKey the cache key
-     * @return the loaded encryption key
-     * @throws Exception if key loading fails
-     */
-    private Key loadKey(CacheKey cacheKey) throws Exception {
-        if (cacheKey.resolver == null) {
-            throw new IllegalStateException("Cannot load key without resolver");
-        }
-
-        return cacheKey.resolver.loadKeyFromMasterKeyProvider();
-    }
-
-    /**
      * Gets a key from the cache, loading it if necessary.
      * 
      * @param indexUuid the index UUID
-     * @param resolver the resolver to use for loading
      * @return the encryption key
      * @throws Exception if key loading fails
      */
-    public Key get(String indexUuid, DefaultKeyIvResolver resolver) throws Exception {
+    public Key get(String indexUuid) throws Exception {
         Objects.requireNonNull(indexUuid, "indexUuid cannot be null");
-        Objects.requireNonNull(resolver, "resolver cannot be null");
 
         try {
-            return keyCache.get(new CacheKey(indexUuid, resolver));
+            return keyCache.get(new CacheKey(indexUuid));
         } catch (CompletionException e) {
             Throwable cause = e.getCause();
             if (cause instanceof Exception) {
@@ -209,7 +230,7 @@ public class NodeLevelKeyCache {
      */
     public void evict(String indexUuid) {
         Objects.requireNonNull(indexUuid, "indexUuid cannot be null");
-        keyCache.invalidate(new CacheKey(indexUuid, null));
+        keyCache.invalidate(new CacheKey(indexUuid));
     }
 
     /**

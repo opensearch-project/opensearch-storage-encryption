@@ -38,7 +38,7 @@ public class IndexKeyResolverRegistry {
      * @param indexUuid the unique identifier for the index
      * @param indexDirectory the directory where encryption keys are stored
      * @param provider the JCE provider for cryptographic operations
-     * @param keyProvider the master key provider for KMS operations
+     * @param keyProvider the master key provider
      * @return the KeyIvResolver instance for this index
      * @throws RuntimeException if resolver creation fails
      */
@@ -55,6 +55,16 @@ public class IndexKeyResolverRegistry {
                 throw new RuntimeException("Failed to create KeyIvResolver for index: " + uuid, e);
             }
         });
+    }
+
+    /**
+     * Gets the cached resolver for the specified index UUID.
+     * 
+     * @param indexUuid the unique identifier for the index
+     * @return the KeyIvResolver instance for this index, or null if none exists
+     */
+    public static KeyIvResolver getResolver(String indexUuid) {
+        return resolverCache.get(indexUuid);
     }
 
     /**
