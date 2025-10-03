@@ -33,7 +33,7 @@ public class NodeLevelKeyCache {
     private static NodeLevelKeyCache INSTANCE;
 
     private final LoadingCache<CacheKey, Key> keyCache;
-    private final long globalTtlMillis;
+    private final long globalTtlSeconds;
 
     /**
      * Cache key that includes index UUID and resolver reference.
@@ -78,10 +78,14 @@ public class NodeLevelKeyCache {
     public static synchronized void initialize(Settings nodeSettings) {
         if (INSTANCE == null) {
             int globalTtlSeconds = nodeSettings.getAsInt("node.store.data_key_ttl_seconds", 3600);
-            INSTANCE = new NodeLevelKeyCache(globalTtlSeconds * 1000L);
-            logger.info("Initialized NodeLevelKeyCache with global TTL: {} seconds", globalTtlSeconds);
-        } else {
-            logger.warn("NodeLevelKeyCache already initialized, ignoring duplicate initialization");
+
+            INSTANCE = new NodeLevelKeyCache((long) globalTtlSeconds);
+
+            if (globalTtlSeconds == -1) {
+                logger.info("Initialized NodeLevelKeyCache with refresh disabled (TTL: -1)");
+            } else {
+                logger.info("Initialized NodeLevelKeyCache with global TTL: {} seconds", globalTtlSeconds);
+            }
         }
     }
 
@@ -93,7 +97,7 @@ public class NodeLevelKeyCache {
      */
     public static NodeLevelKeyCache getInstance() {
         if (INSTANCE == null) {
-            throw new IllegalStateException("NodeLevelKeyCache not initialized. Call initialize() first.");
+            throw new IllegalStateException("NodeLevelKeyCache not initialized.");
         }
         return INSTANCE;
     }
@@ -101,41 +105,62 @@ public class NodeLevelKeyCache {
     /**
      * Constructs the cache with global TTL configuration.
      * 
-     * @param globalTtlMillis the global TTL in milliseconds
+     * @param globalTtlSeconds the global TTL in seconds (-1 means never refresh)
+     * This implements a non-expiring cache with asynchronous refresh semantics:
+     * 
+     *  - When a key is first requested, it is loaded synchronously from the MasterKey Provider.
+     * 
+     *  - After the key has been in the cache for the configured TTL duration, 
+     *    the next access will trigger an asynchronous reload in the background.
+     * 
+     *  - While the reload is in progress, it continues to return the 
+     *   previously cached (stale) value to avoid blocking operations.
+     * 
+     *  - If the reload fails due to any exception (e.g., MasterKeyProvider unavailable), 
+     *   the cache retains and continues to serve the old value instead of 
+     *   evicting it, ensuring operations can continue with the last known good key.
+     * 
      */
-    private NodeLevelKeyCache(long globalTtlMillis) {
-        this.globalTtlMillis = globalTtlMillis;
+    private NodeLevelKeyCache(long globalTtlSeconds) {
+        this.globalTtlSeconds = globalTtlSeconds;
 
-        // Create cache with refresh-only policy (no expiry)
-        this.keyCache = Caffeine
-            .newBuilder()
-            // Only refresh keys at TTL - they never expire
-            .refreshAfterWrite(globalTtlMillis, TimeUnit.MILLISECONDS)
-            .build(new CacheLoader<CacheKey, Key>() {
-                @Override
-                public Key load(CacheKey key) throws Exception {
-                    return loadKey(key);
-                }
-
-                @Override
-                public Key reload(CacheKey key, Key oldValue) throws Exception {
-                    logger.debug("Background refresh triggered for index: {}", key.indexUuid);
-
-                    try {
-                        Key newKey = key.resolver.loadKeyFromMasterKeyProvider();
-
-                        return newKey;
-                    } catch (Exception e) {
-                        logger
-                            .warn(
-                                "MasterKey Provider access failed during background refresh for index {}. Using cached key. Error: {}",
-                                key.indexUuid,
-                                e.getMessage()
-                            );
-                        return oldValue;
+        // Check if refresh is disabled
+        if (globalTtlSeconds == -1L) {
+            // Create cache without refresh
+            this.keyCache = Caffeine
+                .newBuilder()
+                // No refreshAfterWrite - keys are loaded once and cached forever
+                .build(new CacheLoader<CacheKey, Key>() {
+                    @Override
+                    public Key load(CacheKey key) throws Exception {
+                        return loadKey(key);
                     }
-                }
-            });
+                    // No reload method needed since refresh is disabled
+                });
+        } else {
+            // Create cache with refresh-only policy (no expiry)
+            this.keyCache = Caffeine
+                .newBuilder()
+                // Only refresh keys at TTL - they never expire
+                .refreshAfterWrite(globalTtlSeconds, TimeUnit.SECONDS)
+                .build(new CacheLoader<CacheKey, Key>() {
+                    @Override
+                    public Key load(CacheKey key) throws Exception {
+                        return loadKey(key);
+                    }
+
+                    @Override
+                    public Key reload(CacheKey key, Key oldValue) throws Exception {
+                        try {
+                            Key newKey = key.resolver.loadKeyFromMasterKeyProvider();
+
+                            return newKey;
+                        } catch (Exception e) {
+                            return oldValue;
+                        }
+                    }
+                });
+        }
     }
 
     /**
@@ -150,7 +175,6 @@ public class NodeLevelKeyCache {
             throw new IllegalStateException("Cannot load key without resolver");
         }
 
-        logger.info("Loading key for index: {}", cacheKey.indexUuid);
         return cacheKey.resolver.loadKeyFromMasterKeyProvider();
     }
 
@@ -186,7 +210,6 @@ public class NodeLevelKeyCache {
     public void evict(String indexUuid) {
         Objects.requireNonNull(indexUuid, "indexUuid cannot be null");
         keyCache.invalidate(new CacheKey(indexUuid, null));
-        logger.info("Evicted key for index: {}", indexUuid);
     }
 
     /**
@@ -205,7 +228,6 @@ public class NodeLevelKeyCache {
      */
     public void clear() {
         keyCache.invalidateAll();
-        logger.info("Cleared all cached keys");
     }
 
     /**
@@ -216,7 +238,6 @@ public class NodeLevelKeyCache {
         if (INSTANCE != null) {
             INSTANCE.clear();
             INSTANCE = null;
-            logger.info("Reset NodeLevelKeyCache singleton");
         }
     }
 }

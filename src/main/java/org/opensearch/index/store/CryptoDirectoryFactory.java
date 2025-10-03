@@ -99,11 +99,23 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     }, Property.NodeScope, Property.IndexScope);
 
     /**
-     * Specifies the node-level TTL for data keys in seconds. Default is 3600 seconds (1 hour).
+     * Specifies the node-level TTL for data keys in seconds. 
+     * Default is 3600 seconds (1 hour).
+     * Set to -1 to disable key refresh (keys are loaded once and cached forever).
      * This setting applies globally to all indices.
      */
     public static final Setting<Integer> NODE_DATA_KEY_TTL_SECONDS_SETTING = Setting
-        .intSetting("node.store.data_key_ttl_seconds", 3600, 1, Property.NodeScope);
+        .intSetting(
+            "node.store.data_key_ttl_seconds",
+            3600,  // default: 3600 seconds (1 hour)
+            -1,    // minimum: -1 means never refresh
+            (value) -> {
+                if (value != -1 && value < 1) {
+                    throw new IllegalArgumentException("node.store.data_key_ttl_seconds must be -1 (never refresh) or a positive value");
+                }
+            },
+            Property.NodeScope
+        );
 
     MasterKeyProvider getKeyProvider(IndexSettings indexSettings) {
         final String KEY_PROVIDER_TYPE = indexSettings.getValue(INDEX_KMS_TYPE_SETTING);

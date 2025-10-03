@@ -28,6 +28,7 @@ import org.junit.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.index.store.CryptoDirectoryFactory;
 
 public class NodeLevelKeyCacheTests {
 
@@ -367,5 +368,54 @@ public class NodeLevelKeyCacheTests {
 
         // Should initialize successfully with default value (3600 seconds)
         assertNotNull(NodeLevelKeyCache.getInstance());
+    }
+
+    @Test
+    public void testCacheWithRefreshDisabled() throws Exception {
+        when(mockResolver.loadKeyFromMasterKeyProvider())
+            .thenReturn(testKey1)  // Initial load
+            .thenReturn(testKey2); // Should never be called with -1 TTL
+
+        // Initialize with TTL = -1 (never refresh)
+        Settings settings = Settings.builder().put("node.store.data_key_ttl_seconds", -1).build();
+        NodeLevelKeyCache.initialize(settings);
+        NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
+
+        // Initial load
+        Key initialKey = cache.get(TEST_INDEX_UUID, mockResolver);
+        assertEquals(testKey1, initialKey);
+
+        // Wait for what would be a refresh period
+        Thread.sleep(2000);
+
+        // Access again - should still get same key (no refresh)
+        Key sameKey = cache.get(TEST_INDEX_UUID, mockResolver);
+        assertEquals(testKey1, sameKey);
+
+        // Should only load once (no refresh)
+        verify(mockResolver, times(1)).loadKeyFromMasterKeyProvider();
+    }
+
+    @Test
+    public void testInvalidTTLValues() {
+        // Test that -2 is rejected
+        Settings settings = Settings.builder().put("node.store.data_key_ttl_seconds", -2).build();
+
+        try {
+            CryptoDirectoryFactory.NODE_DATA_KEY_TTL_SECONDS_SETTING.get(settings);
+            fail("Expected IllegalArgumentException for invalid TTL value");
+        } catch (IllegalArgumentException e) {
+            assertTrue(e.getMessage().contains("must be -1 (never refresh) or a positive value"));
+        }
+
+        // Test that 0 is rejected
+        settings = Settings.builder().put("node.store.data_key_ttl_seconds", 0).build();
+
+        try {
+            CryptoDirectoryFactory.NODE_DATA_KEY_TTL_SECONDS_SETTING.get(settings);
+            fail("Expected IllegalArgumentException for invalid TTL value");
+        } catch (IllegalArgumentException e) {
+            assertTrue(e.getMessage().contains("must be -1 (never refresh) or a positive value"));
+        }
     }
 }

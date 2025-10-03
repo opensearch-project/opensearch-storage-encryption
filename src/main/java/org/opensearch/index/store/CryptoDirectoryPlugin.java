@@ -15,14 +15,19 @@ import java.util.function.Supplier;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Setting;
+import org.opensearch.common.settings.Settings;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
 import org.opensearch.index.IndexModule;
+import org.opensearch.index.IndexService;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.EngineFactory;
+import org.opensearch.index.shard.IndexEventListener;
+import org.opensearch.index.store.iv.IndexKeyResolverRegistry;
 import org.opensearch.index.store.iv.NodeLevelKeyCache;
+import org.opensearch.indices.cluster.IndicesClusterStateService.AllocatedIndices.IndexRemovalReason;
 import org.opensearch.plugins.EnginePlugin;
 import org.opensearch.plugins.IndexStorePlugin;
 import org.opensearch.plugins.Plugin;
@@ -95,6 +100,22 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         NodeLevelKeyCache.initialize(environment.settings());
 
         return Collections.emptyList();
+    }
+
+    @Override
+    public void onIndexModule(IndexModule indexModule) {
+        // Only add listener for cryptofs indices
+        Settings indexSettings = indexModule.getSettings();
+        String storeType = indexSettings.get(IndexModule.INDEX_STORE_TYPE_SETTING.getKey());
+        if ("cryptofs".equals(storeType)) {
+            indexModule.addIndexEventListener(new IndexEventListener() {
+                @Override
+                public void beforeIndexRemoved(IndexService indexService, IndexRemovalReason reason) {
+                    String indexUuid = indexService.index().getUUID();
+                    IndexKeyResolverRegistry.removeResolver(indexUuid);
+                }
+            });
+        }
     }
 
 }
