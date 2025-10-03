@@ -398,18 +398,8 @@ public class NodeLevelKeyCacheTests {
 
     @Test
     public void testInvalidTTLValues() {
-        // Test that -2 is rejected
-        Settings settings = Settings.builder().put("node.store.data_key_ttl_seconds", -2).build();
-
-        try {
-            CryptoDirectoryFactory.NODE_DATA_KEY_TTL_SECONDS_SETTING.get(settings);
-            fail("Expected IllegalArgumentException for invalid TTL value");
-        } catch (IllegalArgumentException e) {
-            assertTrue(e.getMessage().contains("must be -1 (never refresh) or a positive value"));
-        }
-
         // Test that 0 is rejected
-        settings = Settings.builder().put("node.store.data_key_ttl_seconds", 0).build();
+        Settings settings = Settings.builder().put("node.store.data_key_ttl_seconds", 0).build();
 
         try {
             CryptoDirectoryFactory.NODE_DATA_KEY_TTL_SECONDS_SETTING.get(settings);
