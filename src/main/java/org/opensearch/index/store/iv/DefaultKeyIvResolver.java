@@ -67,17 +67,10 @@ public class DefaultKeyIvResolver implements KeyIvResolver {
     /**
      * Attempts to load the IV and encrypted key from the directory.
      * If not present, it generates and persists new values.
-     * Initializes cache with initial key load.
      */
     private void initialize() throws IOException {
         try {
             iv = readStringFile(IV_FILE);
-            // Load initial key into cache to verify it works
-            try {
-                NodeLevelKeyCache.getInstance().get(indexUuid);
-            } catch (Exception e) {
-                throw new IOException("Failed to load initial key from Master Key Provider", e);
-            }
         } catch (java.nio.file.NoSuchFileException e) {
             initNewKeyAndIv();
         }
@@ -96,9 +89,6 @@ public class DefaultKeyIvResolver implements KeyIvResolver {
             random.nextBytes(ivBytes);
             iv = Base64.getEncoder().encodeToString(ivBytes);
             writeStringFile(IV_FILE, iv);
-
-            // Load initial key into cache to verify it works
-            NodeLevelKeyCache.getInstance().get(indexUuid);
         } catch (Exception e) {
             throw new IOException("Failed to initialize new key and IV", e);
         }

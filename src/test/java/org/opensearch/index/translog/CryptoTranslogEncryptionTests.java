@@ -5,6 +5,7 @@
 package org.opensearch.index.translog;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
@@ -13,6 +14,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.Provider;
 import java.security.Security;
+import java.util.concurrent.ConcurrentMap;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -20,6 +22,7 @@ import org.opensearch.common.SuppressForbidden;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.iv.DefaultKeyIvResolver;
+import org.opensearch.index.store.iv.IndexKeyResolverRegistry;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.iv.NodeLevelKeyCache;
 import org.opensearch.test.OpenSearchTestCase;
@@ -34,12 +37,27 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
     private Path tempDir;
     private KeyIvResolver keyIvResolver;
     private MasterKeyProvider keyProvider;
-
+    private String testIndexUuid;
+    
+    /**
+     * Helper method to register the resolver in the IndexKeyResolverRegistry
+     */
+    private void registerResolver(String indexUuid, KeyIvResolver resolver) throws Exception {
+        Field resolverCacheField = IndexKeyResolverRegistry.class.getDeclaredField("resolverCache");
+        resolverCacheField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        ConcurrentMap<String, KeyIvResolver> resolverCache = (ConcurrentMap<String, KeyIvResolver>) resolverCacheField.get(null);
+        resolverCache.put(indexUuid, resolver);
+    }
+    
     @Override
     @SuppressForbidden(reason = "Creating temp directory for test purposes")
     public void setUp() throws Exception {
         super.setUp();
         tempDir = Files.createTempDirectory("crypto-translog-encryption-test");
+
+        // Clear the IndexKeyResolverRegistry cache before each test
+        IndexKeyResolverRegistry.clearCache();
 
         // Initialize NodeLevelKeyCache with test settings
         Settings nodeSettings = Settings
@@ -81,15 +99,20 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
         };
 
         // Use a test index UUID
-        String testIndexUuid = "test-index-uuid-" + System.currentTimeMillis();
+        testIndexUuid = "test-index-uuid-" + System.currentTimeMillis();
         org.apache.lucene.store.Directory directory = new org.apache.lucene.store.NIOFSDirectory(tempDir);
         keyIvResolver = new DefaultKeyIvResolver(testIndexUuid, directory, cryptoProvider, keyProvider);
+        
+        // Register the resolver with IndexKeyResolverRegistry so cache can find it
+        registerResolver(testIndexUuid, keyIvResolver);
     }
 
     @Override
     public void tearDown() throws Exception {
         // Reset the NodeLevelKeyCache singleton to prevent test pollution
         NodeLevelKeyCache.reset();
+        // Clear the IndexKeyResolverRegistry cache
+        IndexKeyResolverRegistry.clearCache();
         super.tearDown();
     }
 
