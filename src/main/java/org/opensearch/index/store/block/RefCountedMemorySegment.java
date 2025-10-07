@@ -33,9 +33,6 @@ public final class RefCountedMemorySegment implements BlockCacheValue<RefCounted
 
     private static final Logger LOGGER = LogManager.getLogger(RefCountedMemorySegment.class);
 
-    /** Underlying native memory segment holding the decrypted block data. */
-    private final MemorySegment segment;
-
     private final MemorySegment slicedSegment;
 
     /** Logical length of valid data in the segment (may be less than segment capacity). */
@@ -73,19 +70,6 @@ public final class RefCountedMemorySegment implements BlockCacheValue<RefCounted
     private final BlockReleaser<RefCountedMemorySegment> onFullyReleased;
 
     /**
-     * VarHandle for atomic operations on the generation field.
-     * Used for atomic increment in close() while allowing plain volatile reads in getGeneration().
-     */
-    private static final VarHandle GENERATION;
-    static {
-        try {
-            GENERATION = MethodHandles.lookup().findVarHandle(RefCountedMemorySegment.class, "generation", int.class);
-        } catch (IllegalAccessException | NoSuchFieldException e) {
-            throw new Error(e);
-        }
-    }
-
-    /**
      * Generation counter incremented on each eviction (close) cycle.
      * Used by BlockSlotTinyCache to detect stale cached references.
      *
@@ -116,7 +100,6 @@ public final class RefCountedMemorySegment implements BlockCacheValue<RefCounted
         if (segment == null || onFullyReleased == null) {
             throw new IllegalArgumentException("segment and onFullyReleased must not be null");
         }
-        this.segment = segment;
         this.length = length;
         this.onFullyReleased = onFullyReleased;
 

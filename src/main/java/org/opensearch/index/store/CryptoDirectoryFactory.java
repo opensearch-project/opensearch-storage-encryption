@@ -4,12 +4,6 @@
  */
 package org.opensearch.index.store;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_INITIAL_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.READ_AHEAD_QUEUE_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.RESEVERED_POOL_SIZE_IN_BYTES;
-import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
-
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -45,6 +39,11 @@ import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.directio.CryptoDirectIODirectory;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_INITIAL_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.READ_AHEAD_QUEUE_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.RESEVERED_POOL_SIZE_IN_BYTES;
+import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
 import org.opensearch.index.store.iv.IndexKeyResolverRegistry;
 import org.opensearch.index.store.iv.KeyIvResolver;
@@ -269,7 +268,6 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
             ((CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment>) sharedBlockCache).getCache(),
             loader,
-            sharedSegmentPool,
             maxBlocks
         );
 
@@ -350,7 +348,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                         })
                         .build();
 
-                    sharedBlockCache = new CaffeineBlockCache<>(cache, null, sharedSegmentPool, maxBlocks);
+                    sharedBlockCache = new CaffeineBlockCache<>(cache, null, maxBlocks);
 
                     LOGGER.info("Creating shared block cache with maxSize={}, poolSize={}", maxBlocks, maxBlocks);
 

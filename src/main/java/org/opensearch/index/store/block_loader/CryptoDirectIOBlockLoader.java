@@ -116,7 +116,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
     private void releaseHandles(RefCountedMemorySegment[] handles, int upTo) {
         for (int i = 0; i < upTo; i++) {
             if (handles[i] != null) {
-                handles[i].decRef();
+                handles[i].close();
             }
         }
     }
