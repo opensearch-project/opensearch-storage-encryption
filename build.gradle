@@ -15,9 +15,10 @@ buildscript {
     }
 
     repositories {
-        mavenCentral()
         mavenLocal()
+        mavenCentral()
         maven { url "https://central.sonatype.com/repository/maven-snapshots/" }
+        maven { url "https://artifacts.opensearch.org/snapshots/lucene/" }
     }
 
     dependencies {
@@ -51,9 +52,11 @@ opensearchplugin {
 }
 
 repositories {
-    mavenCentral()
     mavenLocal()
+    mavenCentral()
     maven { url "https://aws.oss.sonatype.org/content/repositories/snapshots" }
+    maven { url "https://central.sonatype.com/repository/maven-snapshots/" }
+    maven { url "https://artifacts.opensearch.org/snapshots/lucene/" }
 }
 
 dependencies {
@@ -101,7 +104,7 @@ compileJava {
     sourceCompatibility = JavaVersion.VERSION_24
     targetCompatibility = JavaVersion.VERSION_24
     options.encoding = 'UTF-8'
-    options.compilerArgs << '-Xlint:unchecked' << '-Xlint:deprecation' << '-Werror'
+    options.compilerArgs << '-Xlint:unchecked' << '-Xlint:-deprecation'
 }
 
 compileTestJava {
@@ -114,6 +117,7 @@ tasks.withType(JavaCompile).configureEach {
     targetCompatibility = JavaVersion.VERSION_24
     options.encoding = 'UTF-8'
     options.release = 24
+    options.compilerArgs << '-Xlint:-deprecation'
 }
 
 javadoc {

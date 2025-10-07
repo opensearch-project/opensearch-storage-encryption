@@ -38,10 +38,11 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
     private KeyIvResolver keyIvResolver;
     private MasterKeyProvider keyProvider;
     private String testIndexUuid;
-    
+
     /**
      * Helper method to register the resolver in the IndexKeyResolverRegistry
      */
+    @SuppressForbidden(reason = "Test needs to register mock resolver in IndexKeyResolverRegistry")
     private void registerResolver(String indexUuid, KeyIvResolver resolver) throws Exception {
         Field resolverCacheField = IndexKeyResolverRegistry.class.getDeclaredField("resolverCache");
         resolverCacheField.setAccessible(true);
@@ -49,7 +50,7 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
         ConcurrentMap<String, KeyIvResolver> resolverCache = (ConcurrentMap<String, KeyIvResolver>) resolverCacheField.get(null);
         resolverCache.put(indexUuid, resolver);
     }
-    
+
     @Override
     @SuppressForbidden(reason = "Creating temp directory for test purposes")
     public void setUp() throws Exception {
@@ -102,7 +103,7 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
         testIndexUuid = "test-index-uuid-" + System.currentTimeMillis();
         org.apache.lucene.store.Directory directory = new org.apache.lucene.store.NIOFSDirectory(tempDir);
         keyIvResolver = new DefaultKeyIvResolver(testIndexUuid, directory, cryptoProvider, keyProvider);
-        
+
         // Register the resolver with IndexKeyResolverRegistry so cache can find it
         registerResolver(testIndexUuid, keyIvResolver);
     }
