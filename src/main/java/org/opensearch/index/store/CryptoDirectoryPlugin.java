@@ -12,10 +12,13 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.common.util.concurrent.ThreadContext;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.env.Environment;
@@ -42,16 +45,17 @@ import org.opensearch.watcher.ResourceWatcherService;
  */
 public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, EnginePlugin {
 
+    private static final Logger LOGGER = LogManager.getLogger(CryptoDirectoryPlugin.class);
+
+    private volatile ThreadContext threadContext;
+
     /**
-     * The default constructor.
+     * Default constructor.
      */
     public CryptoDirectoryPlugin() {
         super();
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
     public List<Setting<?>> getSettings() {
         return Arrays
@@ -62,20 +66,13 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
             );
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
     public Map<String, DirectoryFactory> getDirectoryFactories() {
-        return Collections.singletonMap("cryptofs", new CryptoDirectoryFactory());
+        return Collections.singletonMap("cryptofs", new CryptoDirectoryFactory(() -> threadContext));
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
     public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {
-        // Only provide our custom engine factory for cryptofs indices
         if ("cryptofs".equals(indexSettings.getValue(IndexModule.INDEX_STORE_TYPE_SETTING))) {
             return Optional.of(new CryptoEngineFactory());
         }
@@ -99,12 +96,14 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         CryptoDirectoryFactory.initializeSharedPool();
         NodeLevelKeyCache.initialize(environment.settings());
 
+        this.threadContext = threadPool.getThreadContext();
+        LOGGER.info("Initialized CryptoDirectoryPlugin with thread context: {}", threadContext);
+
         return Collections.emptyList();
     }
 
     @Override
     public void onIndexModule(IndexModule indexModule) {
-        // Only add listener for cryptofs indices
         Settings indexSettings = indexModule.getSettings();
         String storeType = indexSettings.get(IndexModule.INDEX_STORE_TYPE_SETTING.getKey());
         if ("cryptofs".equals(storeType)) {
@@ -117,5 +116,4 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
             });
         }
     }
-
 }

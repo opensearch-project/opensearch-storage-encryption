@@ -8,8 +8,6 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.security.Provider;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.opensearch.common.crypto.MasterKeyProvider;
@@ -22,12 +20,10 @@ import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.translog.CryptoTranslogFactory;
 
 /**
- * A factory that creates engines with crypto-enabled translogs for cryptofs indices.
+ * A factory that creates engines with crypto-enabled translogs for cryptofs
+ * indices.
  */
 public class CryptoEngineFactory implements EngineFactory {
-
-    private static final Logger logger = LogManager.getLogger(CryptoEngineFactory.class);
-
     /**
      * Default constructor.
      */
@@ -50,7 +46,7 @@ public class CryptoEngineFactory implements EngineFactory {
             // but replace the translog factory with our crypto version
             EngineConfig cryptoConfig = config
                 .toBuilder()
-                .translogFactory(cryptoTranslogFactory)  // <- Replace with our crypto factory
+                .translogFactory(cryptoTranslogFactory) // <- Replace with our crypto factory
                 .build();
 
             // Return the default engine with crypto-enabled translog
@@ -82,7 +78,7 @@ public class CryptoEngineFactory implements EngineFactory {
      */
     private MasterKeyProvider getKeyProvider(EngineConfig config) {
         // Reuse the same logic as CryptoDirectoryFactory
-        return new CryptoDirectoryFactory().getKeyProvider(config.getIndexSettings());
+        CryptoDirectoryFactory factory = new CryptoDirectoryFactory(null);
+        return factory.getKeyProvider(config.getIndexSettings());
     }
-
 }

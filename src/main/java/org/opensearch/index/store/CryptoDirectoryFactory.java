@@ -4,6 +4,12 @@
  */
 package org.opensearch.index.store;
 
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_INITIAL_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.READ_AHEAD_QUEUE_SIZE;
+import static org.opensearch.index.store.directio.DirectIoConfigs.RESEVERED_POOL_SIZE_IN_BYTES;
+import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -14,6 +20,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -27,6 +34,7 @@ import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Setting.Property;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.SettingsException;
+import org.opensearch.common.util.concurrent.ThreadContext;
 import org.opensearch.crypto.CryptoHandlerRegistry;
 import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
@@ -39,11 +47,6 @@ import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.directio.CryptoDirectIODirectory;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_INITIAL_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.READ_AHEAD_QUEUE_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.RESEVERED_POOL_SIZE_IN_BYTES;
-import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
 import org.opensearch.index.store.iv.IndexKeyResolverRegistry;
 import org.opensearch.index.store.iv.KeyIvResolver;
@@ -60,29 +63,32 @@ import com.github.benmanes.caffeine.cache.RemovalCause;
 
 @SuppressForbidden(reason = "temporary")
 /**
- * Factory for creating encrypted filesystem directories with support for various storage types.
+ * Factory for creating encrypted filesystem directories with support for
+ * various storage types.
  *
- * Supports:
- * - NIOFS: NIO-based encrypted file system
- * - HYBRIDFS: Hybrid directory with Direct I/O and block caching
- * - MMAPFS: Not supported (throws AssertionError)
+ * Supports: - NIOFS: NIO-based encrypted file system - HYBRIDFS: Hybrid
+ * directory with Direct I/O and block caching - MMAPFS: Not supported (throws
+ * AssertionError)
  *
- * The factory maintains node-level shared resources (pool and cache) for efficient
- * memory utilization across all encrypted directories.
+ * The factory maintains node-level shared resources (pool and cache) for
+ * efficient memory utilization across all encrypted directories.
  */
 public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory {
 
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectoryFactory.class);
 
+    private final Supplier<ThreadContext> threadContextSupplier;
+
     /**
      * Shared pool of RefCountedMemorySegments for Direct I/O operations.
-     * Initialized once per node and shared across all CryptoDirectIODirectory instances.
+     * Initialized once per node and shared across all CryptoDirectIODirectory
+     * instances.
      */
     private static volatile Pool<RefCountedMemorySegment> sharedSegmentPool;
 
     /**
-     * Shared block cache for decrypted data blocks.
-     * Initialized once per node and shared across all CryptoDirectIODirectory instances.
+     * Shared block cache for decrypted data blocks. Initialized once per node
+     * and shared across all CryptoDirectIODirectory instances.
      */
     private static volatile BlockCache<RefCountedMemorySegment> sharedBlockCache;
 
@@ -94,8 +100,9 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     /**
      * Creates a new CryptoDirectoryFactory
      */
-    public CryptoDirectoryFactory() {
+    public CryptoDirectoryFactory(Supplier<ThreadContext> threadContextSupplier) {
         super();
+        this.threadContextSupplier = threadContextSupplier;
     }
 
     /**
@@ -122,16 +129,15 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     }, Property.NodeScope, Property.IndexScope);
 
     /**
-     * Specifies the node-level TTL for data keys in seconds. 
-     * Default is 3600 seconds (1 hour).
-     * Set to -1 to disable key refresh (keys are loaded once and cached forever).
-     * This setting applies globally to all indices.
+     * Specifies the node-level TTL for data keys in seconds. Default is 3600
+     * seconds (1 hour). Set to -1 to disable key refresh (keys are loaded once
+     * and cached forever). This setting applies globally to all indices.
      */
     public static final Setting<Integer> NODE_DATA_KEY_TTL_SECONDS_SETTING = Setting
         .intSetting(
             "node.store.data_key_ttl_seconds",
-            3600,  // default: 3600 seconds (1 hour)
-            -1,    // minimum: -1 means never refresh
+            3600, // default: 3600 seconds (1 hour)
+            -1, // minimum: -1 means never refresh
             (value) -> {
                 if (value != -1 && value < 1) {
                     throw new IllegalArgumentException("node.store.data_key_ttl_seconds must be -1 (never refresh) or a positive value");
@@ -167,6 +173,30 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         final Path location = path.resolveIndex();
         final LockFactory lockFactory = indexSettings.getValue(org.opensearch.index.store.FsDirectoryFactory.INDEX_LOCK_FACTOR_SETTING);
         Files.createDirectories(location);
+
+        // Retrieve ThreadContext safely (if supplied by plugin)
+        ThreadContext threadContext = (threadContextSupplier != null) ? threadContextSupplier.get() : null;
+
+        try {
+            if (threadContext != null) {
+                // Log headers (these survive across nodes and threads)
+                LOGGER.info("ThreadContext headers: {}", threadContext.getHeaders());
+
+                // Log transient keys individually (if you’ve set any yourself)
+                Object kmsGrant = threadContext.getTransient("kmsGrant");
+                if (kmsGrant != null) {
+                    LOGGER.info("ThreadContext transient [kmsGrant]: {}", kmsGrant);
+                } else {
+                    LOGGER.info("ThreadContext transient [kmsGrant] not found or not visible in this context.");
+                }
+            } else {
+                LOGGER.warn("ThreadContext is null — not initialized yet.");
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Could not inspect ThreadContext: {}", e.toString());
+        }
+
+        // Continue with normal directory creation
         return newFSDirectory(location, lockFactory, indexSettings);
     }
 
@@ -176,14 +206,14 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * @param location the directory location
      * @param lockFactory the lock factory for this directory
      * @param indexSettings the index settings
-     * @return the concrete implementation of the encrypted directory based on store type
+     * @return the concrete implementation of the encrypted directory based on
+     * store type
      * @throws IOException if directory creation fails
      */
     protected Directory newFSDirectory(Path location, LockFactory lockFactory, IndexSettings indexSettings) throws IOException {
         final Provider provider = indexSettings.getValue(INDEX_CRYPTO_PROVIDER_SETTING);
 
         // Use index-level key resolver - store keys at index level
-
         Path indexDirectory = location.getParent().getParent(); // Go up two levels: index -> shard -> index
         MasterKeyProvider keyProvider = getKeyProvider(indexSettings);
 
@@ -258,7 +288,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         * -------------------------------------------
         * - evictionListener: Sets retired=true (marks stale for BlockSlotTinyCache)
         * - removalListener: Calls decRef() (releases cache's reference)
-        */
+         */
 
         // Create a per-directory loader that uses this directory's keyIvResolver for decryption
         BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(sharedSegmentPool, keyIvResolver);
@@ -291,19 +321,18 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * Initialize the shared MemorySegmentPool and BlockCache once per node.
      * This method is called from CryptoDirectoryPlugin.createComponents().
      *
-     * Thread Safety:
-     * - Uses double-checked locking for initialization
-     * - Safe to call multiple times (idempotent)
+     * Thread Safety: - Uses double-checked locking for initialization - Safe to
+     * call multiple times (idempotent)
      *
-     * Cache Removal Strategy:
-     * - Uses removalListener to handle all removal causes (SIZE, EXPLICIT, REPLACED, etc.)
-     * - Calls value.close() which atomically: (1) sets retired=true, (2) calls decRef()
-     * - When refCount reaches 0, segment is returned to pool for reuse
+     * Cache Removal Strategy: - Uses removalListener to handle all removal
+     * causes (SIZE, EXPLICIT, REPLACED, etc.) - Calls value.close() which
+     * atomically: (1) sets retired=true, (2) calls decRef() - When refCount
+     * reaches 0, segment is returned to pool for reuse
      *
-     * Note on evictionListener vs removalListener:
-     * - evictionListener only fires for SIZE-based evictions
-     * - removalListener fires for ALL removals (including explicit invalidation)
-     * - We use removalListener to ensure retired flag is set for all removal paths
+     * Note on evictionListener vs removalListener: - evictionListener only
+     * fires for SIZE-based evictions - removalListener fires for ALL removals
+     * (including explicit invalidation) - We use removalListener to ensure
+     * retired flag is set for all removal paths
      */
     public static void initializeSharedPool() {
         if (sharedSegmentPool == null || sharedBlockCache == null) {
