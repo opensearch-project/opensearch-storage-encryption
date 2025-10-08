@@ -4,6 +4,8 @@
  */
 package org.opensearch.index.store.block_cache;
 
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
@@ -14,7 +16,6 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_loader.BlockLoader;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
 
 import com.github.benmanes.caffeine.cache.Cache;
 
@@ -25,11 +26,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     private final Cache<BlockCacheKey, BlockCacheValue<T>> cache;
     private final BlockLoader<V> blockLoader;
 
-    public CaffeineBlockCache(
-        Cache<BlockCacheKey, BlockCacheValue<T>> cache,
-        BlockLoader<V> blockLoader,
-        long maxBlocks
-    ) {
+    public CaffeineBlockCache(Cache<BlockCacheKey, BlockCacheValue<T>> cache, BlockLoader<V> blockLoader, long maxBlocks) {
         this.blockLoader = blockLoader;
         this.cache = cache;
     }
