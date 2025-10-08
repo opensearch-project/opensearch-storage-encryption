@@ -27,6 +27,7 @@ import org.opensearch.index.engine.EngineFactory;
 import org.opensearch.index.shard.IndexEventListener;
 import org.opensearch.index.store.iv.IndexKeyResolverRegistry;
 import org.opensearch.index.store.iv.NodeLevelKeyCache;
+import org.opensearch.index.store.pool.PoolSizeCalculator;
 import org.opensearch.indices.cluster.IndicesClusterStateService.AllocatedIndices.IndexRemovalReason;
 import org.opensearch.plugins.EnginePlugin;
 import org.opensearch.plugins.IndexStorePlugin;
@@ -58,7 +59,10 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
             .asList(
                 CryptoDirectoryFactory.INDEX_KMS_TYPE_SETTING,
                 CryptoDirectoryFactory.INDEX_CRYPTO_PROVIDER_SETTING,
-                CryptoDirectoryFactory.NODE_DATA_KEY_TTL_SECONDS_SETTING
+                CryptoDirectoryFactory.NODE_DATA_KEY_TTL_SECONDS_SETTING,
+                PoolSizeCalculator.NODE_POOL_SIZE_PERCENTAGE_SETTING,
+                PoolSizeCalculator.NODE_POOL_SIZE_MB_SETTING,
+                PoolSizeCalculator.NODE_POOL_WARMUP_PERCENTAGE_SETTING
             );
     }
 
@@ -96,7 +100,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         IndexNameExpressionResolver expressionResolver,
         Supplier<RepositoriesService> repositoriesServiceSupplier
     ) {
-        CryptoDirectoryFactory.initializeSharedPool();
+        CryptoDirectoryFactory.initializeSharedPool(environment.settings());
         NodeLevelKeyCache.initialize(environment.settings());
 
         return Collections.emptyList();

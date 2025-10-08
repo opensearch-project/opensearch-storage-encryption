@@ -5,6 +5,8 @@
 package org.opensearch.index.store.niofs;
 
 import static org.hamcrest.Matchers.is;
+import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
 
 import java.util.Arrays;
 import java.util.Collection;
@@ -28,6 +30,16 @@ public class CryptoDirectoryIntegTestCases extends OpenSearchIntegTestCase {
     protected Collection<Class<? extends Plugin>> nodePlugins() {
         return Arrays
             .asList(CryptoDirectoryPlugin.class, MockCryptoKeyProviderPlugin.class, MockCryptoPlugin.class, ReindexModulePlugin.class);
+    }
+
+    @Override
+    protected Settings nodeSettings(int nodeOrdinal) {
+        return Settings
+            .builder()
+            .put(super.nodeSettings(nodeOrdinal))
+            .put("node.store.pool_size_mb", 64)
+            .put("node.store.pool_warmup_percentage", 0.0)
+            .build();
     }
 
     @Override
