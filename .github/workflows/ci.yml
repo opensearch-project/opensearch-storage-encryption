@@ -1,0 +1,193 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+env:
+  GRADLE_OPTS: -Dhttp.keepAlive=false
+
+jobs:
+  Get-CI-Image-Tag:
+    uses: opensearch-project/opensearch-build/.github/workflows/get-ci-image-tag.yml@main
+    with:
+      product: opensearch
+
+  build-linux:
+    name: Linux - Gradle assemble and spotless check
+    needs: ["Get-CI-Image-Tag"]
+    strategy:
+      fail-fast: false
+      matrix:
+        jdk: [24]
+        platform: [ubuntu-latest]
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      pull-requests: write
+      contents: read
+    container:
+      image: ${{ needs.Get-CI-Image-Tag.outputs.ci-image-version-linux }}
+      options: ${{ needs.Get-CI-Image-Tag.outputs.ci-image-start-options }}
+    
+    steps:
+      - name: Run start commands
+        run: ${{ needs.Get-CI-Image-Tag.outputs.ci-image-start-command }}
+      
+      - name: Set up JDK for build and test
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin # Temurin is a distribution of adoptium
+          java-version: ${{ matrix.jdk }}
+      
+      - name: Checkout opensearch-storage-encryption
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      
+      - name: Build with Gradle
+        uses: gradle/gradle-build-action@v3
+        with:
+          cache-disabled: true
+          arguments: |
+            assemble -Dbuild.snapshot=false
+      
+      - name: Switch to ci-runner user and run tests
+        run: |
+          chown -R ci-runner:ci-runner $GITHUB_WORKSPACE
+          find $GITHUB_WORKSPACE -type d -exec chmod 755 {} \;
+          find $GITHUB_WORKSPACE -type f -exec chmod 644 {} \;
+          chmod +x $GITHUB_WORKSPACE/gradlew
+          # Preserve environment variables when switching users
+          su ci-runner -c "export JAVA_HOME=$JAVA_HOME && export GRADLE_OPTS='$GRADLE_OPTS' && cd $GITHUB_WORKSPACE && ./gradlew check -x internalClusterTest -Dbuild.snapshot=false"
+
+      - name: Configure git for test reporter
+        if: always()
+        run: git config --global --add safe.directory $GITHUB_WORKSPACE
+      
+      - name: Publish Test Results (Linux)
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Test Results - Linux JDK${{ matrix.jdk }}
+          path: 'build/test-results/test/TEST-*.xml'
+          reporter: java-junit
+          fail-on-error: false
+      
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-JDK${{ matrix.jdk }}-build-reports
+          path: |
+            ./build/reports/
+            ./build/distributions/
+
+  build-macos:
+    name: macOS - Gradle assemble and spotless check
+    strategy:
+      fail-fast: false
+      matrix:
+        jdk: [24]
+    runs-on: macos-latest
+    permissions:
+      checks: write
+      pull-requests: write
+      contents: read
+    
+    steps:
+      - name: Set up JDK for build and test
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin # Temurin is a distribution of adoptium
+          java-version: ${{ matrix.jdk }}
+      
+      - name: Checkout opensearch-storage-encryption
+        uses: actions/checkout@v5
+      
+      - name: Build with Gradle
+        uses: gradle/gradle-build-action@v3
+        with:
+          cache-disabled: true
+          arguments: |
+            assemble -Dbuild.snapshot=false
+      
+      - name: Run tests
+        uses: gradle/gradle-build-action@v3
+        with:
+          cache-disabled: true
+          arguments: check -x internalClusterTest -Dbuild.snapshot=false
+
+      - name: Publish Test Results (macOS)
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Test Results - macOS JDK${{ matrix.jdk }}
+          path: 'build/test-results/test/TEST-*.xml'
+          reporter: java-junit
+          fail-on-error: false
+      
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-JDK${{ matrix.jdk }}-build-reports
+          path: |
+            ./build/reports/
+            ./build/distributions/
+
+  build-windows:
+    name: Windows - Gradle assemble and spotless check
+    strategy:
+      fail-fast: false
+      matrix:
+        jdk: [24]
+    runs-on: windows-latest
+    permissions:
+      checks: write
+      pull-requests: write
+      contents: read
+    
+    steps:
+      - name: Set up JDK for build and test
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin # Temurin is a distribution of adoptium
+          java-version: ${{ matrix.jdk }}
+      
+      - name: Checkout opensearch-storage-encryption
+        uses: actions/checkout@v5
+      
+      - name: Build with Gradle
+        uses: gradle/gradle-build-action@v3
+        with:
+          cache-disabled: true
+          arguments: |
+            assemble -Dbuild.snapshot=false
+      
+      - name: Run tests
+        uses: gradle/gradle-build-action@v3
+        with:
+          cache-disabled: true
+          arguments: check -x internalClusterTest -Dbuild.snapshot=false
+      
+      - name: Publish Test Results (Windows)
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Test Results - Windows JDK${{ matrix.jdk }}
+          path: 'build/test-results/test/TEST-*.xml'
+          reporter: java-junit
+          fail-on-error: false
+      
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-JDK${{ matrix.jdk }}-build-reports
+          path: |
+            ./build/reports/
+            ./build/distributions/
