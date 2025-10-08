@@ -25,18 +25,17 @@ import org.opensearch.common.SuppressForbidden;
  *
  * @opensearch.internal
  */
-@SuppressForbidden(reason = "temporary bypass")
+@SuppressForbidden(reason = "Uses Panama FFI for OpenSSL native function access")
 @SuppressWarnings("preview")
 public final class OpenSslNativeCipher {
-    public static final int AES_BLOCK_SIZE = 16;
-    public static final int AES_256_KEY_SIZE = 32;
-    public static final int COUNTER_SIZE = 4;
+    static final int AES_BLOCK_SIZE = 16;
+    static final int AES_256_KEY_SIZE = 32;
 
-    public static final MethodHandle EVP_CIPHER_CTX_new;
-    public static final MethodHandle EVP_CIPHER_CTX_free;
-    public static final MethodHandle EVP_EncryptInit_ex;
-    public static final MethodHandle EVP_EncryptUpdate;
-    public static final MethodHandle EVP_aes_256_ctr;
+    private static final MethodHandle EVP_CIPHER_CTX_new;
+    private static final MethodHandle EVP_CIPHER_CTX_free;
+    private static final MethodHandle EVP_EncryptInit_ex;
+    private static final MethodHandle EVP_EncryptUpdate;
+    private static final MethodHandle EVP_aes_256_ctr;
 
     private static final Linker LINKER = Linker.nativeLinker();
     private static final SymbolLookup LIBCRYPTO = loadLibcrypto();
@@ -144,20 +143,18 @@ public final class OpenSslNativeCipher {
     }
 
     /**
-     * Encrypts the input data using AES-256-CTR mode.
+     * Encrypts the input data using AES-256-CTR mode with file position offset.
+     * Thread-safe - creates a new cipher context for each call.
      *
-     * @param key   The 32-byte encryption key
-     * @param iv    The 16-byte initialization vector
-     * @param input The data to encrypt
+     * @param key   The 32-byte encryption key (must not be null)
+     * @param iv    The 16-byte initialization vector (must not be null)
+     * @param input The data to encrypt (must not be null or empty)
+     * @param filePosition The file position offset for IV computation
      * @return The encrypted data
      * @throws IllegalArgumentException if the input parameters are invalid
      * @throws OpenSslException if encryption fails
      * @throws Throwable if there's an unexpected error
      */
-    public static byte[] encrypt(byte[] key, byte[] iv, byte[] input) throws Throwable {
-        return encrypt(key, iv, input, 0L);
-    }
-
     public static byte[] encrypt(byte[] key, byte[] iv, byte[] input, long filePosition) throws Throwable {
         if (key == null || key.length != AES_256_KEY_SIZE) {
             throw new IllegalArgumentException("Invalid key length: expected " + AES_256_KEY_SIZE + " bytes");
