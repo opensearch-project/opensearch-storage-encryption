@@ -4,9 +4,9 @@ on:
   push:
     branches:
       - main
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
-
+  pull_request:
+    branches:
+      - "*"
 env:
   GRADLE_OPTS: -Dhttp.keepAlive=false
 
@@ -63,19 +63,6 @@ jobs:
           chmod +x $GITHUB_WORKSPACE/gradlew
           # Preserve environment variables when switching users
           su ci-runner -c "export JAVA_HOME=$JAVA_HOME && export GRADLE_OPTS='$GRADLE_OPTS' && cd $GITHUB_WORKSPACE && ./gradlew check -x internalClusterTest -Dbuild.snapshot=false"
-
-      - name: Configure git for test reporter
-        if: always()
-        run: git config --global --add safe.directory $GITHUB_WORKSPACE
-      
-      - name: Publish Test Results (Linux)
-        uses: dorny/test-reporter@v1
-        if: always()
-        with:
-          name: Test Results - Linux JDK${{ matrix.jdk }}
-          path: 'build/test-results/test/TEST-*.xml'
-          reporter: java-junit
-          fail-on-error: false
       
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -120,15 +107,6 @@ jobs:
         with:
           cache-disabled: true
           arguments: check -x internalClusterTest -Dbuild.snapshot=false
-
-      - name: Publish Test Results (macOS)
-        uses: dorny/test-reporter@v1
-        if: always()
-        with:
-          name: Test Results - macOS JDK${{ matrix.jdk }}
-          path: 'build/test-results/test/TEST-*.xml'
-          reporter: java-junit
-          fail-on-error: false
       
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -173,15 +151,6 @@ jobs:
         with:
           cache-disabled: true
           arguments: check -x internalClusterTest -Dbuild.snapshot=false
-      
-      - name: Publish Test Results (Windows)
-        uses: dorny/test-reporter@v1
-        if: always()
-        with:
-          name: Test Results - Windows JDK${{ matrix.jdk }}
-          path: 'build/test-results/test/TEST-*.xml'
-          reporter: java-junit
-          fail-on-error: false
       
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
