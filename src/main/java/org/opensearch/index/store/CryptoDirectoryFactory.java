@@ -4,21 +4,13 @@
  */
 package org.opensearch.index.store;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_INITIAL_SIZE;
 import static org.opensearch.index.store.directio.DirectIoConfigs.READ_AHEAD_QUEUE_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.RESEVERED_POOL_SIZE_IN_BYTES;
-import static org.opensearch.index.store.directio.DirectIoConfigs.WARM_UP_PERCENTAGE;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Provider;
 import java.security.Security;
-import java.time.Duration;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 import org.apache.logging.log4j.LogManager;
@@ -39,8 +31,6 @@ import org.opensearch.index.IndexSettings;
 import org.opensearch.index.shard.ShardPath;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
-import org.opensearch.index.store.block_cache.BlockCacheKey;
-import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
@@ -49,15 +39,10 @@ import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
 import org.opensearch.index.store.iv.IndexKeyResolverRegistry;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
-import org.opensearch.index.store.pool.MemorySegmentPool;
-import org.opensearch.index.store.pool.Pool;
+import org.opensearch.index.store.pool.PoolBuilder;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.index.store.read_ahead.impl.QueuingWorker;
 import org.opensearch.plugins.IndexStorePlugin;
-
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
-import com.github.benmanes.caffeine.cache.RemovalCause;
 
 /**
  * Factory for creating encrypted filesystem directories with support for various storage types.
@@ -80,16 +65,10 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectoryFactory.class);
 
     /**
-     * Shared pool of RefCountedMemorySegments for Direct I/O operations.
+     * Shared pool resources including pool, cache, and telemetry.
      * Initialized once per node and shared across all CryptoDirectIODirectory instances.
      */
-    private static volatile Pool<RefCountedMemorySegment> sharedSegmentPool;
-
-    /**
-     * Shared block cache for decrypted data blocks.
-     * Initialized once per node and shared across all CryptoDirectIODirectory instances.
-     */
-    private static volatile BlockCache<RefCountedMemorySegment> sharedBlockCache;
+    private static volatile PoolBuilder.PoolResources poolResources;
 
     /**
      * Lock for thread-safe initialization of shared resources.
@@ -120,26 +99,35 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * Specifies the Key management plugin type to be used. The desired KMS
      * plugin should be installed.
      */
-    public static final Setting<String> INDEX_KMS_TYPE_SETTING = new Setting<>("index.store.kms.type", "", Function.identity(), (s) -> {
-        if (s == null || s.isEmpty()) {
-            throw new SettingsException("index.store.kms.type must be set");
-        }
-    }, Property.NodeScope, Property.IndexScope);
+    public static final Setting<String> INDEX_KMS_TYPE_SETTING = new Setting<>(
+        "index.store.crypto.kms.type",
+        "",
+        Function.identity(),
+        (s) -> {
+            if (s == null || s.isEmpty()) {
+                throw new SettingsException("index.store.crypto.kms.type must be set");
+            }
+        },
+        Property.NodeScope,
+        Property.IndexScope
+    );
 
     /**
-     * Specifies the node-level TTL for data keys in seconds. 
+     * Specifies the node-level TTL for data keys in seconds.
      * Default is 3600 seconds (1 hour).
      * Set to -1 to disable key refresh (keys are loaded once and cached forever).
      * This setting applies globally to all indices.
      */
-    public static final Setting<Integer> NODE_DATA_KEY_TTL_SECONDS_SETTING = Setting
+    public static final Setting<Integer> NODE_KEY_REFRESH_INTERVAL_SECS_SETTING = Setting
         .intSetting(
-            "node.store.data_key_ttl_seconds",
+            "node.store.crypto.key_refresh_interval_secs",
             3600,  // default: 3600 seconds (1 hour)
             -1,    // minimum: -1 means never refresh
             (value) -> {
                 if (value != -1 && value < 1) {
-                    throw new IllegalArgumentException("node.store.data_key_ttl_seconds must be -1 (never refresh) or a positive value");
+                    throw new IllegalArgumentException(
+                        "node.store.crypto.key_refresh_interval_secs must be -1 (never refresh) or a positive value"
+                    );
                 }
             },
             Property.NodeScope
@@ -266,14 +254,22 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         */
 
         // Create a per-directory loader that uses this directory's keyIvResolver for decryption
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(sharedSegmentPool, keyIvResolver);
+        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(poolResources.getSegmentPool(), keyIvResolver);
 
-        // Wrap the shared cache with directory-specific loader
-        long maxBlocks = RESEVERED_POOL_SIZE_IN_BYTES / CACHE_BLOCK_SIZE;
+        // Cache architecture: One shared Caffeine cache storage, multiple wrapper instances
+        // - sharedBlockCache: Created once in initializeSharedPool(), holds the actual cache storage
+        // - directoryCache: Per-directory wrapper that shares the underlying cache but uses its own loader
+        // This design allows:
+        // * Shared cache capacity across all directories
+        // * Per-directory decryption via directory-specific loaders with unique keyIvResolvers
+        // * Unified eviction policy managed by the shared cache
+        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> sharedCaffeineCache =
+            (CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment>) poolResources.getBlockCache();
+
         BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
-            ((CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment>) sharedBlockCache).getCache(),
+            sharedCaffeineCache.getCache(),
             loader,
-            maxBlocks
+            poolResources.getMaxCacheBlocks()
         );
 
         // Create read-ahead worker for asynchronous prefetching
@@ -285,7 +281,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             lockFactory,
             provider,
             keyIvResolver,
-            sharedSegmentPool,
+            poolResources.getSegmentPool(),
             directoryCache,
             loader,
             readaheadWorker
@@ -297,104 +293,20 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * This method is called from CryptoDirectoryPlugin.createComponents().
      *
      * Thread Safety:
-     * - Uses double-checked locking for initialization
-     * - Safe to call multiple times (idempotent)
+     * - Uses double-checked locking for initialization -- safe.
      *
-     * Cache Removal Strategy:
-     * - Uses removalListener to handle all removal causes (SIZE, EXPLICIT, REPLACED, etc.)
-     * - Calls value.close() which atomically: (1) sets retired=true, (2) calls decRef()
-     * - When refCount reaches 0, segment is returned to pool for reuse
-     *
-     * Note on evictionListener vs removalListener:
-     * - evictionListener only fires for SIZE-based evictions
-     * - removalListener fires for ALL removals (including explicit invalidation)
-     * - We use removalListener to ensure retired flag is set for all removal paths
+     * @param settings the node settings for configuration
+     * @return a handle that can be closed to stop telemetry
      */
-    public static void initializeSharedPool() {
-        if (sharedSegmentPool == null || sharedBlockCache == null) {
+    @SuppressWarnings("DoubleCheckedLocking")
+    public static PoolBuilder.PoolResources initializeSharedPool(Settings settings) {
+        if (poolResources == null) {
             synchronized (initLock) {
-                if (sharedSegmentPool == null || sharedBlockCache == null) {
-                    long maxBlocks = RESEVERED_POOL_SIZE_IN_BYTES / CACHE_BLOCK_SIZE;
-
-                    // Initialize shared memory pool with warmup
-                    sharedSegmentPool = new MemorySegmentPool(RESEVERED_POOL_SIZE_IN_BYTES, CACHE_BLOCK_SIZE);
-                    LOGGER
-                        .info(
-                            "Creating shared pool with sizeBytes={}, segmentSize={}, totalSegments={}",
-                            RESEVERED_POOL_SIZE_IN_BYTES,
-                            CACHE_BLOCK_SIZE,
-                            maxBlocks
-                        );
-                    sharedSegmentPool.warmUp((long) (maxBlocks * WARM_UP_PERCENTAGE));
-
-                    @SuppressWarnings("resource")
-                    ThreadPoolExecutor removalExec = new ThreadPoolExecutor(4, 8, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<>(), r -> {
-                        Thread t = new Thread(r, "block-cache-maint");
-                        t.setDaemon(true);
-                        return t;
-                    });
-
-                    // Initialize shared cache with removal listener
-                    Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> cache = Caffeine
-                        .newBuilder()
-                        .initialCapacity(CACHE_INITIAL_SIZE)
-                        .recordStats()
-                        .maximumSize(maxBlocks)
-                        .removalListener((BlockCacheKey key, BlockCacheValue<RefCountedMemorySegment> value, RemovalCause cause) -> {
-                            if (value != null) {
-                                removalExec.execute(() -> {
-                                    try {
-                                        value.close();
-                                    } catch (Throwable t) {
-                                        LOGGER.warn("Failed to close cached value during removal {}", key, t);
-                                    }
-                                });
-                            }
-                        })
-                        .build();
-
-                    sharedBlockCache = new CaffeineBlockCache<>(cache, null, maxBlocks);
-
-                    LOGGER.info("Creating shared block cache with maxSize={}, poolSize={}", maxBlocks, maxBlocks);
-
-                    startTelemetry();
+                if (poolResources == null) {
+                    poolResources = PoolBuilder.build(settings);
                 }
             }
         }
-    }
-
-    /**
-     * Publishes pool statistics to the logger for monitoring and debugging.
-     */
-    private static void publishPoolStats() {
-        try {
-            LOGGER.info("{}", sharedSegmentPool.poolStats());
-        } catch (Exception e) {
-            LOGGER.warn("Failed to log cache/pool stats", e);
-        }
-    }
-
-    /**
-     * Starts a background daemon thread that periodically logs pool statistics.
-     * Logs every 5 minutes to help monitor memory usage and pool health.
-     */
-    private static void startTelemetry() {
-        Thread loggerThread = new Thread(() -> {
-            while (true) {
-                try {
-                    Thread.sleep(Duration.ofMinutes(5));
-                    publishPoolStats();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return;
-                } catch (Throwable t) {
-                    LOGGER.warn("Error in buffer pool stats logger", t);
-                }
-            }
-        });
-
-        loggerThread.setDaemon(true);
-        loggerThread.setName("DirectIOBufferPoolStatsLogger");
-        loggerThread.start();
+        return poolResources;
     }
 }

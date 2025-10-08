@@ -27,6 +27,8 @@ import org.opensearch.index.engine.EngineFactory;
 import org.opensearch.index.shard.IndexEventListener;
 import org.opensearch.index.store.iv.IndexKeyResolverRegistry;
 import org.opensearch.index.store.iv.NodeLevelKeyCache;
+import org.opensearch.index.store.pool.PoolBuilder;
+import org.opensearch.index.store.pool.PoolSizeCalculator;
 import org.opensearch.indices.cluster.IndicesClusterStateService.AllocatedIndices.IndexRemovalReason;
 import org.opensearch.plugins.EnginePlugin;
 import org.opensearch.plugins.IndexStorePlugin;
@@ -41,6 +43,8 @@ import org.opensearch.watcher.ResourceWatcherService;
  * A plugin that enables index level encryption and decryption.
  */
 public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, EnginePlugin {
+
+    private PoolBuilder.PoolResources sharedPoolResources;
 
     /**
      * The default constructor.
@@ -58,7 +62,10 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
             .asList(
                 CryptoDirectoryFactory.INDEX_KMS_TYPE_SETTING,
                 CryptoDirectoryFactory.INDEX_CRYPTO_PROVIDER_SETTING,
-                CryptoDirectoryFactory.NODE_DATA_KEY_TTL_SECONDS_SETTING
+                CryptoDirectoryFactory.NODE_KEY_REFRESH_INTERVAL_SECS_SETTING,
+                PoolSizeCalculator.NODE_POOL_SIZE_PERCENTAGE_SETTING,
+                PoolSizeCalculator.NODE_POOL_TO_CACHE_RATIO_SETTING,
+                PoolSizeCalculator.NODE_WARMUP_PERCENTAGE_SETTING
             );
     }
 
@@ -96,10 +103,17 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         IndexNameExpressionResolver expressionResolver,
         Supplier<RepositoriesService> repositoriesServiceSupplier
     ) {
-        CryptoDirectoryFactory.initializeSharedPool();
+        sharedPoolResources = CryptoDirectoryFactory.initializeSharedPool(environment.settings());
         NodeLevelKeyCache.initialize(environment.settings());
 
         return Collections.emptyList();
+    }
+
+    @Override
+    public void close() {
+        if (sharedPoolResources != null) {
+            sharedPoolResources.close();
+        }
     }
 
     @Override

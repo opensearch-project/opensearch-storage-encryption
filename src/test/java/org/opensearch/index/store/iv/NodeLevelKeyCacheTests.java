@@ -427,10 +427,10 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
 
     public void testInvalidTTLValues() {
         // Test that 0 is rejected
-        Settings settings = Settings.builder().put("node.store.data_key_ttl_seconds", 0).build();
+        Settings settings = Settings.builder().put("node.store.crypto.key_refresh_interval_secs", 0).build();
 
         try {
-            CryptoDirectoryFactory.NODE_DATA_KEY_TTL_SECONDS_SETTING.get(settings);
+            CryptoDirectoryFactory.NODE_KEY_REFRESH_INTERVAL_SECS_SETTING.get(settings);
             fail("Expected IllegalArgumentException for invalid TTL value");
         } catch (IllegalArgumentException e) {
             assertTrue(e.getMessage().contains("must be -1 (never refresh) or a positive value"));

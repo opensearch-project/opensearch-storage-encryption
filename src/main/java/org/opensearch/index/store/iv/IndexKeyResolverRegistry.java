@@ -23,6 +23,11 @@ import org.opensearch.common.crypto.MasterKeyProvider;
  */
 public class IndexKeyResolverRegistry {
 
+    /**
+     * Private constructor to prevent instantiation of utility class.
+     */
+    private IndexKeyResolverRegistry() {}
+
     private static final Logger logger = LogManager.getLogger(IndexKeyResolverRegistry.class);
 
     // Thread-safe cache of resolvers by index UUID
