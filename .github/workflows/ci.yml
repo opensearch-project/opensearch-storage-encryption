@@ -17,7 +17,7 @@ jobs:
       product: opensearch
 
   build-linux:
-    name: Linux - Gradle assemble and spotless check
+    name: Linux - Gradle check
     needs: ["Get-CI-Image-Tag"]
     strategy:
       fail-fast: false
@@ -87,7 +87,7 @@ jobs:
             ./build/distributions/
 
   build-macos:
-    name: macOS - Gradle assemble and spotless check
+    name: macOS - Gradle check
     strategy:
       fail-fast: false
       matrix:
@@ -140,7 +140,7 @@ jobs:
             ./build/distributions/
 
   build-windows:
-    name: Windows - Gradle assemble and spotless check
+    name: Windows - Gradle check
     strategy:
       fail-fast: false
       matrix:
