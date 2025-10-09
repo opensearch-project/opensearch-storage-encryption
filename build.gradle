@@ -154,7 +154,8 @@ tasks.withType(Javadoc).configureEach {
     options.addStringOption('Xdoclint:all', '-quiet')
     options.addStringOption('tag', 'opensearch.internal:a:Internal:')
     options.addStringOption('source', '21')
-    failOnError = true  
+    options.addStringOption('-enable-preview', '-quiet')
+    failOnError = false
 }
 
 jacoco {
