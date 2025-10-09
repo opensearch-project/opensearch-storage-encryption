@@ -111,7 +111,7 @@ public final class PanamaNativeAccess {
         }
 
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment cPath = arena.allocateFrom(filePath);
+            MemorySegment cPath = arena.allocateUtf8String(filePath);
 
             int fd = (int) OPEN.invoke(cPath, O_RDONLY);
             if (fd < 0) {

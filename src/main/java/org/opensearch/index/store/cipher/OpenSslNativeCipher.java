@@ -179,8 +179,8 @@ public final class OpenSslNativeCipher {
                 }
 
                 byte[] adjustedIV = computeOffsetIVForAesGcmEncrypted(iv, filePosition);
-                MemorySegment keySeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, key);
-                MemorySegment ivSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, adjustedIV);
+                MemorySegment keySeg = arena.allocateArray(ValueLayout.JAVA_BYTE, key);
+                MemorySegment ivSeg = arena.allocateArray(ValueLayout.JAVA_BYTE, adjustedIV);
 
                 int rc = (int) EVP_EncryptInit_ex.invoke(ctx, cipher, MemorySegment.NULL, keySeg, ivSeg);
                 if (rc != 1) {
@@ -189,13 +189,13 @@ public final class OpenSslNativeCipher {
 
                 int skipBytes = (int) (filePosition % AES_BLOCK_SIZE);
                 if (skipBytes > 0) {
-                    MemorySegment dummyIn = arena.allocate(ValueLayout.JAVA_BYTE, skipBytes);
+                    MemorySegment dummyIn = arena.allocateArray(ValueLayout.JAVA_BYTE, skipBytes);
                     MemorySegment dummyOut = arena.allocate(skipBytes + AES_BLOCK_SIZE);
                     MemorySegment dummyLen = arena.allocate(ValueLayout.JAVA_INT);
                     EVP_EncryptUpdate.invoke(ctx, dummyOut, dummyLen, dummyIn, skipBytes);
                 }
 
-                MemorySegment inSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, input);
+                MemorySegment inSeg = arena.allocateArray(ValueLayout.JAVA_BYTE, input);
                 MemorySegment outSeg = arena.allocate(input.length + AES_BLOCK_SIZE);
                 MemorySegment outLen = arena.allocate(ValueLayout.JAVA_INT);
 

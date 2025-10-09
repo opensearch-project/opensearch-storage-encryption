@@ -29,6 +29,7 @@ import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 
 @SuppressForbidden(reason = "doesn't uses nio")
+@SuppressWarnings("preview")
 public class IoUringFile implements AutoCloseable {
 
     private static final OpenOption ExtendedOpenOption_DIRECT;

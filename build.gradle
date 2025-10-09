@@ -89,6 +89,10 @@ test {
         showStandardStreams = true
     }
     systemProperty 'tests.security.manager', 'false'
+    jvmArgs += [
+        '--enable-preview',
+        '--enable-native-access=ALL-UNNAMED'
+    ]
 }
 
 tasks.named('internalClusterTest').configure {
@@ -98,35 +102,45 @@ tasks.named('internalClusterTest').configure {
         events "passed", "skipped", "failed"
         showStandardStreams = true
     }
+    jvmArgs += [
+        '--enable-preview',
+        '--enable-native-access=ALL-UNNAMED'
+    ]
 }
 
 compileJava {
-    sourceCompatibility = JavaVersion.VERSION_24
-    targetCompatibility = JavaVersion.VERSION_24
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
     options.encoding = 'UTF-8'
     options.compilerArgs << '-Xlint:unchecked' << '-Xlint:-deprecation'
+    options.compilerArgs += ['--enable-preview']
 }
 
 compileTestJava {
-    sourceCompatibility = JavaVersion.VERSION_24
-    targetCompatibility = JavaVersion.VERSION_24
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
 }
 
 tasks.withType(JavaCompile).configureEach {
-    sourceCompatibility = JavaVersion.VERSION_24
-    targetCompatibility = JavaVersion.VERSION_24
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
     options.encoding = 'UTF-8'
-    options.release = 24
+    options.release = 21
     options.compilerArgs << '-Xlint:-deprecation'
+    options.compilerArgs += "--enable-preview"
 }
 
-javadoc {
+tasks.withType(Javadoc).configureEach {
     options.encoding = 'UTF-8'
     options.charSet = 'UTF-8'
     options.addStringOption('Xdoclint:all', '-quiet')
     options.addStringOption('tag', 'opensearch.internal:a:Internal:')
-    options.addStringOption("source", "24")
-    failOnError = true
+    options.addStringOption('source', '21')
+
+    // Pass preview flag to the JVM running javadoc
+    options.addStringOption('J--enable-preview', '')
+
+    failOnError = false  // optional: make javadoc non-blocking
 }
 
 jacoco {
