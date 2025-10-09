@@ -145,6 +145,7 @@ tasks.withType(JavaCompile).configureEach {
     options.compilerArgs += "--enable-preview"
 
     // Patch all compiled class files to remove preview flag requirement by java
+    // this is like tricky java to not consider these files using preview.
     doLast {
         def patchedCount = 0
         destinationDirectory.getAsFileTree().matching(new PatternSet().include('**/*.class')).each { classFile ->
