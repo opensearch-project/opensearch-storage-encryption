@@ -89,21 +89,38 @@ test {
         showStandardStreams = true
     }
     systemProperty 'tests.security.manager', 'false'
+    systemProperty 'opensearch.storage.warmup.percentage', '0'
+    systemProperty 'opensearch.storage.pool.size.bytes', '268435456' // 256MB for tests
     jvmArgs += [
-        '--enable-native-access=ALL-UNNAMED'
+        '--enable-native-access=ALL-UNNAMED',
+        '-XX:MaxDirectMemorySize=512m'
     ]
 }
 
 tasks.named('internalClusterTest').configure {
     systemProperty 'tests.security.manager', 'false'
     systemProperty 'java.security.policy', 'test.policy'
+    systemProperty 'opensearch.storage.warmup.percentage', '0'
+    systemProperty 'opensearch.storage.pool.size.bytes', '268435456'
     testLogging {
         events "passed", "skipped", "failed"
         showStandardStreams = true
     }
     jvmArgs += [
-        '--enable-native-access=ALL-UNNAMED'
+        '--enable-native-access=ALL-UNNAMED',
+        '-XX:MaxDirectMemorySize=512m'
     ]
+}
+
+tasks.named('yamlRestTest').configure {
+    systemProperty 'opensearch.storage.warmup.percentage', '0'
+    systemProperty 'opensearch.storage.pool.size.bytes', '134217728'
+}
+
+testClusters.yamlRestTest {
+    systemProperty 'opensearch.storage.warmup.percentage', '0'
+    systemProperty 'opensearch.storage.pool.size.bytes', '134217728'
+    jvmArgs '-XX:MaxDirectMemorySize=512m'
 }
 
 compileJava {
@@ -127,7 +144,7 @@ tasks.withType(JavaCompile).configureEach {
     options.compilerArgs << '-Xlint:-deprecation'
     options.compilerArgs += "--enable-preview"
 
-    // Patch all compiled class files to remove preview flag requirement
+    // Patch all compiled class files to remove preview flag requirement by java
     doLast {
         def patchedCount = 0
         destinationDirectory.getAsFileTree().matching(new PatternSet().include('**/*.class')).each { classFile ->
