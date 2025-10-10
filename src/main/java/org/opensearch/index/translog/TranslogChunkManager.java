@@ -39,13 +39,13 @@ public class TranslogChunkManager {
 
     // GCM chunk constants
     /** Size of each data chunk in bytes (8KB). */
-    public static final int GCM_CHUNK_SIZE = 8192;                                    
-    
+    public static final int GCM_CHUNK_SIZE = 8192;
+
     /** Size of GCM authentication tag in bytes (16 bytes). */
-    public static final int GCM_TAG_SIZE = AesGcmCipherFactory.GCM_TAG_LENGTH;       
-    
+    public static final int GCM_TAG_SIZE = AesGcmCipherFactory.GCM_TAG_LENGTH;
+
     /** Total size of chunk plus authentication tag in bytes (8208 bytes maximum). */
-    public static final int CHUNK_WITH_TAG_SIZE = GCM_CHUNK_SIZE + GCM_TAG_SIZE;     
+    public static final int CHUNK_WITH_TAG_SIZE = GCM_CHUNK_SIZE + GCM_TAG_SIZE;
 
     private final FileChannel delegate;
     private final KeyIvResolver keyIvResolver;
@@ -61,10 +61,10 @@ public class TranslogChunkManager {
     public static class ChunkInfo {
         /** The chunk index (0, 1, 2, ...). */
         public final int chunkIndex;
-        
+
         /** The byte position within the 8KB chunk. */
         public final int offsetInChunk;
-        
+
         /** The actual file position where the chunk starts on disk. */
         public final long diskPosition;
 

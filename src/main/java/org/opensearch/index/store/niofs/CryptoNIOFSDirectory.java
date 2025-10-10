@@ -29,10 +29,10 @@ import org.opensearch.index.store.iv.KeyIvResolver;
  */
 public class CryptoNIOFSDirectory extends NIOFSDirectory {
     private final Provider provider;
-    
+
     /** The resolver for encryption keys and initialization vectors. */
     public final KeyIvResolver keyIvResolver;
-    
+
     private final AtomicLong nextTempFileCounter = new AtomicLong();
 
     /**

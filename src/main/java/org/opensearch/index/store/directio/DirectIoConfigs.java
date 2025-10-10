@@ -28,7 +28,7 @@ public class DirectIoConfigs {
      * Must be at least 512 bytes or the system page size, whichever is larger.
      */
     public static final int DIRECT_IO_ALIGNMENT = Math.max(512, getPageSizeSafe());
-    
+
     /** 
      * Power of 2 for Direct I/O write buffer size (2^18 = 256KB).
      */
@@ -58,12 +58,12 @@ public class DirectIoConfigs {
      * Power of 2 for cache block size (2^13 = 8KB blocks).
      */
     public static final int CACHE_BLOCK_SIZE_POWER = 13;
-    
+
     /** 
      * Size of each cache block in bytes (8KB).
      */
     public static final int CACHE_BLOCK_SIZE = 1 << CACHE_BLOCK_SIZE_POWER;
-    
+
     /** 
      * Bit mask for cache block alignment (block_size - 1).
      */
