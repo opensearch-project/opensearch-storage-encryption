@@ -91,6 +91,14 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
 
     private final AtomicReference<State> ref;
 
+    /**
+     * Creates a windowed readahead policy with default lead and gap settings.
+     * 
+     * @param path the file path this policy applies to (used for logging)
+     * @param initialWindow the initial readahead window size in segments
+     * @param maxWindow the maximum readahead window size in segments
+     * @param shrinkOnRandomThreshold unused parameter kept for constructor compatibility
+     */
     public WindowedReadaheadPolicy(
         Path path,
         int initialWindow,
@@ -100,6 +108,16 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
         this(path, initialWindow, maxWindow, /*minLead*/1, /*smallGapDivisor*/4);
     }
 
+    /**
+     * Creates a windowed readahead policy with configurable parameters.
+     * 
+     * @param path the file path this policy applies to (used for logging and identification)
+     * @param initialWindow the initial readahead window size in segments, must be >= 1
+     * @param maxWindow the maximum readahead window size in segments, must be >= initialWindow
+     * @param minLead the minimum lead distance for marker placement, must be >= 1
+     * @param smallGapDivisor controls tolerance for small forward gaps, must be >= 2
+     * @throws IllegalArgumentException if any parameter is outside its valid range
+     */
     public WindowedReadaheadPolicy(Path path, int initialWindow, int maxWindow, int minLead, int smallGapDivisor) {
         if (initialWindow < 1)
             throw new IllegalArgumentException("initialWindow must be >= 1");
@@ -207,6 +225,14 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
         return ref.get().window;
     }
 
+    /**
+     * Gets the current marker segment position.
+     * 
+     * <p>The marker represents the future position that will trigger the next readahead
+     * operation when crossed by sequential access patterns.
+     * 
+     * @return the current marker segment position, or -1 if not initialized
+     */
     public long currentMarker() {
         return ref.get().markerSeg;
     }
@@ -214,6 +240,8 @@ public final class WindowedReadaheadPolicy implements ReadaheadPolicy {
     /**
      * Returns the current lead distance (how far ahead the marker is placed).
      * Useful for callers that need to know the readahead trigger threshold.
+     * 
+     * @return the current lead distance in blocks
      */
     public int leadBlocks() {
         return leadFor(ref.get().window);

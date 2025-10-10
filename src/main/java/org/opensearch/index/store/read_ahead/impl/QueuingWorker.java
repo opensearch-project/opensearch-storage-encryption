@@ -28,6 +28,26 @@ import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.read_ahead.Worker;
 
+/**
+ * Asynchronous readahead worker implementation with intelligent cache-aware block prefetching.
+ * 
+ * <p>This class provides sophisticated block prefetching capabilities designed to optimize sequential I/O performance
+ * through proactive data loading. Key features include:
+ * 
+ * <ul>
+ * <li><strong>Cache-aware scheduling:</strong> Analyzes existing cache coverage to avoid redundant I/O operations</li>
+ * <li><strong>Gap consolidation:</strong> Merges nearby uncached regions to reduce I/O fragmentation and improve efficiency</li>
+ * <li><strong>Deduplication:</strong> Prevents multiple in-flight requests for overlapping block ranges</li>
+ * <li><strong>Multi-threaded processing:</strong> Utilizes configurable thread pool for concurrent block loading operations</li>
+ * <li><strong>Bounded queue:</strong> Implements backpressure through capacity-limited request queue</li>
+ * <li><strong>Path-based cancellation:</strong> Supports selective cancellation of pending requests by file path</li>
+ * </ul>
+ * 
+ * <p>Thread safety is ensured through concurrent data structures and proper synchronization. The worker
+ * maintains tracking of in-flight requests to prevent overlapping operations on the same block ranges.
+ * 
+ * @opensearch.internal
+ */
 public class QueuingWorker implements Worker {
 
     private static final Logger LOGGER = LogManager.getLogger(QueuingWorker.class);
@@ -81,6 +101,17 @@ public class QueuingWorker implements Worker {
         }
     }
 
+    /**
+     * Creates a new asynchronous readahead worker with the specified configuration.
+     * 
+     * <p>The worker starts the specified number of background threads immediately, which will begin
+     * processing readahead requests as soon as they are scheduled. All threads are marked as daemon
+     * threads and will not prevent JVM shutdown.
+     * 
+     * @param queueCapacity the maximum number of readahead tasks that can be queued before backpressure is applied
+     * @param threads the number of worker threads to create for processing readahead requests
+     * @param blockCache the block cache implementation used for storing and retrieving cached blocks
+     */
     public QueuingWorker(int queueCapacity, int threads, BlockCache<RefCountedMemorySegment> blockCache) {
         this.queue = new LinkedBlockingDeque<>(queueCapacity);
         this.queueCapacity = queueCapacity;

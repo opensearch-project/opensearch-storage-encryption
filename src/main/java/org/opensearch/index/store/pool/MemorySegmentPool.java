@@ -48,6 +48,38 @@ class NoOffHeapMemoryException extends PoolExhaustedException {
     }
 }
 
+/**
+ * Hierarchical memory segment pool implementing a three-tier allocation strategy for efficient off-heap memory management.
+ * 
+ * <p>This class provides a sophisticated memory allocation system with multiple fallback levels:
+ * <ol>
+ * <li><strong>Primary Pool:</strong> High-performance pre-allocated segments with fast acquisition</li>
+ * <li><strong>Secondary Pool:</strong> On-demand created pool when primary is exhausted (lazily initialized)</li>
+ * <li><strong>Ephemeral Pool:</strong> Final fallback creating temporary segments when other pools are exhausted</li>
+ * </ol>
+ * 
+ * <p>The allocation strategy follows this cascade:
+ * <pre>
+ * acquire() -> Primary Pool (fast path)
+ *           -> Secondary Pool (if primary exhausted, creates on-demand)
+ *           -> Ephemeral Pool (if secondary exhausted, creates temporary segments)
+ *           -> Throws NoOffHeapMemoryException (if all pools exhausted)
+ * </pre>
+ * 
+ * <p>Key characteristics:
+ * <ul>
+ * <li>Automatic memory pressure management across multiple pool tiers</li>
+ * <li>Lazy initialization of secondary pool to minimize memory footprint when not needed</li>
+ * <li>Automatic segment release through reference counting (no manual pool.release() needed)</li>
+ * <li>Thread-safe operations with synchronized secondary pool creation</li>
+ * </ul>
+ * 
+ * <p>Memory management is handled automatically through {@link RefCountedMemorySegment} reference counting.
+ * When a segment's reference count reaches zero, it automatically returns to its source pool through callbacks.
+ * Users should call {@code segment.decRef()} instead of {@code pool.release(segment)}.
+ * 
+ * @opensearch.internal
+ */
 @SuppressForbidden(reason = "temporary")
 public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoCloseable {
     private static final Logger LOGGER = LogManager.getLogger(MemorySegmentPool.class);
@@ -58,6 +90,16 @@ public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoClo
 
     private volatile boolean closed = false;
 
+    /**
+     * Constructs a new hierarchical memory segment pool with the specified memory allocation and segment size.
+     * 
+     * <p>Initializes the primary pool immediately with the full memory allocation, while the secondary pool
+     * is created lazily only when the primary pool becomes exhausted. This design minimizes initial memory
+     * footprint while providing automatic scaling under memory pressure.
+     * 
+     * @param totalOffHeap the total off-heap memory to allocate for the primary pool (in bytes)
+     * @param segmentSize the size of individual memory segments that will be allocated from this pool
+     */
     public MemorySegmentPool(long totalOffHeap, int segmentSize) {
         this.primaryPool = new PrimaryMemorySegmentPool(totalOffHeap, segmentSize);
         this.secondaryPool = null; // Initialize only when needed

@@ -15,6 +15,17 @@ import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadPolicy;
 import org.opensearch.index.store.read_ahead.Worker;
 
+/**
+ * Windowed readahead context implementation that manages adaptive prefetching
+ * for sequential file access patterns.
+ * 
+ * <p>This implementation uses a configurable window-based readahead strategy
+ * that adapts to access patterns. It coordinates with a Worker to schedule
+ * bulk prefetch operations and integrates with cache miss/hit feedback to
+ * optimize readahead behavior.
+ *
+ * @opensearch.internal
+ */
 public class WindowedReadAheadContext implements ReadaheadContext {
     private static final Logger LOGGER = LogManager.getLogger(WindowedReadAheadContext.class);
 
@@ -35,6 +46,15 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         this.policy = policy;
     }
 
+    /**
+     * Creates a new WindowedReadAheadContext with the specified configuration.
+     *
+     * @param path the file path for readahead operations
+     * @param fileLength the total length of the file in bytes
+     * @param worker the worker to schedule readahead operations
+     * @param config the readahead configuration settings
+     * @return a new WindowedReadAheadContext instance
+     */
     public static WindowedReadAheadContext build(Path path, long fileLength, Worker worker, WindowedReadAheadConfig config) {
         var policy = new WindowedReadaheadPolicy(
             path,

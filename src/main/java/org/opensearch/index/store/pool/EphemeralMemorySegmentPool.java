@@ -11,12 +11,40 @@ import java.util.concurrent.TimeUnit;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 
+/**
+ * An ephemeral memory segment pool that allocates temporary memory segments from a shared arena.
+ * 
+ * <p>This pool implementation is designed for short-lived memory allocations that don't require
+ * sophisticated pooling mechanisms. Each {@link #acquire()} call creates a new memory segment
+ * from the shared arena, and segments are automatically released when their reference count
+ * reaches zero.
+ * 
+ * <p>Key characteristics:
+ * <ul>
+ * <li>Uses a shared {@link Arena} for all allocations</li>
+ * <li>No pre-allocation or segment reuse</li>
+ * <li>Simple lifecycle - arena is closed when any segment is released</li>
+ * <li>Suitable for temporary or testing scenarios</li>
+ * <li>Most Pool interface methods are not supported</li>
+ * </ul>
+ * 
+ * <p><strong>Warning:</strong> This implementation closes the arena when any segment is released,
+ * making it unsuitable for scenarios where multiple segments need to coexist. It's primarily
+ * intended for single-segment use cases or testing.
+ * 
+ * @opensearch.internal
+ */
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "allocates standalone arenas per segment")
 public class EphemeralMemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoCloseable {
     private final Arena arena;
     private final int segmentSize;
 
+    /**
+     * Creates a new EphemeralMemorySegmentPool with the specified segment size.
+     * 
+     * @param segmentSize the size in bytes for each allocated memory segment
+     */
     public EphemeralMemorySegmentPool(int segmentSize) {
         this.segmentSize = segmentSize;
         this.arena = Arena.ofShared();

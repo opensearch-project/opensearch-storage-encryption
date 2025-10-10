@@ -29,6 +29,8 @@ public final class WindowedReadAheadConfig {
     }
 
     /**
+     * Returns the initial window size for readahead operations.
+     *
      * @return the initial number of segments to prefetch.
      */
     public int initialWindow() {
@@ -36,6 +38,8 @@ public final class WindowedReadAheadConfig {
     }
 
     /**
+     * Returns the maximum allowed readahead window size.
+     *
      * @return the maximum number of segments to prefetch in a window.
      */
     public int maxWindowSegments() {
@@ -43,6 +47,8 @@ public final class WindowedReadAheadConfig {
     }
 
     /**
+     * Returns the hit streak threshold for window growth.
+     *
      * @return the number of sequential hits required to grow the window.
      */
     public int hitStreakThreshold() {
@@ -50,6 +56,8 @@ public final class WindowedReadAheadConfig {
     }
 
     /**
+     * Returns the random access threshold for window shrinking.
+     *
      * @return the number of random accesses after which the window will shrink.
      */
     public int shrinkOnRandomThreshold() {
@@ -62,6 +70,8 @@ public final class WindowedReadAheadConfig {
      * - maxWindowBlocks: 8  
      * - hitStreakThreshold: 4
      * - shrinkOnRandomThreshold: 2
+     *
+     * @return a new WindowedReadAheadConfig instance with default settings
      */
     public static WindowedReadAheadConfig defaultConfig() {
         return new WindowedReadAheadConfig(1, 8, 4, 2);
@@ -69,6 +79,12 @@ public final class WindowedReadAheadConfig {
 
     /**
      * Creates a config with custom values.
+     *
+     * @param initialWindow the initial number of segments to prefetch
+     * @param maxWindowBlocks the maximum number of segments in the readahead window
+     * @param hitStreakThreshold the number of sequential hits required to grow the window
+     * @param shrinkOnRandomThreshold the number of random accesses after which the window will shrink
+     * @return a new WindowedReadAheadConfig instance with the specified settings
      */
     public static WindowedReadAheadConfig of(int initialWindow, int maxWindowBlocks, int hitStreakThreshold, int shrinkOnRandomThreshold) {
         return new WindowedReadAheadConfig(initialWindow, maxWindowBlocks, hitStreakThreshold, shrinkOnRandomThreshold);

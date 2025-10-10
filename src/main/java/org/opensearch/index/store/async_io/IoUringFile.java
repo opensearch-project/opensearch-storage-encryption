@@ -28,6 +28,27 @@ import io.netty.util.collection.IntObjectHashMap;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 
+/**
+ * Asynchronous file I/O implementation using Linux io_uring interface for high-performance operations.
+ * 
+ * <p>This class provides non-blocking file operations including read, write, fsync, fdatasync, and truncate
+ * operations through the io_uring system interface. It integrates with Netty's IoEventLoop for event-driven
+ * async I/O processing and supports Direct I/O through ExtendedOpenOption.DIRECT when available.
+ * 
+ * <p>Key features:
+ * <ul>
+ * <li>Asynchronous file operations returning CompletableFuture results</li>
+ * <li>Integration with Netty's io_uring implementation for efficient event handling</li>
+ * <li>Support for Direct I/O bypass of kernel page cache when supported</li>
+ * <li>Proper resource cleanup and cancellation of pending operations</li>
+ * </ul>
+ * 
+ * <p>All async operations are submitted to the io_uring interface and completed asynchronously
+ * through the provided IoEventLoop. The class manages operation lifecycle including cancellation
+ * and proper cleanup when the file is closed.
+ * 
+ * @opensearch.internal
+ */
 @SuppressForbidden(reason = "doesn't uses nio")
 @SuppressWarnings("preview")
 public class IoUringFile implements AutoCloseable {
@@ -45,6 +66,12 @@ public class IoUringFile implements AutoCloseable {
         ExtendedOpenOption_DIRECT = option;
     }
 
+    /**
+     * Returns the ExtendedOpenOption.DIRECT option for bypassing kernel page cache.
+     * 
+     * @return the DIRECT open option for enabling Direct I/O when supported
+     * @throws UnsupportedOperationException if ExtendedOpenOption.DIRECT is not available in the current JDK
+     */
     public static OpenOption getDirectOpenOption() {
         if (ExtendedOpenOption_DIRECT == null) {
             throw new UnsupportedOperationException(
@@ -70,10 +97,28 @@ public class IoUringFile implements AutoCloseable {
         ioUringIoHandle.ioUringFile = this;
     }
 
+    /**
+     * Opens a file asynchronously using io_uring with the specified options.
+     * 
+     * @param file the file to open (must exist and not be a directory)
+     * @param ioEventLoop the IoEventLoop for handling async operations
+     * @param options the open options (StandardOpenOption and ExtendedOpenOption.DIRECT supported)
+     * @return CompletableFuture that completes with IoUringFile when file is opened successfully
+     * @throws IllegalArgumentException if file is directory, doesn't exist, or ioEventLoop incompatible
+     */
     public static CompletableFuture<IoUringFile> open(File file, IoEventLoop ioEventLoop, OpenOption... options) {
         return open(file, ioEventLoop, calFlag(options));
     }
 
+    /**
+     * Opens a file asynchronously using io_uring with the specified open flags.
+     * 
+     * @param file the file to open (must exist and not be a directory)
+     * @param ioEventLoop the IoEventLoop for handling async operations  
+     * @param openFlag the open flags (combined O_RDONLY, O_WRONLY, O_RDWR, etc.)
+     * @return CompletableFuture that completes with IoUringFile when file is opened successfully
+     * @throws IllegalArgumentException if file is directory, doesn't exist, or ioEventLoop incompatible
+     */
     public static CompletableFuture<IoUringFile> open(File file, IoEventLoop ioEventLoop, int openFlag) {
 
         if (file.isDirectory()) {
@@ -201,6 +246,15 @@ public class IoUringFile implements AutoCloseable {
         return oflags;
     }
 
+    /**
+     * Writes data asynchronously to the file at the specified offset using io_uring.
+     * 
+     * @param memoryAddress the native memory address containing data to write
+     * @param length the number of bytes to write (returns completed future with 0 if length is 0)
+     * @param offset the file offset to write data to
+     * @return CompletableFuture that completes with number of bytes written
+     * @throws IllegalStateException if file is closed or ioRegistration is invalid
+     */
     public CompletableFuture<Integer> writeAsync(long memoryAddress, int length, long offset) {
         allowSubmit();
 
@@ -211,24 +265,59 @@ public class IoUringFile implements AutoCloseable {
         return ioUringIoHandle.writeAsync(memoryAddress, length, offset, fd);
     }
 
+    /**
+     * Synchronizes all file data and metadata to storage asynchronously (full fsync).
+     * 
+     * @return CompletableFuture that completes with syscall result (0 on success)
+     * @throws IllegalStateException if file is closed or ioRegistration is invalid
+     */
     public CompletableFuture<Integer> fsync() {
         return fsync(0, 0);
     }
 
+    /**
+     * Synchronizes file data and metadata to storage asynchronously with range specification.
+     * 
+     * @param len the length of data to sync (0 for full file)
+     * @param offset the file offset to start syncing from (0 for beginning)
+     * @return CompletableFuture that completes with syscall result (0 on success)
+     * @throws IllegalStateException if file is closed or ioRegistration is invalid
+     */
     public CompletableFuture<Integer> fsync(int len, long offset) {
         allowSubmit();
         return Helper.syscallTransform("fsync", ioUringIoHandle.fsyncAsync(fd, false, len, offset));
     }
 
+    /**
+     * Synchronizes only file data to storage asynchronously (excludes metadata, faster than fsync).
+     * 
+     * @return CompletableFuture that completes with syscall result (0 on success)
+     * @throws IllegalStateException if file is closed or ioRegistration is invalid
+     */
     public CompletableFuture<Integer> fdatasync() {
         return fdatasync(0, 0);
     }
 
+    /**
+     * Synchronizes file data to storage asynchronously with range specification (excludes metadata).
+     * 
+     * @param len the length of data to sync (0 for full file)
+     * @param offset the file offset to start syncing from (0 for beginning)
+     * @return CompletableFuture that completes with syscall result (0 on success) 
+     * @throws IllegalStateException if file is closed or ioRegistration is invalid
+     */
     public CompletableFuture<Integer> fdatasync(int len, long offset) {
         allowSubmit();
         return Helper.syscallTransform("fsync", ioUringIoHandle.fsyncAsync(fd, true, len, offset));
     }
 
+    /**
+     * Truncates the file to the specified length asynchronously using io_uring.
+     * 
+     * @param length the new file length (file will be truncated or extended to this size)
+     * @return CompletableFuture that completes with syscall result (0 on success)
+     * @throws IllegalStateException if file is closed or ioRegistration is invalid
+     */
     public CompletableFuture<Integer> truncate(long length) {
         allowSubmit();
         return Helper.syscallTransform("truncate", ioUringIoHandle.truncateAsync(fd, length));
@@ -249,6 +338,11 @@ public class IoUringFile implements AutoCloseable {
         ioUringIoHandle.cancelAllAsync();
     }
 
+    /**
+     * Returns whether this IoUringFile has been closed and is no longer accepting operations.
+     * 
+     * @return true if the file is closed, false if still open and accepting async operations
+     */
     public boolean isClosed() {
         return ioUringIoHandle.isClosed.get();
     }

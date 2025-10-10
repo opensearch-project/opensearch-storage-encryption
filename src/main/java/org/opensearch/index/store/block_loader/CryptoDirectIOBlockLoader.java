@@ -25,12 +25,36 @@ import org.opensearch.index.store.cipher.MemorySegmentDecryptor;
 import org.opensearch.index.store.iv.KeyIvResolver;
 import org.opensearch.index.store.pool.Pool;
 
+/**
+ * A {@link BlockLoader} implementation that loads encrypted file blocks using Direct I/O
+ * and automatically decrypts them in-place.
+ * 
+ * <p>This loader combines high-performance Direct I/O with transparent decryption to provide
+ * efficient access to encrypted file data. It reads blocks directly from storage, bypassing
+ * the OS buffer cache, then decrypts the data in memory using the configured key and IV resolver.
+ * 
+ * <p>Key features:
+ * <ul>
+ * <li>Direct I/O for high performance and reduced memory pressure</li>
+ * <li>Automatic in-place decryption of loaded blocks</li>
+ * <li>Memory pool integration for efficient buffer management</li>
+ * <li>Block-aligned operations for optimal storage performance</li>
+ * </ul>
+ *
+ * @opensearch.internal
+ */
 public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySegment> {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOBlockLoader.class);
 
     private final Pool<RefCountedMemorySegment> segmentPool;
     private final KeyIvResolver keyIvResolver;
 
+    /**
+     * Constructs a new CryptoDirectIOBlockLoader with the specified memory pool and key resolver.
+     *
+     * @param segmentPool the memory segment pool for acquiring buffer space
+     * @param keyIvResolver the resolver for obtaining encryption keys and initialization vectors
+     */
     public CryptoDirectIOBlockLoader(Pool<RefCountedMemorySegment> segmentPool, KeyIvResolver keyIvResolver) {
         this.segmentPool = segmentPool;
         this.keyIvResolver = keyIvResolver;

@@ -52,6 +52,8 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
      * @param os The output stream
      * @param key The AES key (must be 32 bytes for AES-256)
      * @param iv The initialization vector (must be 16 bytes)
+     * @param memorySegmentPool the pool for acquiring memory segments for caching
+     * @param blockCache the cache for storing decrypted block data
      * @throws IOException If there is an I/O error
      * @throws IllegalArgumentException If key or iv lengths are invalid
      */

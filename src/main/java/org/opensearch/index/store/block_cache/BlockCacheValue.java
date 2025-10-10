@@ -52,10 +52,14 @@ public interface BlockCacheValue<T> extends AutoCloseable {
      * Returns the wrapped resource for read-only use while pinned.
      * <p>
      * Callers must only use the returned value while they hold a pin acquired via {@link #tryPin()}.
+     *
+     * @return the wrapped resource that can be safely accessed while pinned
      */
     T value();
 
     /**
+     * Returns the logical size of this value in bytes.
+     *
      * @return logical size of this value in bytes (e.g., block length). This is expected to be stable
      *         for the lifetime of the cache entry.
      */

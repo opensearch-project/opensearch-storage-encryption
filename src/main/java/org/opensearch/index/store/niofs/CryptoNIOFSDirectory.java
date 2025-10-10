@@ -29,9 +29,21 @@ import org.opensearch.index.store.iv.KeyIvResolver;
  */
 public class CryptoNIOFSDirectory extends NIOFSDirectory {
     private final Provider provider;
+    
+    /** The resolver for encryption keys and initialization vectors. */
     public final KeyIvResolver keyIvResolver;
+    
     private final AtomicLong nextTempFileCounter = new AtomicLong();
 
+    /**
+     * Creates a new CryptoNIOFSDirectory with encryption support.
+     * 
+     * @param lockFactory the lock factory for coordinating access
+     * @param location the directory path
+     * @param provider the security provider for cryptographic operations
+     * @param keyIvResolver resolver for encryption keys and initialization vectors
+     * @throws IOException if the directory cannot be created or accessed
+     */
     public CryptoNIOFSDirectory(LockFactory lockFactory, Path location, Provider provider, KeyIvResolver keyIvResolver) throws IOException {
         super(location, lockFactory);
         this.provider = provider;

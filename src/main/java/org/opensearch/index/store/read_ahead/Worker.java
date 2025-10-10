@@ -26,6 +26,8 @@ public interface Worker extends Closeable {
     boolean schedule(Path path, long offset, long blockCount);
 
     /**
+     * Checks if the worker is currently active and processing readahead requests.
+     *
      * @return true if the worker is actively running
      */
     boolean isRunning();

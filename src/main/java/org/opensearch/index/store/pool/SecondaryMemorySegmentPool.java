@@ -19,6 +19,33 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 
+/**
+ * Secondary memory pool for on-demand allocation of off-heap memory segments with automatic cleanup capabilities.
+ * 
+ * <p>This class implements a fallback memory pool that is activated when the primary pool is exhausted. It provides
+ * sophisticated memory management features including:
+ * 
+ * <ul>
+ * <li><strong>On-demand allocation:</strong> Creates memory segments lazily as needed, up to a configured maximum capacity</li>
+ * <li><strong>Automatic cleanup:</strong> Background thread periodically checks for idle periods and releases memory back to OS</li>
+ * <li><strong>Security zeroing:</strong> Optional memory clearing when segments are returned to prevent data leaks</li>
+ * <li><strong>Capacity management:</strong> Tracks allocated vs free segments to prevent memory exhaustion</li>
+ * <li><strong>Thread safety:</strong> All operations are properly synchronized for concurrent access</li>
+ * </ul>
+ * 
+ * <p>The cleanup mechanism runs every 15 minutes and will close the pool and release memory to the OS if it has been
+ * idle (no allocated segments) for 4 consecutive cycles (1 hour). This helps prevent memory leaks in scenarios where
+ * the secondary pool was temporarily needed but is no longer required.
+ * 
+ * <p>This pool is designed to work as part of a hierarchical memory allocation strategy, typically used when:
+ * <ol>
+ * <li>Primary pool is exhausted and cannot provide segments immediately</li>
+ * <li>Application needs burst capacity beyond the primary pool size</li>
+ * <li>Temporary high memory usage that doesn't warrant expanding the primary pool</li>
+ * </ol>
+ * 
+ * @opensearch.internal
+ */
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "uses cleanup for memory pool")
 public class SecondaryMemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoCloseable {
@@ -45,6 +72,17 @@ public class SecondaryMemorySegmentPool implements Pool<RefCountedMemorySegment>
     private final ScheduledExecutorService cleanupExecutor;
     private int consecutiveIdleCycles = 0;
 
+    /**
+     * Creates a secondary memory pool with automatic cleanup capabilities.
+     * 
+     * <p>The pool will allocate memory segments on-demand up to the specified total memory limit.
+     * A background cleanup thread is started that will monitor the pool for idle periods and
+     * automatically release memory back to the OS when appropriate.
+     * 
+     * @param totalMemory the total memory capacity for this pool in bytes, must be a multiple of segmentSize
+     * @param segmentSize the size of each individual memory segment in bytes
+     * @throws IllegalArgumentException if totalMemory is not a multiple of segmentSize
+     */
     public SecondaryMemorySegmentPool(long totalMemory, int segmentSize) {
         if (totalMemory % segmentSize != 0) {
             throw new IllegalArgumentException("Total memory must be a multiple of segment size");

@@ -49,6 +49,10 @@ public class AesCipherFactory {
         }
     }
 
+    /**
+     * Thread-local cipher pool for AES/CTR/NoPadding operations using SunJCE provider.
+     * Each thread gets its own cipher instance to avoid synchronization overhead.
+     */
     public static final ThreadLocal<Cipher> CIPHER_POOL = ThreadLocal.withInitial(() -> {
         try {
             return Cipher.getInstance("AES/CTR/NoPadding", "SunJCE");

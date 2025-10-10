@@ -6,6 +6,12 @@ package org.opensearch.index.store.read_ahead;
 
 /**
  * Defines how readahead should behave depending on access pattern.
+ * 
+ * <p>This interface allows different implementations to control when readahead operations
+ * should be triggered and how the readahead window size should be managed based on
+ * observed file access patterns.
+ * 
+ * @opensearch.internal
  */
 public interface ReadaheadPolicy {
 
@@ -18,17 +24,23 @@ public interface ReadaheadPolicy {
     boolean shouldTrigger(long currentOffset);
 
     /**
-     * @return initial readahead window (in segments)
+     * Gets the initial readahead window size when starting readahead operations.
+     * 
+     * @return initial readahead window size in segments
      */
     int initialWindow();
 
     /**
-    * @return current readahead window (in segments)
-    */
+     * Gets the current readahead window size based on observed access patterns.
+     * 
+     * @return current readahead window size in segments
+     */
     int currentWindow();
 
     /**
-     * @return max readahead window (in segments)
+     * Gets the maximum allowed readahead window size to prevent excessive prefetching.
+     * 
+     * @return maximum readahead window size in segments
      */
     int maxWindow();
 }

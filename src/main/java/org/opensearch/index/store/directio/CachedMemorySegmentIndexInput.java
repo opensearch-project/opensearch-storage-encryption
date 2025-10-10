@@ -28,6 +28,24 @@ import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
 
+/**
+ * A high-performance IndexInput implementation that uses memory-mapped segments with block-level caching.
+ * 
+ * <p>This implementation provides:
+ * <ul>
+ * <li>Block-aligned cached memory segments for efficient random access</li>
+ * <li>Reference counting to manage memory lifecycle</li>
+ * <li>Read-ahead support for sequential access patterns</li>
+ * <li>Optimized bulk operations for primitive arrays</li>
+ * <li>Slice support with offset management</li>
+ * </ul>
+ * 
+ * <p>The class uses a {@link BlockSlotTinyCache} for L1 caching and falls back to
+ * the main {@link BlockCache} for cache misses. Memory segments are pinned during
+ * access to prevent eviction races and unpinned when no longer needed.
+ * 
+ * @opensearch.internal
+ */
 @SuppressWarnings("preview")
 public class CachedMemorySegmentIndexInput extends IndexInput implements RandomAccessInput {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIODirectory.class);
@@ -60,6 +78,18 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     private final BlockSlotTinyCache blockSlotTinyCache;
 
+    /**
+     * Creates a new CachedMemorySegmentIndexInput instance.
+     * 
+     * @param resourceDescription description of the resource for debugging
+     * @param path the file path being accessed
+     * @param length the length of the file in bytes
+     * @param blockCache the main block cache for storing memory segments
+     * @param readaheadManager manager for read-ahead operations
+     * @param readaheadContext context for read-ahead policy decisions
+     * @param blockSlotTinyCache L1 cache for recently accessed blocks
+     * @return a new CachedMemorySegmentIndexInput instance
+     */
     public static CachedMemorySegmentIndexInput newInstance(
         String resourceDescription,
         Path path,
@@ -441,6 +471,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
      * Returns the absolute file offset for the current position.
      * This is useful for cache keys, encryption, and other operations that need
      * the actual position in the original file.
+     * 
+     * @return the absolute byte offset in the original file
      */
     public long getAbsoluteFileOffset() {
         return absoluteBaseOffset + getFilePointer();

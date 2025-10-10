@@ -12,16 +12,22 @@ import java.nio.file.Path;
 public interface ReadaheadRequest {
 
     /**
+     * Returns the file path for this readahead request.
+     *
      * @return the file path to read from
      */
     Path path();
 
     /**
+     * Returns the file offset where readahead should begin.
+     *
      * @return the aligned file offset to start reading
      */
     long offset();
 
     /**
+     * Returns the number of bytes to prefetch from the file.
+     *
      * @return the length in bytes to prefetch (aligned to block size)
      */
     int length();

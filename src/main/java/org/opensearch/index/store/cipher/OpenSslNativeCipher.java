@@ -86,13 +86,24 @@ public final class OpenSslNativeCipher {
     }
 
     /**
-     * Custom exception for OpenSSL-related errors
+     * Custom exception for OpenSSL-related errors during native cipher operations.
      */
     public static class OpenSslException extends RuntimeException {
+        /**
+         * Constructs an OpenSslException with the specified detail message.
+         * 
+         * @param message the detail message explaining the error condition
+         */
         public OpenSslException(String message) {
             super(message);
         }
 
+        /**
+         * Constructs an OpenSslException with the specified detail message and cause.
+         * 
+         * @param message the detail message explaining the error condition
+         * @param cause the underlying cause of this exception
+         */
         public OpenSslException(String message, Throwable cause) {
             super(message, cause);
         }
@@ -212,6 +223,9 @@ public final class OpenSslNativeCipher {
         }
     }
 
+    /**
+     * Private constructor to prevent instantiation of this utility class.
+     */
     private OpenSslNativeCipher() {
         // Utility class
     }

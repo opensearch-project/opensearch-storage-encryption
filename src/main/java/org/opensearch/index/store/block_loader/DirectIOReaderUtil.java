@@ -17,6 +17,15 @@ import java.util.Arrays;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.PanamaNativeAccess;
 
+/**
+ * Utility class for Direct I/O operations with proper alignment handling.
+ * 
+ * <p>This class provides methods for reading data using Direct I/O, which bypasses
+ * the operating system's buffer cache for improved performance in certain scenarios.
+ * Direct I/O requires proper alignment to storage device sector boundaries.
+ *
+ * @opensearch.internal
+ */
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "uses custom DirectIO")
 public class DirectIOReaderUtil {
@@ -35,6 +44,12 @@ public class DirectIOReaderUtil {
         ExtendedOpenOption_DIRECT = option;
     }
 
+    /**
+     * Gets the Direct I/O open option for bypassing OS buffer cache.
+     *
+     * @return the Direct I/O open option
+     * @throws UnsupportedOperationException if Direct I/O is not available in current JDK
+     */
     public static OpenOption getDirectOpenOption() {
         if (ExtendedOpenOption_DIRECT == null) {
             throw new UnsupportedOperationException(
@@ -73,6 +88,12 @@ public class DirectIOReaderUtil {
      *                     │█████│█████│
      * </pre>
      *
+     * @param channel the file channel to read from
+     * @param offset the byte offset in the file to start reading from
+     * @param length the number of bytes to read
+     * @param arena the memory arena for allocating the result segment
+     * @return a memory segment containing the read data
+     * @throws IOException if the read operation fails
      */
     public static MemorySegment directIOReadAligned(FileChannel channel, long offset, long length, Arena arena) throws IOException {
         int alignment = Math.max(DIRECT_IO_ALIGNMENT, PanamaNativeAccess.getPageSize());
@@ -112,6 +133,20 @@ public class DirectIOReaderUtil {
         return finalSegment;
     }
 
+    /**
+     * Reads data using standard buffered I/O (not Direct I/O).
+     * 
+     * <p>This method uses the standard file channel read operation which goes through
+     * the operating system's buffer cache. It's used as a fallback when Direct I/O
+     * is not available or appropriate.
+     *
+     * @param channel the file channel to read from
+     * @param offset the byte offset in the file to start reading from
+     * @param size the number of bytes to read
+     * @param arena the memory arena for managing the result segment lifecycle
+     * @return a memory segment containing the read data
+     * @throws IOException if the read operation fails or doesn't read the expected amount
+     */
     public static MemorySegment bufferedRead(FileChannel channel, long offset, long size, Arena arena) throws IOException {
         ByteBuffer buf = ByteBuffer.allocate((int) size);
         int read = channel.read(buf, offset);

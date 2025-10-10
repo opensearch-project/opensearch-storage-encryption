@@ -59,18 +59,22 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.RemovalCause;
 
-@SuppressForbidden(reason = "temporary")
 /**
  * Factory for creating encrypted filesystem directories with support for various storage types.
  *
- * Supports:
- * - NIOFS: NIO-based encrypted file system
- * - HYBRIDFS: Hybrid directory with Direct I/O and block caching
- * - MMAPFS: Not supported (throws AssertionError)
+ * <p>Supports:
+ * <ul>
+ * <li>NIOFS: NIO-based encrypted file system</li>
+ * <li>HYBRIDFS: Hybrid directory with Direct I/O and block caching</li>
+ * <li>MMAPFS: Not supported (throws AssertionError)</li>
+ * </ul>
  *
- * The factory maintains node-level shared resources (pool and cache) for efficient
+ * <p>The factory maintains node-level shared resources (pool and cache) for efficient
  * memory utilization across all encrypted directories.
+ *
+ * @opensearch.internal
  */
+@SuppressForbidden(reason = "temporary")
 public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory {
 
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectoryFactory.class);

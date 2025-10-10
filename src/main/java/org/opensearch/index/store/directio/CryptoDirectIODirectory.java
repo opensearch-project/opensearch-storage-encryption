@@ -34,6 +34,28 @@ import org.opensearch.index.store.read_ahead.ReadaheadManager;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.index.store.read_ahead.impl.ReadaheadManagerImpl;
 
+/**
+ * A high-performance FSDirectory implementation that combines Direct I/O operations with encryption.
+ * 
+ * <p>This directory provides:
+ * <ul>
+ * <li>Direct I/O operations bypassing the OS page cache for better memory control</li>
+ * <li>Block-level caching with memory segment pools for efficient memory management</li>
+ * <li>Transparent encryption/decryption using OpenSSL native implementations</li>
+ * <li>Read-ahead optimizations for sequential access patterns</li>
+ * <li>Automatic cache invalidation on file deletion</li>
+ * </ul>
+ * 
+ * <p>The directory uses {@link BufferIOWithCaching} for output operations which encrypts
+ * data before writing to disk and caches plaintext blocks for read operations. Input
+ * operations use {@link CachedMemorySegmentIndexInput} with a multi-level cache hierarchy
+ * including {@link BlockSlotTinyCache} for L1 caching.
+ * 
+ * <p>Note: Some file types (segments files and .si files) fall back to the parent
+ * directory implementation to avoid compatibility issues.
+ * 
+ * @opensearch.internal
+ */
 @SuppressForbidden(reason = "uses custom DirectIO")
 public final class CryptoDirectIODirectory extends FSDirectory {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIODirectory.class);
@@ -44,6 +66,19 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     private final Worker readAheadworker;
     private final KeyIvResolver keyIvResolver;
 
+    /**
+     * Creates a new CryptoDirectIODirectory with the specified components.
+     * 
+     * @param path the directory path
+     * @param lockFactory the lock factory for coordinating access
+     * @param provider the security provider for cryptographic operations
+     * @param keyIvResolver resolver for encryption keys and initialization vectors
+     * @param memorySegmentPool pool for managing off-heap memory segments
+     * @param blockCache cache for storing decrypted blocks
+     * @param blockLoader loader for reading blocks from storage
+     * @param worker background worker for read-ahead operations
+     * @throws IOException if the directory cannot be created or accessed
+     */
     public CryptoDirectIODirectory(
         Path path,
         LockFactory lockFactory,

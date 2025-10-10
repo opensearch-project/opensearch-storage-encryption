@@ -42,6 +42,33 @@ import org.opensearch.index.store.pool.Pool;
 
 import io.netty.channel.IoEventLoopGroup;
 
+/**
+ * A high-performance IndexOutput implementation that combines Direct I/O with io_uring for async operations.
+ * 
+ * <p>This implementation provides:
+ * <ul>
+ * <li>Asynchronous write operations using Linux io_uring for better throughput</li>
+ * <li>Direct I/O to bypass OS page cache and provide better memory control</li>
+ * <li>Automatic block alignment and padding for Direct I/O requirements</li>
+ * <li>Write-through caching to populate the block cache with plaintext data</li>
+ * <li>Concurrent write management with proper ordering guarantees</li>
+ * </ul>
+ * 
+ * <p>The class maintains both logical and physical positions:
+ * <ul>
+ * <li>Logical size: actual data size as seen by Lucene (excludes alignment padding)</li>
+ * <li>Physical position: aligned position on disk (includes padding for Direct I/O)</li>
+ * </ul>
+ * 
+ * <p>Write operations are buffered and flushed when the buffer is full. Each flush
+ * operation is submitted asynchronously to io_uring, and the class tracks pending
+ * operations to ensure all writes complete before closing.
+ * 
+ * <p>The implementation also opportunistically caches written blocks in the block
+ * cache for immediate read access, improving performance for read-after-write scenarios.
+ * 
+ * @opensearch.internal
+ */
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "uses custom DirectIO")
 public class DirectIOWithIoUringIndexOutput extends IndexOutput {
@@ -68,6 +95,16 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
 
     private boolean isOpen = true;
 
+    /**
+     * Creates a new DirectIOWithIoUringIndexOutput for async Direct I/O operations.
+     * 
+     * @param path the file path to write to
+     * @param name the name of this output for identification
+     * @param memorySegmentPool pool for acquiring memory segments for caching
+     * @param blockCache cache for storing written blocks as plaintext
+     * @param group the IoEventLoopGroup for io_uring operations
+     * @throws IOException if the file cannot be created or opened for writing
+     */
     public DirectIOWithIoUringIndexOutput(
         Path path,
         String name,

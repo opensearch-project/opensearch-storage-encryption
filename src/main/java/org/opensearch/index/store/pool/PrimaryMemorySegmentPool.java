@@ -17,6 +17,22 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 
+/**
+ * High-performance primary memory pool for off-heap memory segment allocation with lazy allocation strategy.
+ * 
+ * <p>This class implements a sophisticated memory pool that provides efficient allocation and deallocation of 
+ * fixed-size memory segments using Java's Foreign Function &amp; Memory API. It serves as the primary tier in a 
+ * hierarchical memory management system, optimized for high-throughput scenarios with configurable security features.
+ * 
+ * <p>The pool maintains a free list of available segments and allocates new segments on-demand up to the 
+ * configured maximum capacity. When segments are released, they can optionally be zeroed for security 
+ * before being returned to the free list for reuse.
+ * 
+ * <p>Thread safety is ensured through a {@link ReentrantLock} that protects all pool operations. The pool 
+ * also maintains cached statistics to minimize lock contention during read-heavy workloads.
+ * 
+ * @opensearch.internal
+ */
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "uses custom DirectIO")
 public class PrimaryMemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoCloseable {
@@ -39,19 +55,21 @@ public class PrimaryMemorySegmentPool implements Pool<RefCountedMemorySegment>, 
     private volatile int cachedFreeListSize = 0;
 
     /**
-     * Creates a pool with lazy allocation and optional zeroing
+     * Creates a pool with lazy allocation and default memory zeroing enabled for security.
+     * 
+     * @param totalMemory the total memory to manage (must be multiple of segmentSize)
+     * @param segmentSize the size of each individual segment in bytes
      */
     public PrimaryMemorySegmentPool(long totalMemory, int segmentSize) {
         this(totalMemory, segmentSize, true);
     }
 
     /**
-     * Creates a pool with configurable allocation strategy and zeroing
+     * Creates a pool with configurable allocation strategy and zeroing behavior.
      *
-     * @param totalMemory total memory to manage
-     * @param segmentSize size of each segment
-     * @param requiresZeroing if true, zero segments on release; if false, skip
-     * for performance
+     * @param totalMemory the total memory to manage (must be multiple of segmentSize)
+     * @param segmentSize the size of each individual segment in bytes
+     * @param requiresZeroing if true, zero segments on release for security; if false, skip for performance
      */
     public PrimaryMemorySegmentPool(long totalMemory, int segmentSize, boolean requiresZeroing) {
         if (totalMemory % segmentSize != 0) {
@@ -124,7 +142,9 @@ public class PrimaryMemorySegmentPool implements Pool<RefCountedMemorySegment>, 
     }
 
     /**
-     * Bulk release for releasing multiple segments
+     * Bulk release for releasing multiple segments efficiently in a single lock operation.
+     * 
+     * @param segments variable number of segments to release back to the pool
      */
     public void releaseAll(RefCountedMemorySegment... segments) {
         if (segments.length == 0) {
@@ -165,7 +185,9 @@ public class PrimaryMemorySegmentPool implements Pool<RefCountedMemorySegment>, 
     }
 
     /**
-     * More accurate but slower version requiring lock
+     * More accurate but slower version requiring lock for precise availability calculation.
+     * 
+     * @return the exact available memory in bytes (requires lock acquisition)
      */
     public long availableMemoryAccurate() {
         lock.lock();
@@ -184,7 +206,9 @@ public class PrimaryMemorySegmentPool implements Pool<RefCountedMemorySegment>, 
     }
 
     /**
-     * Get current pool utilization statistics
+     * Get current pool utilization statistics for monitoring and capacity planning.
+     * 
+     * @return comprehensive pool statistics including allocation and utilization ratios
      */
     public PoolStats getStats() {
         return new PoolStats(maxSegments, allocatedSegments, freeList.size(), maxSegments - allocatedSegments);
@@ -266,11 +290,17 @@ public class PrimaryMemorySegmentPool implements Pool<RefCountedMemorySegment>, 
     @SuppressForbidden(reason = "uses custom string builder")
     public static class PoolStats {
 
+        /** Maximum number of segments this pool can manage */
         public final int maxSegments;
+        /** Number of segments currently allocated from the OS */
         public final int allocatedSegments;
+        /** Number of allocated segments currently available in the free list */
         public final int freeSegments;
+        /** Number of segments that could still be allocated (maxSegments - allocatedSegments) */
         public final int unallocatedSegments;
+        /** Ratio of segments actively in use vs total capacity (allocated - free) / max */
         public final double utilizationRatio;
+        /** Ratio of segments allocated from OS vs total capacity (allocated / max) */
         public final double allocationRatio;
 
         PoolStats(int maxSegments, int allocatedSegments, int freeSegments, int unallocatedSegments) {

@@ -14,8 +14,20 @@ import javax.crypto.Cipher;
 import javax.crypto.NoSuchPaddingException;
 import javax.crypto.spec.GCMParameterSpec;
 
+/**
+ * Factory utility for creating and initializing AES-GCM cipher instances.
+ * 
+ * <p>This class provides methods for GCM (Galois Counter Mode) encryption and decryption
+ * operations, including support for authentication tags and streaming encryption without
+ * premature finalization.
+ *
+ * @opensearch.internal
+ */
 public class AesGcmCipherFactory {
 
+    /**
+     * Standard GCM authentication tag length in bytes (128 bits).
+     */
     public static final int GCM_TAG_LENGTH = 16;
 
     /**
@@ -158,13 +170,24 @@ public class AesGcmCipherFactory {
     }
 
     /**
-     * Custom exception for Java crypto-related errors
+     * Custom exception for Java crypto-related errors in GCM operations.
      */
     public static class JavaCryptoException extends RuntimeException {
+        /**
+         * Constructs a new JavaCryptoException with the specified detail message.
+         *
+         * @param message the detail message explaining the exception
+         */
         public JavaCryptoException(String message) {
             super(message);
         }
 
+        /**
+         * Constructs a new JavaCryptoException with the specified detail message and cause.
+         *
+         * @param message the detail message explaining the exception
+         * @param cause the underlying cause of the exception
+         */
         public JavaCryptoException(String message, Throwable cause) {
             super(message, cause);
         }

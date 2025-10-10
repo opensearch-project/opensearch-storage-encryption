@@ -30,6 +30,15 @@ public final class FileBlockCacheKey implements BlockCacheKey {
     private final String pathString; // cached for fast comparison
     private int hash; // 0 means "not yet computed"
 
+    /**
+     * Creates a new FileBlockCacheKey for the specified file and offset.
+     * 
+     * <p>The file path is normalized and converted to an absolute path to ensure
+     * consistent cache keys across different directory representations.
+     * 
+     * @param filePath the path to the file containing the cached block
+     * @param fileOffset the byte offset within the file where the block starts
+     */
     public FileBlockCacheKey(Path filePath, long fileOffset) {
         this.filePath = filePath.toAbsolutePath().normalize();
         this.fileOffset = fileOffset;
@@ -73,6 +82,11 @@ public final class FileBlockCacheKey implements BlockCacheKey {
         return filePath;
     }
 
+    /**
+     * Returns the byte offset within the file where this cached block starts.
+     * 
+     * @return the file offset in bytes
+     */
     public long fileOffset() {
         return fileOffset;
     }

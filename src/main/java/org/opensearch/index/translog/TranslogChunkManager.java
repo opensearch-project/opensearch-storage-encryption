@@ -38,9 +38,14 @@ public class TranslogChunkManager {
     private static final Logger logger = LogManager.getLogger(TranslogChunkManager.class);
 
     // GCM chunk constants
-    public static final int GCM_CHUNK_SIZE = 8192;                                    // 8KB data per chunk
-    public static final int GCM_TAG_SIZE = AesGcmCipherFactory.GCM_TAG_LENGTH;       // 16 bytes auth tag
-    public static final int CHUNK_WITH_TAG_SIZE = GCM_CHUNK_SIZE + GCM_TAG_SIZE;     // 8208 bytes max
+    /** Size of each data chunk in bytes (8KB). */
+    public static final int GCM_CHUNK_SIZE = 8192;                                    
+    
+    /** Size of GCM authentication tag in bytes (16 bytes). */
+    public static final int GCM_TAG_SIZE = AesGcmCipherFactory.GCM_TAG_LENGTH;       
+    
+    /** Total size of chunk plus authentication tag in bytes (8208 bytes maximum). */
+    public static final int CHUNK_WITH_TAG_SIZE = GCM_CHUNK_SIZE + GCM_TAG_SIZE;     
 
     private final FileChannel delegate;
     private final KeyIvResolver keyIvResolver;
@@ -54,10 +59,22 @@ public class TranslogChunkManager {
      * Helper class for chunk position mapping
      */
     public static class ChunkInfo {
-        public final int chunkIndex;           // Which chunk (0, 1, 2, ...)
-        public final int offsetInChunk;        // Position within the 8KB chunk
-        public final long diskPosition;        // Actual file position of chunk start
+        /** The chunk index (0, 1, 2, ...). */
+        public final int chunkIndex;
+        
+        /** The byte position within the 8KB chunk. */
+        public final int offsetInChunk;
+        
+        /** The actual file position where the chunk starts on disk. */
+        public final long diskPosition;
 
+        /**
+         * Constructs a new ChunkInfo with the specified chunk coordinates.
+         *
+         * @param chunkIndex the chunk index (0, 1, 2, ...)
+         * @param offsetInChunk the byte position within the 8KB chunk
+         * @param diskPosition the actual file position where the chunk starts on disk
+         */
         public ChunkInfo(int chunkIndex, int offsetInChunk, long diskPosition) {
             this.chunkIndex = chunkIndex;
             this.offsetInChunk = offsetInChunk;
@@ -86,6 +103,8 @@ public class TranslogChunkManager {
     /**
      * Determines the exact header size using local calculation to avoid cross-classloader access.
      * This replicates the exact same logic as TranslogHeader.headerSizeInBytes() method.
+     * 
+     * @return the calculated header size in bytes
      */
     public int determineHeaderSize() {
         if (actualHeaderSize > 0) {
@@ -109,8 +128,8 @@ public class TranslogChunkManager {
      * Local implementation of TranslogHeader.headerSizeInBytes() to avoid cross-classloader access issues.
      * This replicates the exact same calculation as the original method.
      *
-     * @param translogUUID the translog UUID
-     * @return the header size in bytes
+     * @param translogUUID the translog UUID used for calculating the UUID field size in the header
+     * @return the calculated header size in bytes including codec header, UUID field, and version-specific fields
      */
     private static int calculateTranslogHeaderSize(String translogUUID) {
         int uuidLength = translogUUID.getBytes(StandardCharsets.UTF_8).length;
@@ -128,7 +147,10 @@ public class TranslogChunkManager {
     }
 
     /**
-     * Maps a file position to chunk information.
+     * Maps a file position to chunk information including chunk index and offset within chunk.
+     * 
+     * @param filePosition the logical file position to map to chunk coordinates
+     * @return chunk information containing index, offset, and disk position
      */
     public ChunkInfo getChunkInfo(long filePosition) {
         long dataPosition = filePosition - determineHeaderSize();
@@ -141,6 +163,9 @@ public class TranslogChunkManager {
     /**
      * Checks if we can read a chunk at the given disk position.
      * Returns false for write-only channels or if chunk doesn't exist.
+     * 
+     * @param diskPosition the disk position where the chunk should be located
+     * @return true if the chunk exists and can be read, false otherwise
      */
     public boolean canReadChunk(long diskPosition) {
         try {
@@ -166,6 +191,10 @@ public class TranslogChunkManager {
     /**
      * Reads and decrypts a complete chunk from disk.
      * Returns empty array if chunk doesn't exist or channel is write-only.
+     * 
+     * @param chunkIndex the index of the chunk to read and decrypt
+     * @return the decrypted chunk data, or empty array if chunk doesn't exist
+     * @throws IOException if reading or decryption fails
      */
     public byte[] readAndDecryptChunk(int chunkIndex) throws IOException {
         try {
@@ -207,6 +236,10 @@ public class TranslogChunkManager {
 
     /**
      * Encrypts and writes a complete chunk to disk.
+     * 
+     * @param chunkIndex the index of the chunk to encrypt and write
+     * @param plainData the plain data to encrypt and write to the chunk
+     * @throws IOException if encryption or writing fails
      */
     public void encryptAndWriteChunk(int chunkIndex, byte[] plainData) throws IOException {
         try {

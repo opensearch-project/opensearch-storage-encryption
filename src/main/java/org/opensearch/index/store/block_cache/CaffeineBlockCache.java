@@ -19,6 +19,19 @@ import org.opensearch.index.store.block_loader.BlockLoader;
 
 import com.github.benmanes.caffeine.cache.Cache;
 
+/**
+ * A Caffeine-based implementation of {@link BlockCache} that provides efficient caching
+ * of file blocks with automatic loading, eviction, and cleanup.
+ * 
+ * <p>This cache integrates with Caffeine's high-performance caching library to provide
+ * concurrent, thread-safe access to cached blocks. It supports automatic loading via
+ * {@link BlockLoader} instances, bulk operations for efficient I/O, and proper cleanup
+ * of cached resources through reference counting.
+ *
+ * @param <T> the type of cached block data
+ * @param <V> the type of data loaded by the BlockLoader
+ * @opensearch.internal
+ */
 @SuppressForbidden(reason = "uses custom DirectIO")
 public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     private static final Logger LOGGER = LogManager.getLogger(CaffeineBlockCache.class);
@@ -26,6 +39,13 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     private final Cache<BlockCacheKey, BlockCacheValue<T>> cache;
     private final BlockLoader<V> blockLoader;
 
+    /**
+     * Constructs a new CaffeineBlockCache with the specified cache and block loader.
+     *
+     * @param cache the underlying Caffeine cache instance
+     * @param blockLoader the loader used to load blocks when cache misses occur
+     * @param maxBlocks the maximum number of blocks to cache (currently unused but kept for API compatibility)
+     */
     public CaffeineBlockCache(Cache<BlockCacheKey, BlockCacheValue<T>> cache, BlockLoader<V> blockLoader, long maxBlocks) {
         this.blockLoader = blockLoader;
         this.cache = cache;
@@ -216,6 +236,8 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      * Get the underlying Caffeine cache instance.
      * This is used for sharing the cache storage across multiple BlockCache instances
      * with different loaders.
+     *
+     * @return the underlying Caffeine cache instance
      */
     public Cache<BlockCacheKey, BlockCacheValue<T>> getCache() {
         return cache;

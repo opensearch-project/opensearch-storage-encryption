@@ -17,7 +17,7 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
 
 /**
- * Utility class for accessing native POSIX functions via Panama Foreign Function & Memory API.
+ * Utility class for accessing native POSIX functions via Panama Foreign Function &amp; Memory API.
  */
 @SuppressForbidden(reason = "Uses Panama FFI for native function access")
 @SuppressWarnings("preview")

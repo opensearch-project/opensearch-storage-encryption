@@ -63,6 +63,17 @@ public final class BlockSlotTinyCache {
         this.slotKeys = new FileBlockCacheKey[SLOT_COUNT];
     }
 
+    /**
+     * Acquires a reference-counted memory segment for the specified block offset.
+     * 
+     * <p>This method implements a fast L1 cache lookup with generation-based staleness detection.
+     * It first checks the last accessed block, then checks the slot cache, and finally falls back
+     * to the main cache if needed.
+     * 
+     * @param blockOff the byte offset within the file, must be block-aligned
+     * @return a cached value containing the reference-counted memory segment for the block
+     * @throws IOException if an I/O error occurs while loading the block from the underlying storage
+     */
     public BlockCacheValue<RefCountedMemorySegment> acquireRefCountedValue(long blockOff) throws IOException {
         final long blockIdx = blockOff >>> CACHE_BLOCK_SIZE_POWER;
 
@@ -117,6 +128,13 @@ public final class BlockSlotTinyCache {
         return val;
     }
 
+    /**
+     * Clears all cached entries and resets the cache state.
+     * 
+     * <p>This method invalidates all slots, clears the last accessed block reference,
+     * and releases all cached keys. It should be called when the cache needs to be
+     * completely reset, such as when the underlying file is closed or invalidated.
+     */
     public void clear() {
         lastBlockIdx = -1;
         lastVal = null;

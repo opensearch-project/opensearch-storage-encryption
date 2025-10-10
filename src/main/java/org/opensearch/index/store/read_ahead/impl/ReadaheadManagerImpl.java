@@ -14,10 +14,26 @@ import org.opensearch.index.store.read_ahead.ReadaheadManager;
 import org.opensearch.index.store.read_ahead.Worker;
 
 /**
- * ReadaheadManager for single IndexInput.
- *
- * - Holds a single ReadaheadContext for the lifetime of the IndexInput.
- * - Delegates scheduling to a ReadAheadWorker.
+ * Simple readahead manager implementation designed for single IndexInput usage.
+ * 
+ * <p>This implementation provides a straightforward approach to readahead management by maintaining
+ * a single readahead context per manager instance. It's designed for scenarios where each IndexInput
+ * gets its own dedicated manager, providing isolated readahead behavior per file stream.
+ * 
+ * <p>Key characteristics:
+ * <ul>
+ * <li><strong>Single context:</strong> Maintains exactly one ReadaheadContext for the lifetime of the manager</li>
+ * <li><strong>Worker delegation:</strong> Delegates all actual prefetch scheduling to the underlying Worker</li>
+ * <li><strong>Default configuration:</strong> Uses predefined WindowedReadAheadConfig with reasonable defaults</li>
+ * <li><strong>Lifecycle management:</strong> Provides proper cleanup and state management for contexts</li>
+ * <li><strong>Thread safety:</strong> Uses synchronization and atomic operations for safe concurrent access</li>
+ * </ul>
+ * 
+ * <p>The manager automatically creates a WindowedReadAheadContext with default configuration when
+ * a file is registered, making it suitable for most standard use cases without requiring detailed
+ * readahead configuration.
+ * 
+ * @opensearch.internal
  */
 public class ReadaheadManagerImpl implements ReadaheadManager {
 
@@ -27,6 +43,15 @@ public class ReadaheadManagerImpl implements ReadaheadManager {
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private ReadaheadContext context;
 
+    /**
+     * Creates a new readahead manager that delegates prefetch operations to the specified worker.
+     * 
+     * <p>The manager will use the provided worker to schedule and execute all readahead operations.
+     * The worker should be properly configured and running before being passed to this constructor.
+     * 
+     * @param worker the worker instance to handle readahead scheduling and execution
+     * @throws NullPointerException if worker is null
+     */
     public ReadaheadManagerImpl(Worker worker) {
         this.worker = worker;
     }
