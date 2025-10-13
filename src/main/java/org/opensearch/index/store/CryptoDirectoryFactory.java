@@ -145,9 +145,16 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             Property.NodeScope
         );
 
+    public static final Setting<String> INDEX_KMS_ARN_SETTING = new Setting<>("index.store.kms.key_arn", "", Function.identity(), (s) -> {
+        if (s == null || s.isEmpty()) {
+            throw new SettingsException("index.store.kms.arn must be set");
+        }
+    }, Property.IndexScope);
+
     MasterKeyProvider getKeyProvider(IndexSettings indexSettings) {
         final String KEY_PROVIDER_TYPE = indexSettings.getValue(INDEX_KMS_TYPE_SETTING);
-        final Settings settings = Settings.builder().put(indexSettings.getNodeSettings(), false).build();
+        final String KEY_ARN = indexSettings.getValue(INDEX_KMS_ARN_SETTING);
+        Settings settings = Settings.builder().put("key_arn", KEY_ARN).put(indexSettings.getSettings(), false).build();
         CryptoMetadata cryptoMetadata = new CryptoMetadata("", KEY_PROVIDER_TYPE, settings);
         MasterKeyProvider keyProvider;
         try {
