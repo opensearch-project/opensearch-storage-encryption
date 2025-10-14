@@ -103,6 +103,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         super();
     }
 
+    public static final String CRYPTO_SETTING = "index.store.crypto";
+
     /**
      * Specifies a crypto provider to be used for encryption. The default value
      * is SunJCE.
@@ -117,12 +119,12 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     }, Property.IndexScope, Property.InternalIndex);
 
     /**
-     * Specifies the Key management plugin type to be used. The desired KMS
+     * Specifies the Key management plugin type to be used. The desired CryptoKeyProviderPlugin
      * plugin should be installed.
      */
-    public static final Setting<String> INDEX_KMS_TYPE_SETTING = new Setting<>("index.store.kms.type", "", Function.identity(), (s) -> {
+    public static final Setting<String> INDEX_KEY_TYPE_SETTING = new Setting<>("index.store.crypto.key_type", "", Function.identity(), (s) -> {
         if (s == null || s.isEmpty()) {
-            throw new SettingsException("index.store.kms.type must be set");
+            throw new SettingsException("index.store.crypto.key_type must be set");
         }
     }, Property.NodeScope, Property.IndexScope);
 
@@ -145,16 +147,29 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             Property.NodeScope
         );
 
-    public static final Setting<String> INDEX_KMS_ARN_SETTING = new Setting<>("index.store.kms.key_arn", "", Function.identity(), (s) -> {
+    /**
+     * AWS KMS key ARN for index-level encryption.
+     * Specifies the Amazon Resource Name of the KMS key used as master key for encrypting index data.
+     */
+    public static final Setting<String> INDEX_KMS_ARN_SETTING = new Setting<>("index.store.crypto.kms.key_arn", "", Function.identity(), (s) -> {
+        if (s == null || s.isEmpty()) {
+            throw new SettingsException("index.store.kms.arn must be set");
+        }
+    }, Property.IndexScope);
+
+    /**
+     * AWS KMS encryption context for additional authenticated data.
+     * Provides extra security by requiring the same context for both encrypt and decrypt operations.
+     */
+    public static final Setting<String> INDEX_KMS_ENC_CTX_SETTING = new Setting<>("index.store.crypto.kms.encryption_context", "", Function.identity(), (s) -> {
         if (s == null || s.isEmpty()) {
             throw new SettingsException("index.store.kms.arn must be set");
         }
     }, Property.IndexScope);
 
     MasterKeyProvider getKeyProvider(IndexSettings indexSettings) {
-        final String KEY_PROVIDER_TYPE = indexSettings.getValue(INDEX_KMS_TYPE_SETTING);
-        final String KEY_ARN = indexSettings.getValue(INDEX_KMS_ARN_SETTING);
-        Settings settings = Settings.builder().put("key_arn", KEY_ARN).put(indexSettings.getSettings(), false).build();
+        final String KEY_PROVIDER_TYPE = indexSettings.getValue(INDEX_KEY_TYPE_SETTING);
+        Settings settings = indexSettings.getSettings().getAsSettings(CRYPTO_SETTING);
         CryptoMetadata cryptoMetadata = new CryptoMetadata("", KEY_PROVIDER_TYPE, settings);
         MasterKeyProvider keyProvider;
         try {
