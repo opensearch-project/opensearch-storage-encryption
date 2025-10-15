@@ -4,8 +4,6 @@
  */
 package org.opensearch.index.store.directio;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
-
 import java.io.IOException;
 import java.nio.file.Path;
 
@@ -13,6 +11,7 @@ import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
 
 /**
  * Fast L1 cache for recently accessed blocks.
@@ -37,7 +36,7 @@ import org.opensearch.index.store.block_cache.FileBlockCacheKey;
  * 4. Reader requests File A → L1 checks: cached gen(5) ≠ current gen(6) → reload
  *
  */
-public final class BlockSlotTinyCache {
+public class BlockSlotTinyCache {
 
     private static final int SLOT_COUNT = 32;
     private static final int SLOT_MASK = SLOT_COUNT - 1;
