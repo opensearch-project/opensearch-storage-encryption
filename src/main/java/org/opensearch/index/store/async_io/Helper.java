@@ -23,6 +23,12 @@ import io.netty.channel.unix.Errors;
  * @opensearch.internal
  */
 public class Helper {
+
+    /**
+     * Private constructor to prevent instantiation of utility class.
+     */
+    private Helper() {}
+
     /**
      * Transforms a syscall result CompletableFuture to handle negative return values as errors.
      * 

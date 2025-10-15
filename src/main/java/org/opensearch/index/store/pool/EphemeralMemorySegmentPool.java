@@ -8,6 +8,8 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 
@@ -37,7 +39,8 @@ import org.opensearch.index.store.block.RefCountedMemorySegment;
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "allocates standalone arenas per segment")
 public class EphemeralMemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoCloseable {
-    private final Arena arena;
+
+    private static final Logger LOGGER = LogManager.getLogger(EphemeralMemorySegmentPool.class);
     private final int segmentSize;
 
     /**
@@ -47,63 +50,69 @@ public class EphemeralMemorySegmentPool implements Pool<RefCountedMemorySegment>
      */
     public EphemeralMemorySegmentPool(int segmentSize) {
         this.segmentSize = segmentSize;
-        this.arena = Arena.ofShared();
     }
 
     @Override
     public RefCountedMemorySegment acquire() {
-        MemorySegment segment = arena.allocate(segmentSize);
-        RefCountedMemorySegment refSegment = new RefCountedMemorySegment(segment, segmentSize, this::release);
-        return refSegment;
+        // Each segment gets its own confined arena
+        final Arena arena = Arena.ofShared();
+        final MemorySegment segment = arena.allocate(segmentSize);
+
+        // Return a refcounted wrapper that closes this arena upon release
+        return new RefCountedMemorySegment(segment, segmentSize, _ -> {
+            try {
+                arena.close(); // Frees native memory immediately
+            } catch (Exception e) {
+                LOGGER.warn("Failed to close ephemeral arena", e);
+            }
+        });
     }
 
     @Override
     public void release(RefCountedMemorySegment refSegment) {
-        close();
+        // no-op, as release is handled in RefCountedMemorySegment’s callback
     }
 
     @Override
-    public void close() {
-        arena.close();
-    }
-
-    @Override
-    public RefCountedMemorySegment tryAcquire(long timeout, TimeUnit unit) throws InterruptedException {
+    public RefCountedMemorySegment tryAcquire(long timeout, TimeUnit unit) {
         return acquire();
     }
 
     @Override
-    public long totalMemory() {
-        throw new UnsupportedOperationException("Unimplemented method 'totalMemory'");
+    public void close() {
+        // no global arenas, nothing to close
     }
 
     @Override
     public String poolStats() {
-        return String.format("EphemeralPool[size=%d]", segmentSize);
+        return "EphemeralMemorySegmentPool[1 arena per segment, size=" + segmentSize + "]";
+    }
+
+    @Override
+    public long totalMemory() {
+        return 0;
     }
 
     @Override
     public long availableMemory() {
-        throw new UnsupportedOperationException("Unimplemented method 'availableMemory'");
+        return 0;
     }
 
     @Override
     public int pooledSegmentSize() {
-        throw new UnsupportedOperationException("Unimplemented method 'pooledSegmentSize'");
+        return segmentSize;
     }
 
     @Override
     public boolean isUnderPressure() {
-        throw new UnsupportedOperationException("Unimplemented method 'isUnderPressure'");
+        return false;
     }
 
     @Override
-    public void warmUp(long numBlocks) {
-        throw new UnsupportedOperationException("Unimplemented method 'warmUp'");
-    }
+    public void warmUp(long numBlocks) {}
 
     @Override
     public boolean isClosed() {
-        throw new UnsupportedOperationException("Unimplemented method isClosed");
+        return false;
     }
 }
