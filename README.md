@@ -47,7 +47,7 @@ For example:
 ```
  "index_settings": {
     "index.store.type": "cryptofs",
-    "index.store.crypto.kms.type": "aws-kms"
+    "index.store.crypto.key.type": "aws-kms"
 }
 
 ```

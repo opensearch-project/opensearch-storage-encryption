@@ -100,12 +100,12 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * plugin should be installed.
      */
     public static final Setting<String> INDEX_KMS_TYPE_SETTING = new Setting<>(
-        "index.store.crypto.kms.type",
+        "index.store.crypto.key.type",
         "",
         Function.identity(),
         (s) -> {
             if (s == null || s.isEmpty()) {
-                throw new SettingsException("index.store.crypto.kms.type must be set");
+                throw new SettingsException("index.store.crypto.key.type must be set");
             }
         },
         Property.NodeScope,
