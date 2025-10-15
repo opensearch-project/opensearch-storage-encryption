@@ -31,12 +31,23 @@ public class CryptoDirectoryIntegTestCases extends OpenSearchIntegTestCase {
     }
 
     @Override
+    protected Settings nodeSettings(int nodeOrdinal) {
+        return Settings
+            .builder()
+            .put(super.nodeSettings(nodeOrdinal))
+            .put("node.store.crypto.pool_size_percentage", 0.05)  // 5% of off-heap for tests (smaller pool)
+            .put("node.store.crypto.warmup_percentage", 0.0)      // No warmup to avoid pre-allocating memory
+            .put("node.store.crypto.pool_to_cache_ratio", 1.25)
+            .build();
+    }
+
+    @Override
     public Settings indexSettings() {
         return Settings
             .builder()
             .put(super.indexSettings())
             .put("index.store.type", "cryptofs")
-            .put("index.store.kms.type", "dummy")
+            .put("index.store.crypto.kms.type", "dummy")
             .build();
     }
 

@@ -22,6 +22,11 @@ import javax.crypto.NoSuchPaddingException;
  */
 public class AesCipherFactory {
 
+    /**
+     * Private constructor to prevent instantiation of utility class.
+     */
+    private AesCipherFactory() {}
+
     /** AES block size in bytes. Required for counter calculations. */
     public static final int AES_BLOCK_SIZE_BYTES = 16;
 
