@@ -89,8 +89,6 @@ test {
         showStandardStreams = true
     }
     systemProperty 'tests.security.manager', 'false'
-    systemProperty 'opensearch.storage.warmup.percentage', '0'
-    systemProperty 'opensearch.storage.pool.size.bytes', '268435456' // 256MB for tests
     jvmArgs += [
         '--enable-native-access=ALL-UNNAMED',
         '-XX:MaxDirectMemorySize=512m'
@@ -100,8 +98,6 @@ test {
 tasks.named('internalClusterTest').configure {
     systemProperty 'tests.security.manager', 'false'
     systemProperty 'java.security.policy', 'test.policy'
-    systemProperty 'opensearch.storage.warmup.percentage', '0'
-    systemProperty 'opensearch.storage.pool.size.bytes', '268435456'
     testLogging {
         events "passed", "skipped", "failed"
         showStandardStreams = true
@@ -113,13 +109,11 @@ tasks.named('internalClusterTest').configure {
 }
 
 tasks.named('yamlRestTest').configure {
-    systemProperty 'opensearch.storage.warmup.percentage', '0'
-    systemProperty 'opensearch.storage.pool.size.bytes', '134217728'
 }
 
 testClusters.yamlRestTest {
-    systemProperty 'opensearch.storage.warmup.percentage', '0'
-    systemProperty 'opensearch.storage.pool.size.bytes', '134217728'
+    setting 'node.store.crypto.pool_size_percentage', '0.0'
+    setting 'node.store.crypto.warmup_percentage', '0.0'
     jvmArgs '-XX:MaxDirectMemorySize=512m'
 }
 

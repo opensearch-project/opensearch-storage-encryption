@@ -26,6 +26,11 @@ import javax.crypto.spec.GCMParameterSpec;
 public class AesGcmCipherFactory {
 
     /**
+     * Private constructor to prevent instantiation of utility class.
+     */
+    private AesGcmCipherFactory() {}
+
+    /**
      * Standard GCM authentication tag length in bytes (128 bits).
      */
     public static final int GCM_TAG_LENGTH = 16;
