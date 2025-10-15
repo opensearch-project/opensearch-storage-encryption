@@ -122,7 +122,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * Specifies the Key management plugin type to be used. The desired CryptoKeyProviderPlugin
      * plugin should be installed.
      */
-    public static final Setting<String> INDEX_KEY_TYPE_SETTING = new Setting<>("index.store.crypto.key_type", "", Function.identity(), (s) -> {
+    public static final Setting<String> INDEX_KEY_PROVIDER_SETTING = new Setting<>("index.store.crypto.key_provider", "", Function.identity(), (s) -> {
         if (s == null || s.isEmpty()) {
             throw new SettingsException("index.store.crypto.key_type must be set");
         }
@@ -168,17 +168,17 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     }, Property.IndexScope);
 
     MasterKeyProvider getKeyProvider(IndexSettings indexSettings) {
-        final String KEY_PROVIDER_TYPE = indexSettings.getValue(INDEX_KEY_TYPE_SETTING);
+        final String KEY_PROVIDER = indexSettings.getValue(INDEX_KEY_PROVIDER_SETTING);
         Settings settings = indexSettings.getSettings().getAsSettings(CRYPTO_SETTING);
-        CryptoMetadata cryptoMetadata = new CryptoMetadata("", KEY_PROVIDER_TYPE, settings);
+        CryptoMetadata cryptoMetadata = new CryptoMetadata(KEY_PROVIDER, "", settings);
         MasterKeyProvider keyProvider;
         try {
             keyProvider = CryptoHandlerRegistry
                 .getInstance()
-                .getCryptoKeyProviderPlugin(KEY_PROVIDER_TYPE)
+                .getCryptoKeyProviderPlugin(KEY_PROVIDER)
                 .createKeyProvider(cryptoMetadata);
         } catch (NullPointerException npe) {
-            throw new RuntimeException("could not find key provider: " + KEY_PROVIDER_TYPE, npe);
+            throw new RuntimeException("could not find key provider: " + KEY_PROVIDER, npe);
         }
         return keyProvider;
     }
