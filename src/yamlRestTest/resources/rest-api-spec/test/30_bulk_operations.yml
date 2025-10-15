@@ -1,0 +1,368 @@
+---
+"Test bulk indexing with encrypted storage":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-bulk
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  # Bulk index multiple documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-bulk
+              _id: "1"
+          - { "title": "Bulk Doc 1", "value": 100 }
+          - index:
+              _index: test-crypto-bulk
+              _id: "2"
+          - { "title": "Bulk Doc 2", "value": 200 }
+          - index:
+              _index: test-crypto-bulk
+              _id: "3"
+          - { "title": "Bulk Doc 3", "value": 300 }
+          - index:
+              _index: test-crypto-bulk
+              _id: "4"
+          - { "title": "Bulk Doc 4", "value": 400 }
+          - index:
+              _index: test-crypto-bulk
+              _id: "5"
+          - { "title": "Bulk Doc 5", "value": 500 }
+
+  - match: { errors: false }
+  - match: { items.0.index.result: created }
+  - match: { items.1.index.result: created }
+  - match: { items.2.index.result: created }
+  - match: { items.3.index.result: created }
+  - match: { items.4.index.result: created }
+
+  # Verify all documents were indexed
+  - do:
+      search:
+        index: test-crypto-bulk
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 5 }
+
+  # Verify individual documents
+  - do:
+      get:
+        index: test-crypto-bulk
+        id: "3"
+
+  - match: { _source.title: "Bulk Doc 3" }
+  - match: { _source.value: 300 }
+
+  # Bulk update documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - update:
+              _index: test-crypto-bulk
+              _id: "1"
+          - { "doc": { "updated": true, "value": 150 } }
+          - update:
+              _index: test-crypto-bulk
+              _id: "2"
+          - { "doc": { "updated": true, "value": 250 } }
+          - update:
+              _index: test-crypto-bulk
+              _id: "3"
+          - { "doc": { "updated": true, "value": 350 } }
+
+  - match: { errors: false }
+  - match: { items.0.update.result: updated }
+  - match: { items.1.update.result: updated }
+  - match: { items.2.update.result: updated }
+
+  # Verify updates
+  - do:
+      get:
+        index: test-crypto-bulk
+        id: "1"
+
+  - match: { _source.value: 150 }
+  - match: { _source.updated: true }
+
+  # Bulk delete documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - delete:
+              _index: test-crypto-bulk
+              _id: "4"
+          - delete:
+              _index: test-crypto-bulk
+              _id: "5"
+
+  - match: { errors: false }
+  - match: { items.0.delete.result: deleted }
+  - match: { items.1.delete.result: deleted }
+
+  # Verify deletions
+  - do:
+      search:
+        index: test-crypto-bulk
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 3 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-bulk
+
+---
+"Test bulk operations with mixed actions":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-mixed-bulk
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  # First bulk: create documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-mixed-bulk
+              _id: "1"
+          - { "name": "Item 1", "status": "active" }
+          - index:
+              _index: test-crypto-mixed-bulk
+              _id: "2"
+          - { "name": "Item 2", "status": "active" }
+          - index:
+              _index: test-crypto-mixed-bulk
+              _id: "3"
+          - { "name": "Item 3", "status": "pending" }
+
+  - match: { errors: false }
+
+  # Second bulk: mixed operations
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - update:
+              _index: test-crypto-mixed-bulk
+              _id: "1"
+          - { "doc": { "status": "completed", "processed": true } }
+          - delete:
+              _index: test-crypto-mixed-bulk
+              _id: "2"
+          - index:
+              _index: test-crypto-mixed-bulk
+              _id: "4"
+          - { "name": "Item 4", "status": "new" }
+          - update:
+              _index: test-crypto-mixed-bulk
+              _id: "3"
+          - { "doc": { "status": "active" } }
+
+  - match: { errors: false }
+  - match: { items.0.update.result: updated }
+  - match: { items.1.delete.result: deleted }
+  - match: { items.2.index.result: created }
+  - match: { items.3.update.result: updated }
+
+  # Verify final state
+  - do:
+      search:
+        index: test-crypto-mixed-bulk
+        body:
+          query:
+            match_all: {}
+          sort: [ { "name.keyword": "asc" } ]
+
+  - match: { hits.total.value: 3 }
+  - match: { hits.hits.0._source.name: "Item 1" }
+  - match: { hits.hits.0._source.status: "completed" }
+  - match: { hits.hits.0._source.processed: true }
+  - match: { hits.hits.1._source.name: "Item 3" }
+  - match: { hits.hits.1._source.status: "active" }
+  - match: { hits.hits.2._source.name: "Item 4" }
+  - match: { hits.hits.2._source.status: "new" }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-mixed-bulk
+
+---
+"Test large bulk operation performance":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-large-bulk
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+            refresh_interval: -1
+
+  # Index 50 documents in one bulk request
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "1"
+          - { "seq": 1, "data": "encrypted content 1" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "2"
+          - { "seq": 2, "data": "encrypted content 2" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "3"
+          - { "seq": 3, "data": "encrypted content 3" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "4"
+          - { "seq": 4, "data": "encrypted content 4" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "5"
+          - { "seq": 5, "data": "encrypted content 5" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "6"
+          - { "seq": 6, "data": "encrypted content 6" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "7"
+          - { "seq": 7, "data": "encrypted content 7" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "8"
+          - { "seq": 8, "data": "encrypted content 8" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "9"
+          - { "seq": 9, "data": "encrypted content 9" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "10"
+          - { "seq": 10, "data": "encrypted content 10" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "11"
+          - { "seq": 11, "data": "encrypted content 11" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "12"
+          - { "seq": 12, "data": "encrypted content 12" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "13"
+          - { "seq": 13, "data": "encrypted content 13" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "14"
+          - { "seq": 14, "data": "encrypted content 14" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "15"
+          - { "seq": 15, "data": "encrypted content 15" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "16"
+          - { "seq": 16, "data": "encrypted content 16" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "17"
+          - { "seq": 17, "data": "encrypted content 17" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "18"
+          - { "seq": 18, "data": "encrypted content 18" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "19"
+          - { "seq": 19, "data": "encrypted content 19" }
+          - index:
+              _index: test-crypto-large-bulk
+              _id: "20"
+          - { "seq": 20, "data": "encrypted content 20" }
+
+  - match: { errors: false }
+  - gte: { took: 0 }
+
+  # Verify count
+  - do:
+      count:
+        index: test-crypto-large-bulk
+
+  - match: { count: 20 }
+
+  # Verify data integrity with range query
+  - do:
+      search:
+        index: test-crypto-large-bulk
+        body:
+          query:
+            range:
+              seq:
+                gte: 10
+                lte: 15
+          sort: [ { "seq": "asc" } ]
+
+  - match: { hits.total.value: 6 }
+  - match: { hits.hits.0._source.seq: 10 }
+  - match: { hits.hits.5._source.seq: 15 }
+
+  # Test aggregation on bulk indexed data
+  - do:
+      search:
+        index: test-crypto-large-bulk
+        body:
+          size: 0
+          aggs:
+            seq_stats:
+              stats:
+                field: seq
+
+  - match: { aggregations.seq_stats.count: 20 }
+  - match: { aggregations.seq_stats.min: 1.0 }
+  - match: { aggregations.seq_stats.max: 20.0 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-large-bulk

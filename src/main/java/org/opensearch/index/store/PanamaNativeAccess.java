@@ -18,22 +18,22 @@ import org.opensearch.common.SuppressForbidden;
 
 /**
  * Utility class for accessing native POSIX functions via Panama Foreign Function &amp; Memory API.
+ * Falls back to safe defaults if Panama FFI is not available.
  */
 @SuppressForbidden(reason = "Uses Panama FFI for native function access")
 @SuppressWarnings("preview")
 public final class PanamaNativeAccess {
     private static final Logger LOGGER = LogManager.getLogger(PanamaNativeAccess.class);
-    private static final Linker LINKER = Linker.nativeLinker();
 
+    private static final boolean NATIVE_ACCESS_AVAILABLE;
     private static final MethodHandle GET_PAGE_SIZE;
     private static final MethodHandle OPEN;
     private static final MethodHandle CLOSE;
     private static final MethodHandle POSIX_FADVISE;
 
-    private static final SymbolLookup LIBC = LINKER.defaultLookup();
-
     private static final int POSIX_FADV_DONTNEED = 4;
     private static final int O_RDONLY = 0;
+    private static final int FALLBACK_PAGE_SIZE = 4096;
 
     // Prevent instantiation
     private PanamaNativeAccess() {
@@ -41,12 +41,21 @@ public final class PanamaNativeAccess {
     }
 
     static {
-        try {
-            GET_PAGE_SIZE = LINKER.downcallHandle(LIBC.find("getpagesize").orElseThrow(), FunctionDescriptor.of(ValueLayout.JAVA_INT));
+        boolean available = false;
+        MethodHandle getPageSize = null;
+        MethodHandle open = null;
+        MethodHandle close = null;
+        MethodHandle posixFadvise = null;
 
-            OPEN = LINKER
+        try {
+            Linker linker = Linker.nativeLinker();
+            SymbolLookup libc = linker.defaultLookup();
+
+            getPageSize = linker.downcallHandle(libc.find("getpagesize").orElseThrow(), FunctionDescriptor.of(ValueLayout.JAVA_INT));
+
+            open = linker
                 .downcallHandle(
-                    LIBC.find("open").orElseThrow(),
+                    libc.find("open").orElseThrow(),
                     FunctionDescriptor
                         .of(
                             ValueLayout.JAVA_INT,
@@ -55,9 +64,9 @@ public final class PanamaNativeAccess {
                         )
                 );
 
-            CLOSE = LINKER
+            close = linker
                 .downcallHandle(
-                    LIBC.find("close").orElseThrow(),
+                    libc.find("close").orElseThrow(),
                     FunctionDescriptor
                         .of(
                             ValueLayout.JAVA_INT,
@@ -65,9 +74,9 @@ public final class PanamaNativeAccess {
                         )
                 );
 
-            POSIX_FADVISE = LINKER
+            posixFadvise = linker
                 .downcallHandle(
-                    LIBC.find("posix_fadvise").orElseThrow(),
+                    libc.find("posix_fadvise").orElseThrow(),
                     FunctionDescriptor
                         .of(
                             ValueLayout.JAVA_INT, // return int
@@ -78,34 +87,57 @@ public final class PanamaNativeAccess {
                         )
                 );
 
-        } catch (RuntimeException e) {
-            throw new RuntimeException("Failed to load native functions", e);
+            available = true;
+            LOGGER.info("Panama Foreign Function & Memory API initialized successfully");
+        } catch (Throwable e) {
+            LOGGER
+                .warn(
+                    "Panama Foreign Function & Memory API not available, using fallback implementations. "
+                        + "For optimal performance, ensure JVM is started with --enable-native-access=ALL-UNNAMED"
+                );
         }
+
+        NATIVE_ACCESS_AVAILABLE = available;
+        GET_PAGE_SIZE = getPageSize;
+        OPEN = open;
+        CLOSE = close;
+        POSIX_FADVISE = posixFadvise;
     }
 
     /**
      * Returns the system page size in bytes.
-     * Thread-safe. Falls back to 4096 if native call fails.
+     * Thread-safe. Falls back to 4096 if Panama FFI is not available or native call fails.
      *
      * @return page size in bytes (typically 4096)
      */
     public static int getPageSize() {
+        if (!NATIVE_ACCESS_AVAILABLE) {
+            return FALLBACK_PAGE_SIZE;
+        }
+
         try {
             return (int) GET_PAGE_SIZE.invokeExact();
         } catch (Throwable e) {
-            return 4096; // fallback to common page size
+            LOGGER.debug("Failed to get page size via native call, using fallback", e);
+            return FALLBACK_PAGE_SIZE;
         }
     }
 
     /**
      * Advises the kernel to drop page cache for the specified file.
      * This is a best-effort operation and failures are logged but not propagated.
+     * Returns false if Panama FFI is not available.
      * Thread-safe.
      *
      * @param filePath absolute path to the file
      * @return true if cache was successfully dropped, false otherwise
      */
     public static boolean dropFileCache(String filePath) {
+        if (!NATIVE_ACCESS_AVAILABLE) {
+            LOGGER.debug("Native access not available, cannot drop file cache for: {}", filePath);
+            return false;
+        }
+
         if (filePath == null || filePath.isEmpty()) {
             return false;
         }
@@ -131,6 +163,7 @@ public final class PanamaNativeAccess {
         } catch (Throwable t) {
             // Best-effort operation: file may be deleted, permissions changed, etc.
             // Failures are expected and should not affect application functionality
+            LOGGER.debug("Failed to drop file cache for: {}", filePath, t);
             return false;
         }
     }

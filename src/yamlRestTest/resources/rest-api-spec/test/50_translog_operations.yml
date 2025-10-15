@@ -1,0 +1,687 @@
+---
+"Test encrypted index translog basic operations":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-translog
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  # Index documents without refresh (stays in translog)
+  - do:
+      index:
+        index: test-crypto-translog
+        id: "1"
+        body: { "message": "translog doc 1" }
+
+  - match: { result: created }
+
+  - do:
+      index:
+        index: test-crypto-translog
+        id: "2"
+        body: { "message": "translog doc 2" }
+
+  - do:
+      index:
+        index: test-crypto-translog
+        id: "3"
+        body: { "message": "translog doc 3" }
+
+  # Check translog stats show uncommitted operations
+  - do:
+      indices.stats:
+        index: test-crypto-translog
+        metric: translog
+
+  - gt: { indices.test-crypto-translog.total.translog.operations: 0 }
+  - gt: { indices.test-crypto-translog.total.translog.uncommitted_operations: 0 }
+
+  # Flush translog to segments
+  - do:
+      indices.flush:
+        index: test-crypto-translog
+
+  - match: { _shards.successful: 1 }
+
+  # Verify translog flushed (uncommitted should be 0 or minimal)
+  - do:
+      indices.stats:
+        index: test-crypto-translog
+        metric: translog
+
+  - gte: { indices.test-crypto-translog.total.translog.operations: 0 }
+
+  # Verify data persisted correctly
+  - do:
+      indices.refresh:
+        index: test-crypto-translog
+
+  - do:
+      search:
+        index: test-crypto-translog
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 3 }
+
+  # Verify individual documents
+  - do:
+      get:
+        index: test-crypto-translog
+        id: "1"
+
+  - match: { _source.message: "translog doc 1" }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-translog
+
+---
+"Test encrypted index translog recovery after close and reopen":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-recovery
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  # Index some documents and flush
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-recovery
+              _id: "1"
+          - { "status": "flushed", "value": 100 }
+          - index:
+              _index: test-crypto-recovery
+              _id: "2"
+          - { "status": "flushed", "value": 200 }
+
+  - do:
+      indices.flush:
+        index: test-crypto-recovery
+
+  # Index more documents without flush (stays in translog)
+  - do:
+      index:
+        index: test-crypto-recovery
+        id: "3"
+        body: { "status": "in_translog", "value": 300 }
+
+  - do:
+      index:
+        index: test-crypto-recovery
+        id: "4"
+        body: { "status": "in_translog", "value": 400 }
+
+  # Verify uncommitted operations in translog
+  - do:
+      indices.stats:
+        index: test-crypto-recovery
+        metric: translog
+
+  - gt: { indices.test-crypto-recovery.total.translog.uncommitted_operations: 0 }
+
+  # Close index (simulates node restart)
+  - do:
+      indices.close:
+        index: test-crypto-recovery
+
+  - match: { acknowledged: true }
+
+  # Reopen index (triggers translog recovery)
+  - do:
+      indices.open:
+        index: test-crypto-recovery
+
+  - match: { acknowledged: true }
+
+  # Wait for recovery to complete
+  - do:
+      cluster.health:
+        index: test-crypto-recovery
+        wait_for_status: green
+        timeout: 30s
+
+  # Verify all documents recovered from encrypted translog
+  - do:
+      indices.refresh:
+        index: test-crypto-recovery
+
+  - do:
+      search:
+        index: test-crypto-recovery
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 4 }
+
+  # Verify translog-only documents recovered correctly
+  - do:
+      get:
+        index: test-crypto-recovery
+        id: "3"
+
+  - match: { _source.status: "in_translog" }
+  - match: { _source.value: 300 }
+
+  - do:
+      get:
+        index: test-crypto-recovery
+        id: "4"
+
+  - match: { _source.status: "in_translog" }
+  - match: { _source.value: 400 }
+
+  # Verify flushed documents still intact
+  - do:
+      get:
+        index: test-crypto-recovery
+        id: "1"
+
+  - match: { _source.status: "flushed" }
+  - match: { _source.value: 100 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-recovery
+
+---
+"Test encrypted index translog with sync durability settings":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index with request-level sync
+  - do:
+      indices.create:
+        index: test-crypto-sync
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+            index.translog.durability: "request"
+
+  # Verify settings
+  - do:
+      indices.get_settings:
+        index: test-crypto-sync
+
+  - match: { test-crypto-sync.settings.index.translog.durability: "request" }
+
+  # Index documents (each request syncs translog)
+  - do:
+      bulk:
+        body:
+          - index:
+              _index: test-crypto-sync
+              _id: "1"
+          - { "sync": true, "data": "request sync 1" }
+          - index:
+              _index: test-crypto-sync
+              _id: "2"
+          - { "sync": true, "data": "request sync 2" }
+
+  - match: { errors: false }
+
+  # Verify translog operations recorded
+  - do:
+      indices.stats:
+        index: test-crypto-sync
+        metric: translog
+
+  - gte: { indices.test-crypto-sync.total.translog.operations: 2 }
+
+  # Verify data accessible
+  - do:
+      indices.refresh:
+        index: test-crypto-sync
+
+  - do:
+      search:
+        index: test-crypto-sync
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 2 }
+
+  # Test async durability
+  - do:
+      indices.close:
+        index: test-crypto-sync
+
+  - do:
+      indices.open:
+        index: test-crypto-sync
+
+  - do:
+      indices.put_settings:
+        index: test-crypto-sync
+        body:
+          index.translog.durability: "async"
+
+  # Index more documents with async sync
+  - do:
+      index:
+        index: test-crypto-sync
+        id: "3"
+        body: { "sync": false, "data": "async sync 3" }
+        refresh: true
+
+  # Verify still works correctly
+  - do:
+      get:
+        index: test-crypto-sync
+        id: "3"
+
+  - match: { _source.data: "async sync 3" }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-sync
+
+---
+"Test encrypted index translog flush and generation handling":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index with small flush threshold
+  - do:
+      indices.create:
+        index: test-crypto-flush
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+            index.translog.flush_threshold_size: "1mb"
+
+  # Index documents to trigger multiple flushes
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-flush
+              _id: "1"
+          - { "data": "document 1 with some content to increase size" }
+          - index:
+              _index: test-crypto-flush
+              _id: "2"
+          - { "data": "document 2 with some content to increase size" }
+          - index:
+              _index: test-crypto-flush
+              _id: "3"
+          - { "data": "document 3 with some content to increase size" }
+
+  # Force flush
+  - do:
+      indices.flush:
+        index: test-crypto-flush
+
+  - match: { _shards.successful: 1 }
+
+  # Get translog stats after flush
+  - do:
+      indices.stats:
+        index: test-crypto-flush
+        metric: translog
+
+  - gte: { indices.test-crypto-flush.total.translog.operations: 0 }
+
+  # Index more documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-flush
+              _id: "4"
+          - { "data": "document 4 after first flush" }
+          - index:
+              _index: test-crypto-flush
+              _id: "5"
+          - { "data": "document 5 after first flush" }
+
+  # Force another flush
+  - do:
+      indices.flush:
+        index: test-crypto-flush
+        force: true
+
+  # Verify all data intact after multiple flushes
+  - do:
+      search:
+        index: test-crypto-flush
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 5 }
+
+  # Verify specific documents
+  - do:
+      get:
+        index: test-crypto-flush
+        id: "1"
+
+  - match: { _source.data: "document 1 with some content to increase size" }
+
+  - do:
+      get:
+        index: test-crypto-flush
+        id: "5"
+
+  - match: { _source.data: "document 5 after first flush" }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-flush
+
+---
+"Test encrypted index large translog operations":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-large-translog
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+            refresh_interval: -1
+
+  # Bulk index many documents without refresh
+  - do:
+      bulk:
+        body:
+          - index:
+              _index: test-crypto-large-translog
+              _id: "1"
+          - { "seq": 1, "payload": "large encrypted translog test data 1" }
+          - index:
+              _index: test-crypto-large-translog
+              _id: "2"
+          - { "seq": 2, "payload": "large encrypted translog test data 2" }
+          - index:
+              _index: test-crypto-large-translog
+              _id: "3"
+          - { "seq": 3, "payload": "large encrypted translog test data 3" }
+          - index:
+              _index: test-crypto-large-translog
+              _id: "4"
+          - { "seq": 4, "payload": "large encrypted translog test data 4" }
+          - index:
+              _index: test-crypto-large-translog
+              _id: "5"
+          - { "seq": 5, "payload": "large encrypted translog test data 5" }
+          - index:
+              _index: test-crypto-large-translog
+              _id: "6"
+          - { "seq": 6, "payload": "large encrypted translog test data 6" }
+          - index:
+              _index: test-crypto-large-translog
+              _id: "7"
+          - { "seq": 7, "payload": "large encrypted translog test data 7" }
+          - index:
+              _index: test-crypto-large-translog
+              _id: "8"
+          - { "seq": 8, "payload": "large encrypted translog test data 8" }
+          - index:
+              _index: test-crypto-large-translog
+              _id: "9"
+          - { "seq": 9, "payload": "large encrypted translog test data 9" }
+          - index:
+              _index: test-crypto-large-translog
+              _id: "10"
+          - { "seq": 10, "payload": "large encrypted translog test data 10" }
+
+  - match: { errors: false }
+
+  # Check translog has uncommitted operations
+  - do:
+      indices.stats:
+        index: test-crypto-large-translog
+        metric: translog
+
+  - gte: { indices.test-crypto-large-translog.total.translog.uncommitted_operations: 10 }
+  - gt: { indices.test-crypto-large-translog.total.translog.size_in_bytes: 0 }
+
+  # Flush translog
+  - do:
+      indices.flush:
+        index: test-crypto-large-translog
+
+  # Refresh to make searchable
+  - do:
+      indices.refresh:
+        index: test-crypto-large-translog
+
+  # Verify all documents present
+  - do:
+      count:
+        index: test-crypto-large-translog
+
+  - match: { count: 10 }
+
+  # Verify data integrity with range query
+  - do:
+      search:
+        index: test-crypto-large-translog
+        body:
+          query:
+            range:
+              seq:
+                gte: 5
+                lte: 8
+
+  - match: { hits.total.value: 4 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-large-translog
+
+---
+"Test encrypted index translog stats and monitoring":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-translog-stats
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  # Get initial translog stats
+  - do:
+      indices.stats:
+        index: test-crypto-translog-stats
+        metric: translog
+
+  - match: { indices.test-crypto-translog-stats.total.translog.operations: 0 }
+
+  # Index documents
+  - do:
+      bulk:
+        body:
+          - index:
+              _index: test-crypto-translog-stats
+              _id: "1"
+          - { "metric": "stat1" }
+          - index:
+              _index: test-crypto-translog-stats
+              _id: "2"
+          - { "metric": "stat2" }
+          - index:
+              _index: test-crypto-translog-stats
+              _id: "3"
+          - { "metric": "stat3" }
+
+  # Check translog stats updated
+  - do:
+      indices.stats:
+        index: test-crypto-translog-stats
+        metric: translog
+
+  - gte: { indices.test-crypto-translog-stats.total.translog.operations: 3 }
+  - gt: { indices.test-crypto-translog-stats.total.translog.uncommitted_operations: 0 }
+  - gt: { indices.test-crypto-translog-stats.total.translog.size_in_bytes: 0 }
+  - gte: { indices.test-crypto-translog-stats.total.translog.uncommitted_size_in_bytes: 0 }
+
+  # Flush and check stats updated
+  - do:
+      indices.flush:
+        index: test-crypto-translog-stats
+
+  - do:
+      indices.stats:
+        index: test-crypto-translog-stats
+        metric: translog
+
+  - gte: { indices.test-crypto-translog-stats.total.translog.operations: 0 }
+
+  # Verify index stats include translog info
+  - do:
+      indices.stats:
+        index: test-crypto-translog-stats
+
+  - gte: { indices.test-crypto-translog-stats.total.translog.operations: 0 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-translog-stats
+
+---
+"Test encrypted index concurrent translog writes":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-concurrent
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  # Simulate concurrent writes with bulk
+  - do:
+      bulk:
+        body:
+          - index:
+              _index: test-crypto-concurrent
+              _id: "1"
+          - { "thread": "A", "order": 1 }
+          - index:
+              _index: test-crypto-concurrent
+              _id: "2"
+          - { "thread": "B", "order": 1 }
+          - index:
+              _index: test-crypto-concurrent
+              _id: "3"
+          - { "thread": "A", "order": 2 }
+          - index:
+              _index: test-crypto-concurrent
+              _id: "4"
+          - { "thread": "B", "order": 2 }
+          - index:
+              _index: test-crypto-concurrent
+              _id: "5"
+          - { "thread": "A", "order": 3 }
+
+  - match: { errors: false }
+
+  # Verify translog handles concurrent writes
+  - do:
+      indices.stats:
+        index: test-crypto-concurrent
+        metric: translog
+
+  - gte: { indices.test-crypto-concurrent.total.translog.uncommitted_operations: 5 }
+
+  # Flush and verify all operations persisted
+  - do:
+      indices.flush:
+        index: test-crypto-concurrent
+
+  - do:
+      indices.refresh:
+        index: test-crypto-concurrent
+
+  - do:
+      search:
+        index: test-crypto-concurrent
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 5 }
+
+  # Verify data integrity - all documents present with correct data
+  - do:
+      get:
+        index: test-crypto-concurrent
+        id: "1"
+
+  - match: { _source.thread: "A" }
+  - match: { _source.order: 1 }
+
+  - do:
+      get:
+        index: test-crypto-concurrent
+        id: "5"
+
+  - match: { _source.thread: "A" }
+  - match: { _source.order: 3 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-concurrent

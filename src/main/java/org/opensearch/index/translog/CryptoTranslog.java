@@ -158,16 +158,4 @@ public class CryptoTranslog extends LocalTranslog {
             );
         }
     }
-
-    /**
-     * Ensure proper cleanup of crypto resources.
-     */
-    @Override
-    public void close() throws IOException {
-        try {
-            super.close();
-        } finally {
-            logger.debug("CryptoTranslog closed - encrypted translog files");
-        }
-    }
 }
