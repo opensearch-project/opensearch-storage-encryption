@@ -16,6 +16,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.pool.PrimaryMemorySegmentPool.PoolStats;
 
 /**
  * High-performance primary memory pool for off-heap memory segment allocation with lazy allocation strategy.

@@ -19,7 +19,6 @@ import java.nio.file.Paths;
 import java.util.Map;
 
 import org.junit.Before;
-import org.junit.Test;
 import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.test.OpenSearchTestCase;
 
@@ -45,7 +44,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests basic get operation when key is not present.
      */
-    @Test
     public void testGetReturnsNullForMissingKey() {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
 
@@ -57,7 +55,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests get operation when key is present in cache.
      */
-    @Test
     public void testGetReturnsValueForPresentKey() {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("data");
@@ -72,7 +69,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests put operation adds value to cache.
      */
-    @Test
     public void testPutAddsValueToCache() {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("data");
@@ -87,7 +83,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests getOrLoad returns cached value without calling loader.
      */
-    @Test
     public void testGetOrLoadReturnsCachedValue() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("cached");
@@ -102,7 +97,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests getOrLoad loads value when not cached.
      */
-    @Test
     public void testGetOrLoadLoadsValueOnCacheMiss() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("loaded");
@@ -119,7 +113,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests getOrLoad caches loaded value for future requests.
      */
-    @Test
     public void testGetOrLoadCachesLoadedValue() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("loaded");
@@ -139,7 +132,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests getOrLoad throws exception when loader throws PoolPressureException.
      */
-    @Test
     public void testGetOrLoadHandlesPoolPressureException() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
 
@@ -153,7 +145,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests getOrLoad throws exception when loader throws PoolAcquireFailedException.
      */
-    @Test
     public void testGetOrLoadHandlesPoolAcquireFailedException() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
 
@@ -165,7 +156,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests getOrLoad throws exception when loader throws BlockLoadFailedException.
      */
-    @Test
     public void testGetOrLoadHandlesBlockLoadFailedException() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
 
@@ -177,7 +167,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests getOrLoad throws exception when loader throws NoSuchFileException.
      */
-    @Test
     public void testGetOrLoadHandlesNoSuchFileException() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/missing.dat"), 0L);
 
@@ -189,7 +178,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests getOrLoad throws exception when loader throws generic IOException.
      */
-    @Test
     public void testGetOrLoadHandlesIOException() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
 
@@ -201,7 +189,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests getOrLoad wraps RuntimeException in IOException.
      */
-    @Test
     public void testGetOrLoadWrapsRuntimeException() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
 
@@ -213,7 +200,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests invalidate removes specific key from cache.
      */
-    @Test
     public void testInvalidateRemovesKey() {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("data");
@@ -229,7 +215,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests invalidate by path removes all blocks for that file.
      */
-    @Test
     public void testInvalidateByPathRemovesAllFileBlocks() {
         Path path = Paths.get("/test/file.dat");
         BlockCacheKey key1 = new FileBlockCacheKey(path, 0L);
@@ -250,7 +235,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests invalidate by path only removes blocks for that specific file.
      */
-    @Test
     public void testInvalidateByPathOnlyAffectsSpecifiedFile() {
         Path path1 = Paths.get("/test/file1.dat");
         Path path2 = Paths.get("/test/file2.dat");
@@ -270,7 +254,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests invalidate by path normalizes paths correctly.
      */
-    @Test
     public void testInvalidateByPathNormalizesPath() {
         Path normalizedPath = Paths.get("/test/file.dat").toAbsolutePath().normalize();
         Path pathWithDots = Paths.get("/test/./file.dat");
@@ -286,7 +269,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests clear removes all entries from cache.
      */
-    @Test
     public void testClearRemovesAllEntries() {
         BlockCacheKey key1 = new FileBlockCacheKey(Paths.get("/test/file1.dat"), 0L);
         BlockCacheKey key2 = new FileBlockCacheKey(Paths.get("/test/file2.dat"), 0L);
@@ -306,7 +288,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests prefetch loads value into cache.
      */
-    @Test
     public void testPrefetchLoadsValue() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("prefetched");
@@ -325,7 +306,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests prefetch does not throw exception on failure.
      */
-    @Test
     public void testPrefetchDoesNotThrowOnFailure() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
 
@@ -340,7 +320,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests loadBulk loads multiple blocks efficiently.
      */
-    @Test
     public void testLoadBulkLoadsMultipleBlocks() throws Exception {
         Path path = Paths.get("/test/file.dat");
         long startOffset = 0L;
@@ -362,7 +341,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests loadBulk caches loaded blocks.
      */
-    @Test
     public void testLoadBulkCachesLoadedBlocks() throws Exception {
         Path path = Paths.get("/test/file.dat");
         long startOffset = 0L;
@@ -384,7 +362,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests loadBulk does not replace already cached blocks.
      */
-    @Test
     public void testLoadBulkDoesNotReplaceExistingBlocks() throws Exception {
         Path path = Paths.get("/test/file.dat");
         BlockCacheKey key0 = new FileBlockCacheKey(path, 0L);
@@ -407,7 +384,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests loadBulk releases newly loaded segments that weren't cached.
      */
-    @Test
     public void testLoadBulkReleasesUnusedSegments() throws Exception {
         Path path = Paths.get("/test/file.dat");
         BlockCacheKey key0 = new FileBlockCacheKey(path, 0L);
@@ -430,7 +406,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests loadBulk throws IOException when loader fails.
      */
-    @Test
     public void testLoadBulkThrowsIOExceptionOnFailure() throws Exception {
         Path path = Paths.get("/test/file.dat");
 
@@ -442,7 +417,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests loadBulk handles PoolPressureException.
      */
-    @Test
     public void testLoadBulkHandlesPoolPressureException() throws Exception {
         Path path = Paths.get("/test/file.dat");
 
@@ -454,7 +428,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests cacheStats returns meaningful statistics.
      */
-    @Test
     public void testCacheStatsReturnsStatistics() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("data");
@@ -477,7 +450,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests getCache returns underlying Caffeine cache.
      */
-    @Test
     public void testGetCacheReturnsUnderlyingCache() {
         Cache<BlockCacheKey, BlockCacheValue<String>> underlying = blockCache.getCache();
 
@@ -488,7 +460,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests cache eviction occurs when capacity is exceeded.
      */
-    @Test
     public void testCacheEvictionOnCapacityExceeded() {
         // Create small cache
         Cache<BlockCacheKey, BlockCacheValue<String>> smallCache = Caffeine.newBuilder().maximumSize(2).build();
@@ -513,7 +484,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests concurrent access to cache.
      */
-    @Test
     public void testConcurrentAccess() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("data");
@@ -551,7 +521,6 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
      * Note: Caffeine's estimatedSize() may not immediately reflect 0 due to async cleanup,
      * so we verify the cache is actually empty via the underlying cache.
      */
-    @Test
     public void testEmptyCacheStats() {
         // Verify cache is actually empty
         assertEquals("Cache should be empty", 0L, caffeineCache.asMap().size());
