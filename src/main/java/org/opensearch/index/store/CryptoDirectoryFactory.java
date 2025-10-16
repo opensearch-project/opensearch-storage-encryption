@@ -46,8 +46,8 @@ import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.directio.CryptoDirectIODirectory;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
-import org.opensearch.index.store.iv.IndexKeyResolverRegistry;
-import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.key.IndexKeyResolverRegistry;
+import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 import org.opensearch.index.store.pool.MemorySegmentPool;
 import org.opensearch.index.store.pool.Pool;
@@ -99,7 +99,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     }, Property.NodeScope, Property.IndexScope);
 
     /**
-     * Specifies the node-level TTL for data keys in seconds. 
+     * Specifies the node-level TTL for data keys in seconds.
      * Default is 3600 seconds (1 hour).
      * Set to -1 to disable key refresh (keys are loaded once and cached forever).
      * This setting applies globally to all indices.
@@ -167,7 +167,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
 
         // Use shared resolver registry to prevent race conditions
         String indexUuid = indexSettings.getIndex().getUUID();
-        KeyIvResolver keyIvResolver = IndexKeyResolverRegistry.getOrCreateResolver(indexUuid, indexKeyDirectory, provider, keyProvider);
+        KeyResolver keyResolver = IndexKeyResolverRegistry.getOrCreateResolver(indexUuid, indexKeyDirectory, provider, keyProvider);
 
         IndexModule.Type type = IndexModule.defaultStoreType(IndexModule.NODE_STORE_ALLOW_MMAP.get(indexSettings.getNodeSettings()));
 
@@ -176,19 +176,19 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                 LOGGER.debug("Using HYBRIDFS directory");
 
                 CryptoDirectIODirectory cryptoDirectIODirectory = createCryptoDirectIODirectory(
-                    location,
-                    lockFactory,
-                    provider,
-                    keyIvResolver
+                        location,
+                        lockFactory,
+                        provider,
+                        keyResolver
                 );
-                return new HybridCryptoDirectory(lockFactory, cryptoDirectIODirectory, provider, keyIvResolver);
+                return new HybridCryptoDirectory(lockFactory, cryptoDirectIODirectory, provider, keyResolver);
             }
             case MMAPFS -> {
                 throw new AssertionError("MMAPFS not supported with index level encryption");
             }
             case SIMPLEFS, NIOFS -> {
                 LOGGER.debug("Using NIOFS directory");
-                return new CryptoNIOFSDirectory(lockFactory, location, provider, keyIvResolver);
+                return new CryptoNIOFSDirectory(lockFactory, location, provider, keyResolver);
             }
             default -> throw new AssertionError("unexpected built-in store type [" + type + "]");
         }
@@ -199,7 +199,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         Path location,
         LockFactory lockFactory,
         Provider provider,
-        KeyIvResolver keyIvResolver
+        KeyResolver keyResolver
     ) throws IOException {
         /*
         * ================================
@@ -240,7 +240,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         */
 
         // Create a per-directory loader that knows about this specific keyIvResolver
-        BlockLoader<MemorySegmentPool.SegmentHandle> loader = new CryptoDirectIOBlockLoader(sharedSegmentPool, keyIvResolver);
+        BlockLoader<MemorySegmentPool.SegmentHandle> loader = new CryptoDirectIOBlockLoader(sharedSegmentPool, keyResolver);
 
         // Create a directory-specific cache that wraps the shared cache with this directory's loader
         long maxBlocks = RESEVERED_POOL_SIZE_IN_BYTES / CACHE_BLOCK_SIZE;
@@ -258,7 +258,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             location,
             lockFactory,
             provider,
-            keyIvResolver,
+            keyResolver,
             sharedSegmentPool,
             directoryCache,
             loader,

@@ -10,7 +10,7 @@ import java.util.function.LongSupplier;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.key.KeyResolver;
 
 /**
  * A Translog implementation that provides AES-GCM encryption capabilities.
@@ -22,7 +22,7 @@ import org.opensearch.index.store.iv.KeyIvResolver;
  * Each chunk includes a 16-byte authentication tag for data integrity verification.
  * Checkpoint files (.ckp) remain unencrypted for performance and compatibility.
  *
- * Uses unified KeyIvResolver (same as index files) for consistent
+ * Uses unified KeyResolver (same as index files) for consistent
  * key management across all encrypted components.
  *
  * @opensearch.internal
@@ -31,7 +31,7 @@ public class CryptoTranslog extends LocalTranslog {
 
     private static final Logger logger = LogManager.getLogger(CryptoTranslog.class);
 
-    private final KeyIvResolver keyIvResolver;
+    private final KeyResolver keyResolver;
     private final String translogUUID;
 
     /**
@@ -43,7 +43,7 @@ public class CryptoTranslog extends LocalTranslog {
      * @param globalCheckpointSupplier the global checkpoint supplier
      * @param primaryTermSupplier the primary term supplier
      * @param persistedSequenceNumberConsumer the persisted sequence number consumer
-     * @param keyIvResolver the key and IV resolver for encryption (unified with index files)
+     * @param keyResolver the key resolver for encryption (unified with index files)
      * @throws IOException if translog creation fails
      */
     public CryptoTranslog(
@@ -53,7 +53,7 @@ public class CryptoTranslog extends LocalTranslog {
         LongSupplier globalCheckpointSupplier,
         LongSupplier primaryTermSupplier,
         LongConsumer persistedSequenceNumberConsumer,
-        KeyIvResolver keyIvResolver
+        KeyResolver keyResolver
     )
         throws IOException {
 
@@ -65,25 +65,23 @@ public class CryptoTranslog extends LocalTranslog {
             primaryTermSupplier,
             persistedSequenceNumberConsumer,
             TranslogOperationHelper.DEFAULT,
-            createCryptoChannelFactory(keyIvResolver, translogUUID)
+            createCryptoChannelFactory(keyResolver, translogUUID)
         );
 
         // Strict validation after super() - never allow null components
-        if (keyIvResolver == null || translogUUID == null) {
+        if (keyResolver == null || translogUUID == null) {
             throw new IllegalArgumentException(
-                "Cannot create CryptoTranslog without keyIvResolver and translogUUID. "
-                    + "Required for translog encryption. keyIvResolver="
-                    + keyIvResolver
+                "Cannot create CryptoTranslog without keyResolver and translogUUID. "
+                    + "Required for translog encryption. keyResolver="
+                    + keyResolver
                     + ", translogUUID="
                     + translogUUID
             );
         }
 
         // Initialize instance fields
-        this.keyIvResolver = keyIvResolver;
+        this.keyResolver = keyResolver;
         this.translogUUID = translogUUID;
-
-        logger.info("CryptoTranslog initialized for translog: {}", translogUUID);
     }
 
     /**
@@ -96,7 +94,7 @@ public class CryptoTranslog extends LocalTranslog {
      * @param primaryTermSupplier the primary term supplier
      * @param persistedSequenceNumberConsumer the persisted sequence number consumer
      * @param translogOperationHelper the translog operation helper
-     * @param keyIvResolver the key and IV resolver for encryption (unified with index files)
+     * @param keyResolver the key resolver for encryption (unified with index files)
      * @throws IOException if translog creation fails
      */
     public CryptoTranslog(
@@ -107,7 +105,7 @@ public class CryptoTranslog extends LocalTranslog {
         LongSupplier primaryTermSupplier,
         LongConsumer persistedSequenceNumberConsumer,
         TranslogOperationHelper translogOperationHelper,
-        KeyIvResolver keyIvResolver
+        KeyResolver keyResolver
     )
         throws IOException {
 
@@ -119,22 +117,22 @@ public class CryptoTranslog extends LocalTranslog {
             primaryTermSupplier,
             persistedSequenceNumberConsumer,
             translogOperationHelper,
-            createCryptoChannelFactory(keyIvResolver, translogUUID)
+            createCryptoChannelFactory(keyResolver, translogUUID)
         );
 
         // Strict validation after super() - never allow null components
-        if (keyIvResolver == null || translogUUID == null) {
+        if (keyResolver == null || translogUUID == null) {
             throw new IllegalArgumentException(
-                "Cannot create CryptoTranslog without keyIvResolver and translogUUID. "
-                    + "Required for translog encryption. keyIvResolver="
-                    + keyIvResolver
+                "Cannot create CryptoTranslog without keyResolver and translogUUID. "
+                    + "Required for translog encryption. keyResolver="
+                    + keyResolver
                     + ", translogUUID="
                     + translogUUID
             );
         }
 
         // Initialize instance fields
-        this.keyIvResolver = keyIvResolver;
+        this.keyResolver = keyResolver;
         this.translogUUID = translogUUID;
 
         logger.info("CryptoTranslog initialized for translog: {}", translogUUID);
@@ -145,10 +143,9 @@ public class CryptoTranslog extends LocalTranslog {
      * This is needed because Java requires super() to be the first statement.
      * Returns ChannelFactory interface type to match LocalTranslog constructor signature.
      */
-    private static ChannelFactory createCryptoChannelFactory(KeyIvResolver keyIvResolver, String translogUUID) throws IOException {
+    private static ChannelFactory createCryptoChannelFactory(KeyResolver keyResolver, String translogUUID) throws IOException {
         try {
-            CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyIvResolver, translogUUID);
-            logger.debug("CryptoChannelFactory initialized for translog: {}", translogUUID);
+            CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyResolver, translogUUID);
             return channelFactory;
         } catch (Exception e) {
             logger.error("Failed to initialize CryptoChannelFactory: {}", e.getMessage(), e);

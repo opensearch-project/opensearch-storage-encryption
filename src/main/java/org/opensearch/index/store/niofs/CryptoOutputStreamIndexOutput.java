@@ -8,13 +8,25 @@ import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.Path;
-import java.security.Key;
-
-import javax.crypto.Cipher;
 
 import org.apache.lucene.store.OutputStreamIndexOutput;
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.index.store.cipher.AesCipherFactory;
 import org.opensearch.index.store.cipher.AesGcmCipherFactory;
+import org.opensearch.index.store.cipher.EncryptionAlgorithm;
+import org.opensearch.index.store.cipher.EncryptionCache;
+import org.opensearch.index.store.cipher.OpenSslNativeCipher;
+import org.opensearch.index.store.footer.EncryptionFooter;
+import org.opensearch.index.store.footer.EncryptionMetadataTrailer;
+import org.opensearch.index.store.key.HkdfKeyDerivation;
+import org.opensearch.index.store.key.KeyResolver;
+
+import javax.crypto.Cipher;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.security.Key;
+import java.security.Provider;
+import java.util.Arrays;
 
 /**
  * An IndexOutput implementation that encrypts data before writing using native
@@ -29,39 +41,64 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
     private static final int BUFFER_SIZE = 65_536;
 
     /**
-     * Creates a new CryptoIndexOutput
+     * Creates a new CryptoIndexOutput with per-file key derivation
      *
-     * @param name The name of the output
-     * @param path The path to write to
-     * @param os The output stream
-     * @param key The AES key
-     * @param iv The initialization vector (must be 16 bytes)
-     * @param provider The JCE provider to use
-     * @throws IOException If there is an I/O error
-     * @throws IllegalArgumentException If key or iv lengths are invalid
+     * @param name        The name of the output
+     * @param path        The path to write to
+     * @param os          The output stream
+     * @param keyResolver The key resolver for directory keys
+     * @param provider    The JCE provider to use
      */
-    public CryptoOutputStreamIndexOutput(String name, Path path, OutputStream os, Key key, byte[] iv, java.security.Provider provider)
-        throws IOException {
-        super("FSIndexOutput(path=\"" + path + "\")", name, new EncryptedOutputStream(os, key, iv, provider), CHUNK_SIZE);
+    public CryptoOutputStreamIndexOutput(String name, Path path, OutputStream os, KeyResolver keyResolver, java.security.Provider provider, int algorithmId, Path filePath) {
+        super("FSIndexOutput(path=\"" + path + "\")", name, new EncryptedOutputStream(os, keyResolver, provider, algorithmId, filePath), CHUNK_SIZE);
     }
 
     private static class EncryptedOutputStream extends FilterOutputStream {
 
-        private final Key key;
-        private final byte[] iv;
+        private final Key fileKey;
+        private final byte[] directoryKey;
         private final byte[] buffer;
-        private final Cipher cipher;
+        private final EncryptionFooter footer;
+        private final Provider provider;
+        private final long frameSizeMask;
+        private final int frameSizePower;
+        private final EncryptionAlgorithm algorithm;
+
+        // Frame tracking
+        private MemorySegment currentCipher;
+        // Java Cipher fallback
+        // private Cipher currentCipher;
+        private int currentFrameNumber = 0;
+        private long currentFrameOffset = 0;
         private int bufferPosition = 0;
         private long streamOffset = 0;
+        private int totalFrames = 0;
         private boolean isClosed = false;
 
-        EncryptedOutputStream(OutputStream os, Key key, byte[] iv, java.security.Provider provider) {
+        private final Path filePath;
+        private final String filePathString;
+
+        EncryptedOutputStream(OutputStream os, KeyResolver keyResolver, java.security.Provider provider, int algorithmId, Path filePath) {
             super(os);
-            this.key = key;
-            this.iv = iv;
+
+            this.frameSizePower = EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE_POWER;
+            this.frameSizeMask = (1L << frameSizePower) - 1;
+
+            // Generate MessageId and derive file-specific key
+            this.footer = EncryptionFooter.generateNew(1L << frameSizePower, (short) algorithmId);
+            this.directoryKey = keyResolver.getDataKey().getEncoded();
+            byte[] derivedKey = HkdfKeyDerivation.deriveFileKey(directoryKey, footer.getMessageId());
+            this.fileKey = new javax.crypto.spec.SecretKeySpec(derivedKey, "AES");
+
+            this.provider = provider;
+            this.algorithm = EncryptionAlgorithm.fromId((short) algorithmId);
             this.buffer = new byte[BUFFER_SIZE];
-            this.cipher = AesGcmCipherFactory.getCipher(provider);
-            AesGcmCipherFactory.initCipher(this.cipher, key, iv, Cipher.ENCRYPT_MODE, streamOffset);
+
+            this.filePath = filePath;
+            this.filePathString = filePath.toAbsolutePath().toString();
+
+            // Initialize first frame cipher
+            initializeFrameCipher(0, 0);
         }
 
         @Override
@@ -106,13 +143,35 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
         }
 
         private void processAndWrite(byte[] data, int offset, int length) throws IOException {
-            try {
-                byte[] encrypted = org.opensearch.index.store.cipher.AesGcmCipherFactory
-                    .encryptWithoutTag(streamOffset, cipher, slice(data, offset, length), length);
-                out.write(encrypted);
-                streamOffset += length;
-            } catch (Throwable t) {
-                throw new IOException("Encryption failed at offset " + streamOffset, t);
+            int remaining = length;
+            int dataOffset = offset;
+
+            while (remaining > 0) {
+                // Check if we need to start a new frame (using bit operations)
+                int frameNumber = (int) (streamOffset >>> frameSizePower);
+                if (frameNumber != currentFrameNumber) {
+                    finalizeCurrentFrame();
+                    totalFrames = Math.max(totalFrames, frameNumber + 1);
+                    initializeFrameCipher(frameNumber, streamOffset & frameSizeMask);
+                }
+
+                // Calculate how much we can write in current frame
+                int chunkSize = (int) Math.min(remaining, (frameSizeMask + 1) - (streamOffset & frameSizeMask));
+
+                try {
+                    byte[] encrypted = OpenSslNativeCipher.encryptUpdate(currentCipher, slice(data, dataOffset, chunkSize));
+                    // Java Cipher fallback
+                    // byte[] encrypted = AesGcmCipherFactory.encryptWithoutTag(currentFrameOffset, currentCipher,
+                    //  slice(data, dataOffset, chunkSize), chunkSize);
+                    out.write(encrypted);
+
+                    streamOffset += chunkSize;
+                    currentFrameOffset += chunkSize;
+                    remaining -= chunkSize;
+                    dataOffset += chunkSize;
+                } catch (Throwable t) {
+                    throw new IOException("Encryption failed at offset " + streamOffset, t);
+                }
             }
         }
 
@@ -134,14 +193,22 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
                 flushBuffer();
                 // Lucene writes footer here.
                 // this will also flush the buffer.
-                // Finalize GCM and handle any remaining encrypted bytes
-                byte[] finalData = org.opensearch.index.store.cipher.AesGcmCipherFactory.finalizeAndGetTag(cipher);
-                // finalData contains [remaining_encrypted_bytes][16_byte_tag]
-                // Write any remaining encrypted bytes (excluding the tag)
-                if (finalData.length > AesGcmCipherFactory.GCM_TAG_LENGTH) {
-                    out.write(finalData, 0, finalData.length - AesGcmCipherFactory.GCM_TAG_LENGTH);
-                }
+                // Finalize current frame
+                finalizeCurrentFrame();
+
+                // Set final frame count in footer
+                footer.setFrameCount(totalFrames);
+
+                // Write footer with directory key for authentication
+                out.write(footer.serialize(this.filePath, this.directoryKey));
+
                 super.close();
+
+                if (filePath != null) {
+                    EncryptionCache encryptionCache = EncryptionCache.getInstance();
+                    encryptionCache.putFooter(filePath.toAbsolutePath().toString(), footer);
+                }
+
             } catch (IOException e) {
                 exception = e;
             } finally {
@@ -154,8 +221,52 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
 
         private void checkClosed() throws IOException {
             if (isClosed) {
-                throw new IOException("Outout stream is already closed, this is unusual");
+                throw new IOException("Output stream is already closed, this is unusual");
             }
+        }
+
+        /**
+         * Initialize cipher for a new frame
+         */
+        private void initializeFrameCipher(int frameNumber, long offsetWithinFrame) {
+            this.currentFrameNumber = frameNumber;
+            this.currentFrameOffset = offsetWithinFrame;
+
+            byte[] frameIV = AesCipherFactory.computeFrameIV(
+                    directoryKey, footer.getMessageId(), frameNumber, offsetWithinFrame, filePathString
+            );
+
+            try {
+                this.currentCipher = OpenSslNativeCipher.initGCMCipher(
+                        fileKey.getEncoded(), frameIV, offsetWithinFrame
+                );
+            } catch (Throwable t) {
+                throw new RuntimeException("Failed to initialize OpenSSL GCM cipher", t);
+            }
+
+            // Java Cipher fallback
+            // this.currentCipher = AesGcmCipherFactory.initializeFrameCipher(
+            //     algorithm, provider, fileKey, directoryKey, footer.getMessageId(),
+            //     frameNumber, offsetWithinFrame, filePathString
+            // );
+        }
+
+        /**
+         * Finalize current frame and collect GCM tag
+         */
+        private void finalizeCurrentFrame() {
+            if (currentCipher == null) return;
+
+            try {
+                byte[] tag = OpenSslNativeCipher.finalizeAndGetTag(currentCipher);
+                footer.addGcmTag(tag);
+                currentCipher = null;
+            } catch (Throwable t) {
+                throw new RuntimeException("Failed to finalize frame " + currentFrameNumber, t);
+            }
+
+            // Java Cipher fallback
+            // AesGcmCipherFactory.finalizeFrameAndWriteTag(currentCipher, footer, out, currentFrameNumber);
         }
     }
 }

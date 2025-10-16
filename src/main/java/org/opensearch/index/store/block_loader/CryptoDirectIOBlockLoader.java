@@ -9,8 +9,10 @@ import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MA
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
 
+import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
@@ -21,7 +23,9 @@ import java.util.concurrent.TimeUnit;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.index.store.cipher.MemorySegmentDecryptor;
-import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.footer.EncryptionFooter;
+import org.opensearch.index.store.footer.EncryptionMetadataTrailer;
+import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.pool.MemorySegmentPool;
 import org.opensearch.index.store.pool.Pool;
 
@@ -30,11 +34,11 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<MemorySegmentPool.
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOBlockLoader.class);
 
     private final Pool<MemorySegmentPool.SegmentHandle> segmentPool;
-    private final KeyIvResolver keyIvResolver;
+    private final KeyResolver keyResolver;
 
-    public CryptoDirectIOBlockLoader(Pool<MemorySegmentPool.SegmentHandle> segmentPool, KeyIvResolver keyIvResolver) {
+    public CryptoDirectIOBlockLoader(Pool<MemorySegmentPool.SegmentHandle> segmentPool, KeyResolver keyResolver) {
         this.segmentPool = segmentPool;
-        this.keyIvResolver = keyIvResolver;
+        this.keyResolver = keyResolver;
     }
 
     @Override
@@ -61,16 +65,23 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<MemorySegmentPool.
             MemorySegment readBytes = directIOReadAligned(channel, startOffset, readLength, arena);
             long bytesRead = readBytes.byteSize();
 
-            // decrypt the block to cache.
-            MemorySegmentDecryptor
-                .decryptInPlace(
-                    arena,
+
+            byte[] messageId = readMessageIdFromFooter(filePath);
+            byte[] directoryKey = keyResolver.getDataKey().getEncoded();
+            byte[] fileKey = org.opensearch.index.store.key.HkdfKeyDerivation.deriveAesKey(
+                    directoryKey, messageId, "file-encryption");
+
+            // Use frame-based decryption with derived file key
+            MemorySegmentDecryptor.decryptInPlaceFrameBased(
                     readBytes.address(),
                     readBytes.byteSize(),
-                    keyIvResolver.getDataKey().getEncoded(),
-                    keyIvResolver.getIvBytes(),
-                    startOffset
-                );
+                    fileKey,                                    // Derived file key (matches write path)
+                    directoryKey,                               // Directory key for IV computation
+                    messageId,                                  // Message ID from footer
+                    org.opensearch.index.store.footer.EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE, // Frame size
+                    startOffset,                                 // File offset
+                    filePath
+            );
 
             if (bytesRead == 0) {
                 throw new RuntimeException("EOF or empty read at offset " + startOffset);
@@ -120,5 +131,48 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<MemorySegmentPool.
                 handles[i].release();  // Release back to correct tier
             }
         }
+    }
+
+    private byte[] readMessageIdFromFooter(Path filePath) throws IOException {
+        // Use separate random access FileChannel to avoid position conflicts
+        try (FileChannel channel = FileChannel.open(filePath, StandardOpenOption.READ)) {
+            long fileSize = channel.size();
+            if (fileSize < EncryptionMetadataTrailer.MIN_FOOTER_SIZE) {
+                throw new IOException("File too small to contain footer: " + filePath);
+            }
+
+            // Read minimum footer to check OSEF magic bytes
+            ByteBuffer minBuffer = ByteBuffer.allocate(EncryptionMetadataTrailer.MIN_FOOTER_SIZE);
+            channel.read(minBuffer, fileSize - EncryptionMetadataTrailer.MIN_FOOTER_SIZE);
+            byte[] minFooterBytes = minBuffer.array();
+
+            // Check if this is an OSEF file
+            if (!isValidOSEFFile(minFooterBytes)) {
+                // Not an OSEF file - fall back to legacy decryption
+                throw new IOException("Not an OSEF file, using legacy IV");
+            }
+
+            int footerLength = EncryptionFooter.calculateFooterLength(minFooterBytes);
+
+            // Read complete footer
+            ByteBuffer footerBuffer = ByteBuffer.allocate(footerLength);
+            channel.read(footerBuffer, fileSize - footerLength);
+
+            EncryptionFooter footer = EncryptionFooter.readFromChannel(filePath, channel, keyResolver.getDataKey().getEncoded());
+            return footer.getMessageId();
+        }
+    }
+
+    /**
+     * Check if file has valid OSEF magic bytes
+     */
+    private boolean isValidOSEFFile(byte[] minFooterBytes) {
+        int magicOffset = minFooterBytes.length - EncryptionMetadataTrailer.MAGIC.length;
+        for (int i = 0; i < EncryptionMetadataTrailer.MAGIC.length; i++) {
+            if (minFooterBytes[magicOffset + i] != EncryptionMetadataTrailer.MAGIC[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 }

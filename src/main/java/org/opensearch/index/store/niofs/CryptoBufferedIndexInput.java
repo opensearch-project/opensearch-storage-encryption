@@ -10,6 +10,7 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.Path;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
 
@@ -25,7 +26,10 @@ import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.cipher.AesCipherFactory;
-import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.cipher.EncryptionAlgorithm;
+import org.opensearch.index.store.footer.EncryptionFooter;
+import org.opensearch.index.store.key.HkdfKeyDerivation;
+import org.opensearch.index.store.key.KeyResolver;
 
 /**
  * An IndexInput implementation that decrypts data for reading
@@ -41,22 +45,50 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
     private final boolean isClone;
     private final long off;
     private final long end;
-    private final KeyIvResolver keyResolver;
+    private final KeyResolver keyResolver;
     private final SecretKeySpec keySpec;
+    private final byte[] directoryKey;
+    private final byte[] messageId;
+    private final int footerLength;
+    private final long frameSize;
+    private final int frameSizePower;
+    private final EncryptionAlgorithm algorithm;
 
     private ByteBuffer tmpBuffer = EMPTY_BYTEBUFFER;
 
-    public CryptoBufferedIndexInput(String resourceDesc, FileChannel fc, IOContext context, KeyIvResolver keyResolver) throws IOException {
+    private final Path filePath;
+
+
+    public CryptoBufferedIndexInput(String resourceDesc, FileChannel fc, IOContext context, KeyResolver keyResolver, Path filePath) throws IOException {
         super(resourceDesc, context);
         this.channel = fc;
         this.off = 0L;
         this.end = fc.size();
         this.keyResolver = keyResolver;
-        this.keySpec = new SecretKeySpec(keyResolver.getDataKey().getEncoded(), ALGORITHM);
         this.isClone = false;
+        this.filePath = filePath;
+        
+        // Get directory key first
+        this.directoryKey = keyResolver.getDataKey().getEncoded();
+        
+        // Read footer with temporary key for authentication
+        EncryptionFooter footer = EncryptionFooter.readFromChannel(filePath, channel,directoryKey);
+        this.messageId = footer.getMessageId();
+        this.frameSize = footer.getFrameSize();
+        this.frameSizePower = footer.getFrameSizePower();
+        this.algorithm = EncryptionAlgorithm.fromId(footer.getAlgorithmId());
+        
+        // Derive file-specific key using messageId from footer
+        byte[] derivedKey = HkdfKeyDerivation.deriveAesKey(directoryKey, messageId, "file-encryption");
+        this.keySpec = new SecretKeySpec(derivedKey, ALGORITHM);
+        
+        // Calculate footer length
+        this.footerLength = footer.getFooterLength();
     }
 
-    public CryptoBufferedIndexInput(String resourceDesc, FileChannel fc, long off, long length, int bufferSize, KeyIvResolver keyResolver)
+    public CryptoBufferedIndexInput(String resourceDesc, FileChannel fc, long off, long length, int bufferSize,
+                                    KeyResolver keyResolver, SecretKeySpec keySpec, int footerLength, long frameSize,
+                                    int frameSizePower, short algorithmId, byte[] directoryKey, byte[] messageId, Path filePath)
         throws IOException {
         super(resourceDesc, bufferSize);
         this.channel = fc;
@@ -64,7 +96,14 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         this.end = off + length;
         this.isClone = true;
         this.keyResolver = keyResolver;
-        this.keySpec = new SecretKeySpec(keyResolver.getDataKey().getEncoded(), ALGORITHM);
+        this.keySpec = keySpec;  // Reuse keySpec from main file
+        this.footerLength = footerLength;
+        this.frameSize = frameSize;
+        this.frameSizePower = frameSizePower;
+        this.algorithm = EncryptionAlgorithm.fromId(algorithmId);
+        this.directoryKey = directoryKey;  // Passed from parent
+        this.messageId = messageId;  // Passed from parent
+        this.filePath = filePath;
     }
 
     @Override
@@ -89,18 +128,31 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
             );
         }
         return new CryptoBufferedIndexInput(
-            getFullSliceDescription(sliceDescription),
-            channel,
-            off + offset,
-            length,
-            getBufferSize(),
-            keyResolver
+                getFullSliceDescription(sliceDescription),
+                channel,
+                off + offset,
+                length,
+                getBufferSize(),
+                keyResolver,
+                keySpec,  // Pass the already-derived keySpec
+                footerLength,
+                frameSize,
+                frameSizePower,
+                algorithm.getAlgorithmId(),
+                directoryKey,  // Pass directory key
+                messageId,      // Pass message ID
+                filePath
         );
     }
 
     @Override
     public long length() {
-        return end - off;
+        // Exclude footer from logical file length (only for main file, not slices)
+        if (isClone) {
+            return end - off;  // Slices use exact length passed in
+        } else {
+            return end - off - footerLength;  // Main file excludes variable footer
+        }
     }
 
     @SuppressForbidden(reason = "FileChannel#read is efficient and used intentionally")
@@ -112,7 +164,15 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
             tmpBuffer = ByteBuffer.allocate(CHUNK_SIZE);
         }
 
-        tmpBuffer.clear().limit(dst.remaining());
+        // Calculate frame boundaries using bit operations (frameSize is power of 2)
+        int frameNumber = (int)(position >>> frameSizePower);
+        long offsetWithinFrame = position & ((1L << frameSizePower) - 1);
+        long frameEnd = offsetWithinFrame + (1L << frameSizePower);
+        
+        // Limit read to not cross frame boundary
+        int maxReadInFrame = (int) Math.min(dst.remaining(), frameEnd - position);
+
+        tmpBuffer.clear().limit(maxReadInFrame);
         int bytesRead = channel.read(tmpBuffer, position);
         if (bytesRead == -1) {
             return -1;
@@ -121,14 +181,17 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         tmpBuffer.flip();
 
         try {
-            Cipher cipher = AesCipherFactory.CIPHER_POOL.get();
-
-            byte[] ivCopy = AesCipherFactory.computeOffsetIVForAesGcmEncrypted(keyResolver.getIvBytes(), position);
-
-            cipher.init(Cipher.DECRYPT_MODE, this.keySpec, new IvParameterSpec(ivCopy));
-
-            if (position % AesCipherFactory.AES_BLOCK_SIZE_BYTES > 0) {
-                cipher.update(ZERO_SKIP, 0, (int) (position % AesCipherFactory.AES_BLOCK_SIZE_BYTES));
+            // Use frame-based decryption with algorithm-based cipher
+            Cipher cipher = algorithm.getDecryptionCipher();
+            
+            // Derive frame-specific IV
+            byte[] frameIV = AesCipherFactory.computeFrameIV(directoryKey, messageId, frameNumber, offsetWithinFrame,
+                    this.filePath.toAbsolutePath().toString());
+            
+            cipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(frameIV));
+            
+            if (offsetWithinFrame % AesCipherFactory.AES_BLOCK_SIZE_BYTES > 0) {
+                cipher.update(ZERO_SKIP, 0, (int) (offsetWithinFrame % AesCipherFactory.AES_BLOCK_SIZE_BYTES));
             }
 
             return (end - position > bytesRead) ? cipher.update(tmpBuffer, dst) : cipher.doFinal(tmpBuffer, dst);

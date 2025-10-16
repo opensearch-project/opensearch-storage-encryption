@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import org.opensearch.common.SuppressForbidden;
-import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.key.KeyResolver;
 
 /**
  * A FileChannel wrapper that provides transparent AES-GCM encryption/decryption
@@ -50,7 +50,7 @@ public class CryptoFileChannelWrapper extends FileChannel {
      * Creates a new CryptoFileChannelWrapper that wraps the provided FileChannel.
      *
      * @param delegate the underlying FileChannel to wrap
-     * @param keyIvResolver the key and IV resolver for encryption (unified with index files)
+     * @param keyResolver the key and IV resolver for encryption (unified with index files)
      * @param path the file path (used for logging and debugging)
      * @param options the file open options (used for logging and debugging)
      * @param translogUUID the translog UUID for exact header size calculation
@@ -58,14 +58,14 @@ public class CryptoFileChannelWrapper extends FileChannel {
      */
     public CryptoFileChannelWrapper(
         FileChannel delegate,
-        KeyIvResolver keyIvResolver,
+        KeyResolver keyResolver,
         Path path,
         Set<OpenOption> options,
         String translogUUID
     )
         throws IOException {
         this.delegate = delegate;
-        this.chunkManager = new TranslogChunkManager(delegate, keyIvResolver, path, translogUUID);
+        this.chunkManager = new TranslogChunkManager(delegate, keyResolver, path, translogUUID);
         this.position = new AtomicLong(delegate.position());
         this.positionLock = new ReentrantReadWriteLock();
     }
@@ -271,6 +271,7 @@ public class CryptoFileChannelWrapper extends FileChannel {
     protected void implCloseChannel() throws IOException {
         if (!closed) {
             closed = true;
+            chunkManager.close(); // Finalize last block
             delegate.close();
         }
     }
