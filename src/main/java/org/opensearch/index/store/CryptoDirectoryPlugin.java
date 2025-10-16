@@ -127,6 +127,10 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         String storeType = indexSettings.get(IndexModule.INDEX_STORE_TYPE_SETTING.getKey());
         if ("cryptofs".equals(storeType)) {
             indexModule.addIndexEventListener(new IndexEventListener() {
+                /*
+                 * The resolvers should be removed only AFTER the index is removed since some ongoing 
+                 * operations call to get resolver but fail in case we remove the resolver before index is removed.
+                 */
                 @Override
                 public void afterIndexRemoved(Index index, IndexSettings indexSettings, IndexRemovalReason reason) {
                     String indexUuid = index.getUUID();
