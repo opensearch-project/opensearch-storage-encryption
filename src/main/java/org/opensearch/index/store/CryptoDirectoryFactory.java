@@ -11,8 +11,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Provider;
 import java.security.Security;
-import java.util.Collections;
-import java.util.Map;
 import java.util.function.Function;
 
 import org.apache.logging.log4j.LogManager;
@@ -21,9 +19,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.cluster.metadata.CryptoMetadata;
-import org.opensearch.common.Randomness;
 import org.opensearch.common.SuppressForbidden;
-import org.opensearch.common.crypto.DataKeyPair;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Setting.Property;
@@ -137,55 +133,13 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             Property.NodeScope
         );
 
-    /**
-     * Creates a dummy key provider for testing purposes.
-     * This provider generates random keys.
-     * Used by yamlRestTests and integration tests.
-     *
-     * @return a mock MasterKeyProvider for testing
-     */
-    private static MasterKeyProvider createDummyKeyProvider() {
-        return new MasterKeyProvider() {
-            @Override
-            public DataKeyPair generateDataPair() {
-                byte[] rawKey = new byte[32];
-                byte[] encryptedKey = new byte[32];
-                java.util.Random rnd = Randomness.get();
-                rnd.nextBytes(rawKey);
-                rnd.nextBytes(encryptedKey);
-                return new DataKeyPair(rawKey, encryptedKey);
-            }
-
-            @Override
-            public byte[] decryptKey(byte[] encryptedKey) {
-                // For mock/testing purposes, just return the input as-is
-                return encryptedKey;
-            }
-
-            @Override
-            public String getKeyId() {
-                return "builtin-mock-key-id";
-            }
-
-            @Override
-            public Map<String, String> getEncryptionContext() {
-                return Collections.emptyMap();
-            }
-
-            @Override
-            public void close() {
-                // Nothing to close for mock implementation
-            }
-        };
-    }
-
     MasterKeyProvider getKeyProvider(IndexSettings indexSettings) {
         final String KEY_PROVIDER_TYPE = indexSettings.getValue(INDEX_KMS_TYPE_SETTING);
 
-        // Handle "dummy" type locally for testing (yamlRestTests, integration tests)
-        if ("dummy".equals(KEY_PROVIDER_TYPE)) {
+        // Handle dummy type for testing
+        if (KeyProviderType.DUMMY.getValue().equals(KEY_PROVIDER_TYPE)) {
             LOGGER.debug("Using dummy key provider for testing");
-            return createDummyKeyProvider();
+            return DummyKeyProvider.create();
         }
 
         // Normal path for production key providers
