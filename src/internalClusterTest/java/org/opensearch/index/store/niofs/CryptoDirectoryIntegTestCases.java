@@ -136,4 +136,9 @@ public class CryptoDirectoryIntegTestCases extends OpenSearchIntegTestCase {
     ReindexRequestBuilder reindex() {
         return new ReindexRequestBuilder(client(), ReindexAction.INSTANCE);
     }
+
+    @Override
+    protected boolean addMockInternalEngine() {
+        return false;
+    }
 }

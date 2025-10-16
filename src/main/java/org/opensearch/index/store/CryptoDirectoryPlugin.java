@@ -84,10 +84,6 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
     public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {
         // Only provide our custom engine factory for cryptofs indices
         if ("cryptofs".equals(indexSettings.getValue(IndexModule.INDEX_STORE_TYPE_SETTING))) {
-            String kmsType = indexSettings.getValue(CryptoDirectoryFactory.INDEX_KMS_TYPE_SETTING);
-            if ("dummy".equals(kmsType)) {
-                return Optional.empty();  // Avoid any conflict with internalClusterTest Mock Engine Implementation
-            }
             return Optional.of(new CryptoEngineFactory());
         }
         return Optional.empty();
