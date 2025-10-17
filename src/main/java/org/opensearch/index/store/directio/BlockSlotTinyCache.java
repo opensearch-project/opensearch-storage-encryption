@@ -37,7 +37,7 @@ import org.opensearch.index.store.block_cache.FileBlockCacheKey;
  * 4. Reader requests File A → L1 checks: cached gen(5) ≠ current gen(6) → reload
  *
  */
-public final class BlockSlotTinyCache {
+public class BlockSlotTinyCache {
 
     private static final int SLOT_COUNT = 32;
     private static final int SLOT_MASK = SLOT_COUNT - 1;

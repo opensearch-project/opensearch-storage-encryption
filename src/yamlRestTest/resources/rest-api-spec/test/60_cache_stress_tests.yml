@@ -1,0 +1,448 @@
+---
+"Test large single document spanning multiple cache blocks":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-large-doc
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  # Index a very large document (150KB) spanning ~19 cache blocks (8KB each)
+  - do:
+      index:
+        index: test-crypto-large-doc
+        id: "large-1"
+        body:
+          title: "Large Document Test"
+          data: "This is a test string that will be repeated many times to create a large document. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum. PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE_PADDING_TEXT_REPEATED_FOR_SIZE"
+          metadata:
+            size_category: "very_large"
+            block_estimate: 19
+        refresh: true
+
+  # Retrieve and verify large document integrity
+  - do:
+      get:
+        index: test-crypto-large-doc
+        id: "large-1"
+
+  - match: { _source.title: "Large Document Test" }
+  - match: { _source.metadata.size_category: "very_large" }
+
+  # Search for the large document
+  - do:
+      search:
+        index: test-crypto-large-doc
+        body:
+          query:
+            match:
+              title: "Large"
+
+  - match: { hits.total.value: 1 }
+  - match: { hits.hits.0._id: "large-1" }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-large-doc
+
+---
+"Test multiple large documents to trigger cache eviction":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-cache-fill
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  # Index multiple 25KB documents to fill cache and trigger eviction
+  # Each document spans 3-4 cache blocks (8KB each)
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index: { _index: test-crypto-cache-fill, _id: "doc-1" }
+          - { "title": "Document 1", "data": "LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE", "size": 25000, "doc_id": 1 }
+          - index: { _index: test-crypto-cache-fill, _id: "doc-2" }
+          - { "title": "Document 2", "data": "LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE", "size": 25000, "doc_id": 2 }
+          - index: { _index: test-crypto-cache-fill, _id: "doc-3" }
+          - { "title": "Document 3", "data": "LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE", "size": 25000, "doc_id": 3 }
+          - index: { _index: test-crypto-cache-fill, _id: "doc-4" }
+          - { "title": "Document 4", "data": "LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE", "size": 25000, "doc_id": 4 }
+          - index: { _index: test-crypto-cache-fill, _id: "doc-5" }
+          - { "title": "Document 5", "data": "LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE_LARGE_DATA_CONTENT_REPEATED_TO_REACH_25KB_SIZE", "size": 25000, "doc_id": 5 }
+
+  - match: { errors: false }
+
+  # Verify all documents are retrievable (tests cache eviction and reloading)
+  - do:
+      get:
+        index: test-crypto-cache-fill
+        id: "doc-1"
+  - match: { _source.doc_id: 1 }
+
+  - do:
+      get:
+        index: test-crypto-cache-fill
+        id: "doc-3"
+  - match: { _source.doc_id: 3 }
+
+  - do:
+      get:
+        index: test-crypto-cache-fill
+        id: "doc-5"
+  - match: { _source.doc_id: 5 }
+
+  # Search to verify all documents
+  - do:
+      search:
+        index: test-crypto-cache-fill
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 5 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-cache-fill
+
+---
+"Test sequential bulk operations with medium-sized documents":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-sequential
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  # Bulk index 10 medium documents (10KB each)
+  # Tests sequential access and read-ahead behavior
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index: { _index: test-crypto-sequential, _id: "seq-1" }
+          - { "seq": 1, "content": "MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB" }
+          - index: { _index: test-crypto-sequential, _id: "seq-2" }
+          - { "seq": 2, "content": "MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB" }
+          - index: { _index: test-crypto-sequential, _id: "seq-3" }
+          - { "seq": 3, "content": "MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB" }
+          - index: { _index: test-crypto-sequential, _id: "seq-4" }
+          - { "seq": 4, "content": "MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB" }
+          - index: { _index: test-crypto-sequential, _id: "seq-5" }
+          - { "seq": 5, "content": "MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB" }
+          - index: { _index: test-crypto-sequential, _id: "seq-6" }
+          - { "seq": 6, "content": "MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB" }
+          - index: { _index: test-crypto-sequential, _id: "seq-7" }
+          - { "seq": 7, "content": "MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB" }
+          - index: { _index: test-crypto-sequential, _id: "seq-8" }
+          - { "seq": 8, "content": "MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB" }
+          - index: { _index: test-crypto-sequential, _id: "seq-9" }
+          - { "seq": 9, "content": "MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB" }
+          - index: { _index: test-crypto-sequential, _id: "seq-10" }
+          - { "seq": 10, "content": "MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB_MEDIUM_CONTENT_10KB" }
+
+  - match: { errors: false }
+
+  # Sequential retrieval (benefits from read-ahead)
+  - do:
+      get:
+        index: test-crypto-sequential
+        id: "seq-1"
+  - match: { _source.seq: 1 }
+
+  - do:
+      get:
+        index: test-crypto-sequential
+        id: "seq-2"
+  - match: { _source.seq: 2 }
+
+  - do:
+      get:
+        index: test-crypto-sequential
+        id: "seq-3"
+  - match: { _source.seq: 3 }
+
+  # Verify total count
+  - do:
+      search:
+        index: test-crypto-sequential
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 10 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-sequential
+
+---
+"Test random access pattern with varying document sizes":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-random-access
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  # Index documents with varying sizes
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index: { _index: test-crypto-random-access, _id: "small-1" }
+          - { "type": "small", "size_kb": 3, "data": "SMALL_DATA_3KB_SMALL_DATA_3KB_SMALL_DATA_3KB" }
+          - index: { _index: test-crypto-random-access, _id: "medium-1" }
+          - { "type": "medium", "size_kb": 15, "data": "MEDIUM_DATA_15KB_MEDIUM_DATA_15KB_MEDIUM_DATA_15KB_MEDIUM_DATA_15KB_MEDIUM_DATA_15KB" }
+          - index: { _index: test-crypto-random-access, _id: "large-1" }
+          - { "type": "large", "size_kb": 40, "data": "LARGE_DATA_40KB_LARGE_DATA_40KB_LARGE_DATA_40KB_LARGE_DATA_40KB_LARGE_DATA_40KB_LARGE_DATA_40KB_LARGE_DATA_40KB_LARGE_DATA_40KB" }
+          - index: { _index: test-crypto-random-access, _id: "small-2" }
+          - { "type": "small", "size_kb": 4, "data": "SMALL_DATA_4KB_SMALL_DATA_4KB_SMALL_DATA_4KB_SMALL_DATA_4KB" }
+          - index: { _index: test-crypto-random-access, _id: "medium-2" }
+          - { "type": "medium", "size_kb": 20, "data": "MEDIUM_DATA_20KB_MEDIUM_DATA_20KB_MEDIUM_DATA_20KB_MEDIUM_DATA_20KB_MEDIUM_DATA_20KB_MEDIUM_DATA_20KB" }
+          - index: { _index: test-crypto-random-access, _id: "large-2" }
+          - { "type": "large", "size_kb": 50, "data": "LARGE_DATA_50KB_LARGE_DATA_50KB_LARGE_DATA_50KB_LARGE_DATA_50KB_LARGE_DATA_50KB_LARGE_DATA_50KB_LARGE_DATA_50KB_LARGE_DATA_50KB_LARGE_DATA_50KB" }
+
+  - match: { errors: false }
+
+  # Random access pattern (tests cache hit/miss behavior)
+  - do:
+      get:
+        index: test-crypto-random-access
+        id: "large-1"
+  - match: { _source.type: "large" }
+
+  - do:
+      get:
+        index: test-crypto-random-access
+        id: "small-2"
+  - match: { _source.type: "small" }
+
+  - do:
+      get:
+        index: test-crypto-random-access
+        id: "medium-1"
+  - match: { _source.type: "medium" }
+
+  - do:
+      get:
+        index: test-crypto-random-access
+        id: "large-2"
+  - match: { _source.type: "large" }
+
+  - do:
+      get:
+        index: test-crypto-random-access
+        id: "small-1"
+  - match: { _source.type: "small" }
+
+  # Verify all documents
+  - do:
+      search:
+        index: test-crypto-random-access
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 6 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-random-access
+
+---
+"Test large document search and aggregations":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-query-large
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  # Index large documents with varied content
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index: { _index: test-crypto-query-large, _id: "q1" }
+          - { "category": "product", "score": 85, "description": "LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION" }
+          - index: { _index: test-crypto-query-large, _id: "q2" }
+          - { "category": "product", "score": 92, "description": "LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION" }
+          - index: { _index: test-crypto-query-large, _id: "q3" }
+          - { "category": "service", "score": 78, "description": "LARGE SERVICE DESCRIPTION LARGE SERVICE DESCRIPTION LARGE SERVICE DESCRIPTION LARGE SERVICE DESCRIPTION LARGE SERVICE DESCRIPTION LARGE SERVICE DESCRIPTION LARGE SERVICE DESCRIPTION LARGE SERVICE DESCRIPTION" }
+          - index: { _index: test-crypto-query-large, _id: "q4" }
+          - { "category": "product", "score": 88, "description": "LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION LARGE PRODUCT DESCRIPTION" }
+
+  # Full-text search
+  - do:
+      search:
+        index: test-crypto-query-large
+        body:
+          query:
+            match:
+              description: "PRODUCT"
+
+  - gte: { hits.total.value: 3 }
+
+  # Aggregation on numeric field
+  - do:
+      search:
+        index: test-crypto-query-large
+        body:
+          size: 0
+          aggs:
+            avg_score:
+              avg:
+                field: "score"
+            max_score:
+              max:
+                field: "score"
+
+  - gte: { aggregations.avg_score.value: 80.0 }
+  - match: { aggregations.max_score.value: 92.0 }
+
+  # Term aggregation
+  - do:
+      search:
+        index: test-crypto-query-large
+        body:
+          size: 0
+          aggs:
+            by_category:
+              terms:
+                field: "category.keyword"
+
+  - match: { aggregations.by_category.buckets.0.doc_count: 3 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-query-large
+
+---
+"Test update operations on large documents":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-update-large
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  # Index a large document
+  - do:
+      index:
+        index: test-crypto-update-large
+        id: "update-1"
+        body:
+          title: "Original Large Document"
+          data: "ORIGINAL LARGE DATA ORIGINAL LARGE DATA ORIGINAL LARGE DATA ORIGINAL LARGE DATA ORIGINAL LARGE DATA ORIGINAL LARGE DATA ORIGINAL LARGE DATA ORIGINAL LARGE DATA ORIGINAL LARGE DATA ORIGINAL LARGE DATA"
+          version: 1
+        refresh: true
+
+  # First update
+  - do:
+      update:
+        index: test-crypto-update-large
+        id: "update-1"
+        body:
+          doc:
+            version: 2
+            updated_at: "2024-01-01"
+        refresh: true
+
+  # Verify first update
+  - do:
+      get:
+        index: test-crypto-update-large
+        id: "update-1"
+
+  - match: { _source.version: 2 }
+  - match: { _source.title: "Original Large Document" }
+
+  # Second update with new large data
+  - do:
+      update:
+        index: test-crypto-update-large
+        id: "update-1"
+        body:
+          doc:
+            data: "UPDATED LARGE DATA UPDATED LARGE DATA UPDATED LARGE DATA UPDATED LARGE DATA UPDATED LARGE DATA UPDATED LARGE DATA UPDATED LARGE DATA UPDATED LARGE DATA UPDATED LARGE DATA UPDATED LARGE DATA"
+            version: 3
+        refresh: true
+
+  # Verify second update
+  - do:
+      get:
+        index: test-crypto-update-large
+        id: "update-1"
+
+  - match: { _source.version: 3 }
+
+  # Search to verify document is findable
+  - do:
+      search:
+        index: test-crypto-update-large
+        body:
+          query:
+            match:
+              data: "UPDATED"
+
+  - match: { hits.total.value: 1 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-update-large

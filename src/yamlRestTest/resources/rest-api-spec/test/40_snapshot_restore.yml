@@ -1,0 +1,846 @@
+---
+"Test encrypted index basic snapshot and restore":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Register snapshot repository
+  - do:
+      snapshot.create_repository:
+        repository: test_repo
+        body:
+          type: fs
+          settings:
+            location: "test_snapshots"
+
+  - match: { acknowledged: true }
+
+  # Create and populate encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-snapshot
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-snapshot
+              _id: "1"
+          - { "message": "sensitive data 1", "priority": "high" }
+          - index:
+              _index: test-crypto-snapshot
+              _id: "2"
+          - { "message": "sensitive data 2", "priority": "medium" }
+          - index:
+              _index: test-crypto-snapshot
+              _id: "3"
+          - { "message": "sensitive data 3", "priority": "low" }
+
+  - match: { errors: false }
+
+  # Create snapshot
+  - do:
+      snapshot.create:
+        repository: test_repo
+        snapshot: snap1
+        wait_for_completion: true
+
+  - match: { snapshot.snapshot: snap1 }
+  - match: { snapshot.state: SUCCESS }
+
+  # Verify snapshot details
+  - do:
+      snapshot.get:
+        repository: test_repo
+        snapshot: snap1
+
+  - match: { snapshots.0.snapshot: snap1 }
+  - match: { snapshots.0.state: SUCCESS }
+  - match: { snapshots.0.indices.0: test-crypto-snapshot }
+
+  # Delete original index
+  - do:
+      indices.delete:
+        index: test-crypto-snapshot
+
+  - match: { acknowledged: true }
+
+  # Verify index deleted
+  - do:
+      catch: missing
+      indices.get:
+        index: test-crypto-snapshot
+
+  # Restore from snapshot
+  - do:
+      snapshot.restore:
+        repository: test_repo
+        snapshot: snap1
+        wait_for_completion: true
+
+  - match: { snapshot.snapshot: snap1 }
+  - match: { snapshot.shards.total: 1 }
+  - match: { snapshot.shards.successful: 1 }
+
+  # Verify data integrity
+  - do:
+      search:
+        index: test-crypto-snapshot
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 3 }
+
+  # Verify individual documents
+  - do:
+      get:
+        index: test-crypto-snapshot
+        id: "1"
+
+  - match: { _source.message: "sensitive data 1" }
+  - match: { _source.priority: "high" }
+
+  - do:
+      get:
+        index: test-crypto-snapshot
+        id: "2"
+
+  - match: { _source.message: "sensitive data 2" }
+  - match: { _source.priority: "medium" }
+
+  - do:
+      get:
+        index: test-crypto-snapshot
+        id: "3"
+
+  - match: { _source.message: "sensitive data 3" }
+  - match: { _source.priority: "low" }
+
+  # Verify encryption settings preserved
+  - do:
+      indices.get_settings:
+        index: test-crypto-snapshot
+
+  - match: { test-crypto-snapshot.settings.index.store.type: "cryptofs" }
+  - match: { test-crypto-snapshot.settings.index.store.crypto.kms.type: "dummy" }
+
+  # Verify we can write to restored index
+  - do:
+      index:
+        index: test-crypto-snapshot
+        id: "4"
+        body: { "message": "new data after restore", "priority": "urgent" }
+        refresh: true
+
+  - match: { result: created }
+
+  - do:
+      search:
+        index: test-crypto-snapshot
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 4 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-snapshot
+
+  - do:
+      snapshot.delete:
+        repository: test_repo
+        snapshot: snap1
+
+  - do:
+      snapshot.delete_repository:
+        repository: test_repo
+
+---
+"Test encrypted index partial restore":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Register snapshot repository
+  - do:
+      snapshot.create_repository:
+        repository: test_repo
+        body:
+          type: fs
+          settings:
+            location: "test_snapshots"
+
+  # Create multiple encrypted indices
+  - do:
+      indices.create:
+        index: crypto-index-1
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  - do:
+      indices.create:
+        index: crypto-index-2
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  - do:
+      indices.create:
+        index: crypto-index-3
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  # Index data into each
+  - do:
+      index:
+        index: crypto-index-1
+        id: "1"
+        body: { "data": "index 1 data" }
+        refresh: true
+
+  - do:
+      index:
+        index: crypto-index-2
+        id: "1"
+        body: { "data": "index 2 data" }
+        refresh: true
+
+  - do:
+      index:
+        index: crypto-index-3
+        id: "1"
+        body: { "data": "index 3 data" }
+        refresh: true
+
+  # Snapshot all indices
+  - do:
+      snapshot.create:
+        repository: test_repo
+        snapshot: multi_snap
+        wait_for_completion: true
+        body:
+          indices: "crypto-index-*"
+
+  - match: { snapshot.state: SUCCESS }
+
+  # Delete all indices
+  - do:
+      indices.delete:
+        index: crypto-index-*
+
+  # Restore only crypto-index-2
+  - do:
+      snapshot.restore:
+        repository: test_repo
+        snapshot: multi_snap
+        wait_for_completion: true
+        body:
+          indices: "crypto-index-2"
+
+  # Verify only crypto-index-2 exists
+  - do:
+      indices.exists:
+        index: crypto-index-2
+
+  - is_true: ''
+
+  - do:
+      catch: missing
+      indices.get:
+        index: crypto-index-1
+
+  - do:
+      catch: missing
+      indices.get:
+        index: crypto-index-3
+
+  # Verify data in restored index
+  - do:
+      get:
+        index: crypto-index-2
+        id: "1"
+
+  - match: { _source.data: "index 2 data" }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: crypto-index-2
+
+  - do:
+      snapshot.delete:
+        repository: test_repo
+        snapshot: multi_snap
+
+  - do:
+      snapshot.delete_repository:
+        repository: test_repo
+
+---
+"Test encrypted index restore with rename":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Register snapshot repository
+  - do:
+      snapshot.create_repository:
+        repository: test_repo
+        body:
+          type: fs
+          settings:
+            location: "test_snapshots"
+
+  # Create and populate encrypted index
+  - do:
+      indices.create:
+        index: original-crypto-index
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: original-crypto-index
+              _id: "1"
+          - { "title": "Original Document 1" }
+          - index:
+              _index: original-crypto-index
+              _id: "2"
+          - { "title": "Original Document 2" }
+
+  # Snapshot
+  - do:
+      snapshot.create:
+        repository: test_repo
+        snapshot: rename_snap
+        wait_for_completion: true
+
+  # Restore with rename
+  - do:
+      snapshot.restore:
+        repository: test_repo
+        snapshot: rename_snap
+        wait_for_completion: true
+        body:
+          indices: "original-crypto-index"
+          rename_pattern: "original-(.*)"
+          rename_replacement: "restored-$1"
+
+  # Verify both indices exist
+  - do:
+      indices.exists:
+        index: original-crypto-index
+
+  - is_true: ''
+
+  - do:
+      indices.exists:
+        index: restored-crypto-index
+
+  - is_true: ''
+
+  # Verify data in renamed index
+  - do:
+      search:
+        index: restored-crypto-index
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 2 }
+
+  # Verify encryption settings in both
+  - do:
+      indices.get_settings:
+        index: original-crypto-index
+
+  - match: { original-crypto-index.settings.index.store.type: "cryptofs" }
+
+  - do:
+      indices.get_settings:
+        index: restored-crypto-index
+
+  - match: { restored-crypto-index.settings.index.store.type: "cryptofs" }
+  - match: { restored-crypto-index.settings.index.store.crypto.kms.type: "dummy" }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: original-crypto-index
+
+  - do:
+      indices.delete:
+        index: restored-crypto-index
+
+  - do:
+      snapshot.delete:
+        repository: test_repo
+        snapshot: rename_snap
+
+  - do:
+      snapshot.delete_repository:
+        repository: test_repo
+
+---
+"Test encrypted index incremental snapshots":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Register snapshot repository
+  - do:
+      snapshot.create_repository:
+        repository: test_repo
+        body:
+          type: fs
+          settings:
+            location: "test_snapshots"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: incremental-crypto-index
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  # Index initial data
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: incremental-crypto-index
+              _id: "1"
+          - { "version": 1, "data": "initial data 1" }
+          - index:
+              _index: incremental-crypto-index
+              _id: "2"
+          - { "version": 1, "data": "initial data 2" }
+
+  # First snapshot
+  - do:
+      snapshot.create:
+        repository: test_repo
+        snapshot: snap_v1
+        wait_for_completion: true
+
+  - match: { snapshot.state: SUCCESS }
+
+  # Add more data
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: incremental-crypto-index
+              _id: "3"
+          - { "version": 2, "data": "additional data 3" }
+          - index:
+              _index: incremental-crypto-index
+              _id: "4"
+          - { "version": 2, "data": "additional data 4" }
+          - update:
+              _index: incremental-crypto-index
+              _id: "1"
+          - { "doc": { "version": 2, "updated": true } }
+
+  # Second snapshot (incremental)
+  - do:
+      snapshot.create:
+        repository: test_repo
+        snapshot: snap_v2
+        wait_for_completion: true
+
+  - match: { snapshot.state: SUCCESS }
+
+  # Delete index
+  - do:
+      indices.delete:
+        index: incremental-crypto-index
+
+  # Restore from first snapshot
+  - do:
+      snapshot.restore:
+        repository: test_repo
+        snapshot: snap_v1
+        wait_for_completion: true
+
+  # Verify only initial data
+  - do:
+      search:
+        index: incremental-crypto-index
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 2 }
+
+  # Delete and restore from second snapshot
+  - do:
+      indices.delete:
+        index: incremental-crypto-index
+
+  - do:
+      snapshot.restore:
+        repository: test_repo
+        snapshot: snap_v2
+        wait_for_completion: true
+
+  # Verify all data including updates
+  - do:
+      search:
+        index: incremental-crypto-index
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 4 }
+
+  - do:
+      get:
+        index: incremental-crypto-index
+        id: "1"
+
+  - match: { _source.version: 2 }
+  - match: { _source.updated: true }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: incremental-crypto-index
+
+  - do:
+      snapshot.delete:
+        repository: test_repo
+        snapshot: snap_v1
+
+  - do:
+      snapshot.delete:
+        repository: test_repo
+        snapshot: snap_v2
+
+  - do:
+      snapshot.delete_repository:
+        repository: test_repo
+
+---
+"Test multiple encrypted indices in single snapshot":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Register snapshot repository
+  - do:
+      snapshot.create_repository:
+        repository: test_repo
+        body:
+          type: fs
+          settings:
+            location: "test_snapshots"
+
+  # Create multiple encrypted indices with different data
+  - do:
+      indices.create:
+        index: crypto-users
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  - do:
+      indices.create:
+        index: crypto-orders
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  - do:
+      indices.create:
+        index: crypto-products
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  # Populate each index
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: crypto-users
+              _id: "1"
+          - { "name": "Alice", "role": "admin" }
+          - index:
+              _index: crypto-users
+              _id: "2"
+          - { "name": "Bob", "role": "user" }
+          - index:
+              _index: crypto-orders
+              _id: "1"
+          - { "order_id": "ORD-001", "total": 100 }
+          - index:
+              _index: crypto-orders
+              _id: "2"
+          - { "order_id": "ORD-002", "total": 200 }
+          - index:
+              _index: crypto-products
+              _id: "1"
+          - { "product": "Widget", "price": 50 }
+          - index:
+              _index: crypto-products
+              _id: "2"
+          - { "product": "Gadget", "price": 75 }
+
+  # Snapshot all encrypted indices
+  - do:
+      snapshot.create:
+        repository: test_repo
+        snapshot: multi_index_snap
+        wait_for_completion: true
+        body:
+          indices: "crypto-*"
+
+  - match: { snapshot.state: SUCCESS }
+
+  # Verify snapshot contains all indices
+  - do:
+      snapshot.get:
+        repository: test_repo
+        snapshot: multi_index_snap
+
+  - match: { snapshots.0.state: SUCCESS }
+  - length: { snapshots.0.indices: 3 }
+
+
+  # Delete all indices
+  - do:
+      indices.delete:
+        index: crypto-*
+
+  # Restore all indices
+  - do:
+      snapshot.restore:
+        repository: test_repo
+        snapshot: multi_index_snap
+        wait_for_completion: true
+
+  # Verify each index has correct data
+  - do:
+      search:
+        index: crypto-users
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 2 }
+
+  - do:
+      search:
+        index: crypto-orders
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 2 }
+
+  - do:
+      search:
+        index: crypto-products
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 2 }
+
+  # Verify specific data integrity
+  - do:
+      get:
+        index: crypto-users
+        id: "1"
+
+  - match: { _source.name: "Alice" }
+  - match: { _source.role: "admin" }
+
+  - do:
+      get:
+        index: crypto-orders
+        id: "2"
+
+  - match: { _source.order_id: "ORD-002" }
+  - match: { _source.total: 200 }
+
+  # Verify all indices have encryption enabled
+  - do:
+      indices.get_settings:
+        index: crypto-*
+
+  - match: { crypto-users.settings.index.store.type: "cryptofs" }
+  - match: { crypto-orders.settings.index.store.type: "cryptofs" }
+  - match: { crypto-products.settings.index.store.type: "cryptofs" }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: crypto-*
+
+  - do:
+      snapshot.delete:
+        repository: test_repo
+        snapshot: multi_index_snap
+
+  - do:
+      snapshot.delete_repository:
+        repository: test_repo
+
+---
+"Test snapshot status and metadata for encrypted index":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Register snapshot repository
+  - do:
+      snapshot.create_repository:
+        repository: test_repo
+        body:
+          type: fs
+          settings:
+            location: "test_snapshots"
+
+  # Create encrypted index with metadata
+  - do:
+      indices.create:
+        index: crypto-metadata-test
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+          mappings:
+            properties:
+              title:
+                type: text
+              timestamp:
+                type: date
+              count:
+                type: integer
+
+  - do:
+      index:
+        index: crypto-metadata-test
+        id: "1"
+        body: { "title": "Test Doc", "timestamp": "2024-01-01", "count": 42 }
+        refresh: true
+
+  # Create snapshot
+  - do:
+      snapshot.create:
+        repository: test_repo
+        snapshot: metadata_snap
+        wait_for_completion: true
+
+  # Check snapshot status
+  - do:
+      snapshot.status:
+        repository: test_repo
+        snapshot: metadata_snap
+
+  - match: { snapshots.0.snapshot: metadata_snap }
+  - match: { snapshots.0.state: SUCCESS }
+
+  # Get detailed snapshot info
+  - do:
+      snapshot.get:
+        repository: test_repo
+        snapshot: metadata_snap
+
+  - match: { snapshots.0.snapshot: metadata_snap }
+  - match: { snapshots.0.state: SUCCESS }
+  - match: { snapshots.0.indices.0: crypto-metadata-test }
+  - gte: { snapshots.0.shards.total: 1 }
+  - match: { snapshots.0.shards.failed: 0 }
+  - gte: { snapshots.0.shards.successful: 1 }
+
+  # Delete and restore
+  - do:
+      indices.delete:
+        index: crypto-metadata-test
+
+  - do:
+      snapshot.restore:
+        repository: test_repo
+        snapshot: metadata_snap
+        wait_for_completion: true
+
+  # Verify mappings preserved
+  - do:
+      indices.get_mapping:
+        index: crypto-metadata-test
+
+  - match: { crypto-metadata-test.mappings.properties.title.type: text }
+  - match: { crypto-metadata-test.mappings.properties.timestamp.type: date }
+  - match: { crypto-metadata-test.mappings.properties.count.type: integer }
+
+  # Verify data
+  - do:
+      get:
+        index: crypto-metadata-test
+        id: "1"
+
+  - match: { _source.title: "Test Doc" }
+  - match: { _source.count: 42 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: crypto-metadata-test
+
+  - do:
+      snapshot.delete:
+        repository: test_repo
+        snapshot: metadata_snap
+
+  - do:
+      snapshot.delete_repository:
+        repository: test_repo

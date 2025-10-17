@@ -1,0 +1,299 @@
+---
+"Create encrypted index and perform CRUD operations":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-crud
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  - match: { acknowledged: true }
+
+  # Verify index settings
+  - do:
+      indices.get_settings:
+        index: test-crypto-crud
+
+  - match: { test-crypto-crud.settings.index.store.type: "cryptofs" }
+  - match: { test-crypto-crud.settings.index.store.crypto.kms.type: "dummy" }
+
+  # Index a document
+  - do:
+      index:
+        index: test-crypto-crud
+        id: "1"
+        body: { "title": "Document 1", "content": "This is encrypted content", "count": 100 }
+        refresh: true
+
+  - match: { _index: test-crypto-crud }
+  - match: { _id: "1" }
+  - match: { result: created }
+
+  # Get document by ID
+  - do:
+      get:
+        index: test-crypto-crud
+        id: "1"
+
+  - match: { _source.title: "Document 1" }
+  - match: { _source.content: "This is encrypted content" }
+  - match: { _source.count: 100 }
+
+  # Index multiple documents
+  - do:
+      index:
+        index: test-crypto-crud
+        id: "2"
+        body: { "title": "Document 2", "content": "More encrypted data", "count": 200 }
+        refresh: true
+
+  - do:
+      index:
+        index: test-crypto-crud
+        id: "3"
+        body: { "title": "Document 3", "content": "Even more data", "count": 300 }
+        refresh: true
+
+  # Search all documents
+  - do:
+      search:
+        index: test-crypto-crud
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 3 }
+
+  # Search with term query
+  - do:
+      search:
+        index: test-crypto-crud
+        body:
+          query:
+            match:
+              content: "encrypted"
+
+  - gte: { hits.total.value: 1 }
+
+  # Update document
+  - do:
+      update:
+        index: test-crypto-crud
+        id: "1"
+        body:
+          doc:
+            count: 150
+            updated: true
+        refresh: true
+
+  - match: { result: updated }
+
+  # Verify update
+  - do:
+      get:
+        index: test-crypto-crud
+        id: "1"
+
+  - match: { _source.count: 150 }
+  - match: { _source.updated: true }
+  - match: { _source.title: "Document 1" }
+
+  # Delete document
+  - do:
+      delete:
+        index: test-crypto-crud
+        id: "3"
+        refresh: true
+
+  - match: { result: deleted }
+
+  # Verify document deleted
+  - do:
+      catch: missing
+      get:
+        index: test-crypto-crud
+        id: "3"
+
+  # Verify remaining documents
+  - do:
+      search:
+        index: test-crypto-crud
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 2 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-crud
+
+---
+"Test encrypted index with complex document structure":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-complex
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  # Index complex document with nested objects and arrays
+  - do:
+      index:
+        index: test-crypto-complex
+        id: "1"
+        body:
+          user:
+            name: "John Doe"
+            age: 30
+            email: "john@example.com"
+          tags: ["important", "encrypted", "secure"]
+          metadata:
+            created: "2024-01-01"
+            updated: "2024-01-15"
+            version: 2
+          data:
+            - { "key": "value1", "score": 95 }
+            - { "key": "value2", "score": 87 }
+        refresh: true
+
+  # Retrieve and verify complex document
+  - do:
+      get:
+        index: test-crypto-complex
+        id: "1"
+
+  - match: { _source.user.name: "John Doe" }
+  - match: { _source.user.age: 30 }
+  - match: { _source.tags.0: "important" }
+  - match: { _source.metadata.version: 2 }
+  - match: { _source.data.0.score: 95 }
+
+  # Search nested field
+  - do:
+      search:
+        index: test-crypto-complex
+        body:
+          query:
+            term:
+              user.name.keyword: "John Doe"
+
+  - match: { hits.total.value: 1 }
+
+  # Search array field
+  - do:
+      search:
+        index: test-crypto-complex
+        body:
+          query:
+            term:
+              tags: "encrypted"
+
+  - match: { hits.total.value: 1 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-complex
+
+---
+"Test encrypted index data persistence":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-persist
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.kms.type: "dummy"
+
+  # Index documents
+  - do:
+      index:
+        index: test-crypto-persist
+        id: "1"
+        body: { "message": "persistent data" }
+        refresh: true
+
+  - do:
+      index:
+        index: test-crypto-persist
+        id: "2"
+        body: { "message": "more persistent data" }
+        refresh: true
+
+  # Force flush to disk
+  - do:
+      indices.flush:
+        index: test-crypto-persist
+
+  - match: { _shards.successful: 1 }
+
+  # Verify data after flush
+  - do:
+      search:
+        index: test-crypto-persist
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 2 }
+
+  # Close index
+  - do:
+      indices.close:
+        index: test-crypto-persist
+
+  - match: { acknowledged: true }
+
+  # Reopen index
+  - do:
+      indices.open:
+        index: test-crypto-persist
+
+  - match: { acknowledged: true }
+
+  # Verify data persisted after close/open
+  - do:
+      search:
+        index: test-crypto-persist
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 2 }
+
+  - do:
+      get:
+        index: test-crypto-persist
+        id: "1"
+
+  - match: { _source.message: "persistent data" }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-persist

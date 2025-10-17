@@ -17,11 +17,11 @@ import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
+import org.opensearch.core.index.Index;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
 import org.opensearch.index.IndexModule;
-import org.opensearch.index.IndexService;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.EngineFactory;
 import org.opensearch.index.shard.IndexEventListener;
@@ -125,9 +125,13 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         String storeType = indexSettings.get(IndexModule.INDEX_STORE_TYPE_SETTING.getKey());
         if ("cryptofs".equals(storeType)) {
             indexModule.addIndexEventListener(new IndexEventListener() {
+                /*
+                 * The resolvers should be removed only AFTER the index is removed since some ongoing 
+                 * operations call to get resolver but fail in case we remove the resolver before index is removed.
+                 */
                 @Override
-                public void beforeIndexRemoved(IndexService indexService, IndexRemovalReason reason) {
-                    String indexUuid = indexService.index().getUUID();
+                public void afterIndexRemoved(Index index, IndexSettings indexSettings, IndexRemovalReason reason) {
+                    String indexUuid = index.getUUID();
                     IndexKeyResolverRegistry.removeResolver(indexUuid);
                 }
             });

@@ -55,7 +55,7 @@ jobs:
           arguments: |
             assemble -Dbuild.snapshot=false
       
-      - name: Switch to ci-runner user and run tests
+      - name: Switch to ci-runner user and Run tests
         run: |
           chown -R ci-runner:ci-runner $GITHUB_WORKSPACE
           find $GITHUB_WORKSPACE -type d -exec chmod 755 {} \;
@@ -63,7 +63,7 @@ jobs:
           chmod +x $GITHUB_WORKSPACE/gradlew
           # Preserve environment variables when switching users
           su ci-runner -c "export JAVA_HOME=$JAVA_HOME && export GRADLE_OPTS='$GRADLE_OPTS' && cd $GITHUB_WORKSPACE && ./gradlew check -x internalClusterTest -Dbuild.snapshot=false"
-      
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         if: always()
