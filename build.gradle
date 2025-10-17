@@ -82,6 +82,7 @@ dependencies {
     api "io.netty:netty-transport-native-io_uring:4.2.5.Final:linux-x86_64"
 }
 
+
 test {
     useJUnit()
     testLogging {
@@ -89,9 +90,10 @@ test {
         showStandardStreams = true
     }
     systemProperty 'tests.security.manager', 'false'
+    systemProperty 'tests.jvm.argline', '--enable-preview --enable-native-access=ALL-UNNAMED'
     jvmArgs += [
-        '--enable-native-access=ALL-UNNAMED',
-        '-XX:MaxDirectMemorySize=512m'
+        "--enable-preview",
+        '--enable-native-access=ALL-UNNAMED'
     ]
 }
 
@@ -103,8 +105,7 @@ tasks.named('internalClusterTest').configure {
         showStandardStreams = true
     }
     jvmArgs += [
-        '--enable-native-access=ALL-UNNAMED',
-        '-XX:MaxDirectMemorySize=512m'
+        '--enable-native-access=ALL-UNNAMED'
     ]
 }
 
@@ -114,7 +115,6 @@ tasks.named('yamlRestTest').configure {
 testClusters.yamlRestTest {
     setting 'node.store.crypto.pool_size_percentage', '0.0'
     setting 'node.store.crypto.warmup_percentage', '0.0'
-    jvmArgs '-XX:MaxDirectMemorySize=512m'
 }
 
 compileJava {

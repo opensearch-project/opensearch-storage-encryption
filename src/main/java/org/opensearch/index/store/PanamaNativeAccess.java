@@ -11,16 +11,19 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
+import java.util.Optional;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
 
 /**
- * Utility class for accessing native POSIX and libc functions via Panama Foreign Function &amp; Memory API.
- * Includes wrappers for getpagesize, open/close, posix_fadvise, malloc, and free.
+ * Utility class for accessing native POSIX and libc functions via Panama
+ * Foreign Function &amp; Memory API. Includes wrappers for getpagesize,
+ * open/close, malloc/free, and optional posix_fadvise.
  *
- * <p>Falls back to safe defaults if Panama FFI is not available.
+ * <p>
+ * Falls back to safe defaults if Panama FFI is not available.
  */
 @SuppressForbidden(reason = "Uses Panama FFI for native function access")
 @SuppressWarnings("preview")
@@ -32,7 +35,7 @@ public final class PanamaNativeAccess {
     private static final MethodHandle GET_PAGE_SIZE;
     private static final MethodHandle OPEN;
     private static final MethodHandle CLOSE;
-    private static final MethodHandle POSIX_FADVISE;
+    private static final Optional<MethodHandle> POSIX_FADVISE;
     private static final MethodHandle MH_MALLOC;
     private static final MethodHandle MH_FREE;
 
@@ -40,19 +43,16 @@ public final class PanamaNativeAccess {
     private static final int O_RDONLY = 0;
     private static final int FALLBACK_PAGE_SIZE = 4096;
 
-    // Prevent instantiation
-    private PanamaNativeAccess() {
-        throw new AssertionError("Utility class - do not instantiate");
-    }
+    private PanamaNativeAccess() {}
 
     static {
         boolean available = false;
         MethodHandle getPageSize = null;
         MethodHandle open = null;
         MethodHandle close = null;
-        MethodHandle posixFadvise = null;
         MethodHandle malloc = null;
         MethodHandle free = null;
+        Optional<MethodHandle> posixFadviseOpt;
 
         try {
             Linker linker = Linker.nativeLinker();
@@ -69,53 +69,68 @@ public final class PanamaNativeAccess {
             close = linker
                 .downcallHandle(libc.find("close").orElseThrow(), FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
 
-            posixFadvise = linker
-                .downcallHandle(
-                    libc.find("posix_fadvise").orElseThrow(),
-                    FunctionDescriptor
-                        .of(
-                            ValueLayout.JAVA_INT, // return int
-                            ValueLayout.JAVA_INT, // fd
-                            ValueLayout.JAVA_LONG, // offset
-                            ValueLayout.JAVA_LONG, // len
-                            ValueLayout.JAVA_INT // advice
-                        )
-                );
-
             malloc = linker
                 .downcallHandle(libc.find("malloc").orElseThrow(), FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
 
             free = linker.downcallHandle(libc.find("free").orElseThrow(), FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
 
             available = true;
-            LOGGER.info("Panama FFM API initialized successfully for native POSIX + malloc/free bindings");
+
+            Optional<MethodHandle> tmpPosix = libc.find("posix_fadvise").flatMap(sym -> {
+                try {
+                    MethodHandle mh = linker
+                        .downcallHandle(
+                            sym,
+                            FunctionDescriptor
+                                .of(
+                                    ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_LONG,
+                                    ValueLayout.JAVA_LONG,
+                                    ValueLayout.JAVA_INT
+                                )
+                        );
+                    return Optional.of(mh);
+                } catch (Throwable t) {
+                    return Optional.empty();
+                }
+            });
+            posixFadviseOpt = tmpPosix;
         } catch (Throwable e) {
             LOGGER
                 .warn(
                     "Panama FFM API not available; native calls will use fallback implementations. "
-                        + "Ensure JVM is started with --enable-native-access=ALL-UNNAMED",
+                        + "Start JVM with --enable-native-access=ALL-UNNAMED",
                     e
                 );
+            posixFadviseOpt = Optional.empty();
+
         }
 
         NATIVE_ACCESS_AVAILABLE = available;
         GET_PAGE_SIZE = getPageSize;
         OPEN = open;
         CLOSE = close;
-        POSIX_FADVISE = posixFadvise;
+        POSIX_FADVISE = posixFadviseOpt;
+
         MH_MALLOC = malloc;
         MH_FREE = free;
     }
 
-    /** Returns true if Panama FFI native access was successfully initialized. */
+    /**
+     * Returns true if Panama FFI native access was successfully initialized.
+     */
     public static boolean isAvailable() {
         return NATIVE_ACCESS_AVAILABLE;
     }
 
-    /** Returns the system page size in bytes, or 4096 on fallback. */
+    /**
+     * Returns the system page size in bytes, or 4096 on fallback.
+     */
     public static int getPageSize() {
-        if (!NATIVE_ACCESS_AVAILABLE)
+        if (!NATIVE_ACCESS_AVAILABLE) {
             return FALLBACK_PAGE_SIZE;
+        }
         try {
             return (int) GET_PAGE_SIZE.invokeExact();
         } catch (Throwable e) {
@@ -124,40 +139,44 @@ public final class PanamaNativeAccess {
         }
     }
 
-    /** Advises the kernel to drop page cache for the specified file (best effort). */
+    /**
+     * Advises the kernel to drop page cache for the specified file (no-op if
+     * unsupported).
+     */
     public static boolean dropFileCache(String filePath) {
-        if (!NATIVE_ACCESS_AVAILABLE)
+        if (!NATIVE_ACCESS_AVAILABLE || filePath == null || filePath.isEmpty()) {
             return false;
-        if (filePath == null || filePath.isEmpty())
+        }
+
+        // No-op if posix_fadvise not present
+        if (POSIX_FADVISE.isEmpty()) {
             return false;
+        }
 
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment cPath = arena.allocateUtf8String(filePath);
             int fd = (int) OPEN.invoke(cPath, O_RDONLY);
-            if (fd < 0)
+            if (fd < 0) {
                 return false;
+            }
 
             try {
-                int rc = (int) POSIX_FADVISE.invoke(fd, 0L, 0L, POSIX_FADV_DONTNEED);
+                int rc = (int) POSIX_FADVISE.get().invoke(fd, 0L, 0L, POSIX_FADV_DONTNEED);
                 if (rc != 0) {
-                    LOGGER.warn("posix_fadvise failed with rc={} for file: {}", rc, filePath);
+                    LOGGER.warn("posix_fadvise() failed with rc={} for file: {}", rc, filePath);
                 }
                 return rc == 0;
             } finally {
                 CLOSE.invoke(fd);
             }
         } catch (Throwable t) {
-            LOGGER.debug("Failed to drop file cache for: {}", filePath, t);
+            LOGGER.debug("dropFileCache() failed for {}", filePath, t);
             return false;
         }
     }
 
     /**
      * Allocates native memory via libc malloc(size).
-     *
-     * @param size number of bytes to allocate
-     * @return MemorySegment representing the allocated region
-     * @throws OutOfMemoryError if malloc returns NULL
      */
     public static MemorySegment malloc(long size) {
         if (!NATIVE_ACCESS_AVAILABLE) {
@@ -175,15 +194,12 @@ public final class PanamaNativeAccess {
     }
 
     /**
-     * Frees native memory allocated via malloc.
-     *
-     * @param segment the MemorySegment to free
+     * Frees native memory allocated via malloc().
      */
     public static void free(MemorySegment segment) {
-        if (segment == null)
+        if (segment == null || !NATIVE_ACCESS_AVAILABLE) {
             return;
-        if (!NATIVE_ACCESS_AVAILABLE)
-            return;
+        }
         try {
             MH_FREE.invoke(segment);
         } catch (Throwable t) {

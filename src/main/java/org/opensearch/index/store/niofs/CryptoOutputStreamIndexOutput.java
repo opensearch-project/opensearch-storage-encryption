@@ -15,6 +15,7 @@ import javax.crypto.Cipher;
 import org.apache.lucene.store.OutputStreamIndexOutput;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.cipher.AesGcmCipherFactory;
+import org.opensearch.index.store.cipher.OpenSslNativeCipher;
 
 /**
  * An IndexOutput implementation that encrypts data before writing using native
@@ -107,8 +108,7 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
 
         private void processAndWrite(byte[] data, int offset, int length) throws IOException {
             try {
-                byte[] encrypted = org.opensearch.index.store.cipher.AesGcmCipherFactory
-                    .encryptWithoutTag(streamOffset, cipher, slice(data, offset, length), length);
+                byte[] encrypted = OpenSslNativeCipher.encrypt(key.getEncoded(), iv, slice(data, offset, length), streamOffset);
                 out.write(encrypted);
                 streamOffset += length;
             } catch (Throwable t) {
