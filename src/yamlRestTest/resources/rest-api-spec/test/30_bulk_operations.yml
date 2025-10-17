@@ -13,7 +13,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   # Bulk index multiple documents
   - do:
@@ -145,7 +145,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   # First bulk: create documents
   - do:
@@ -232,7 +232,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
             refresh_interval: -1
 
   # Index 50 documents in one bulk request

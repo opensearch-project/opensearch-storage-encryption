@@ -13,7 +13,8 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
+            index.store.crypto.kms.key_arn: "dummyArn"
 
   - match: { acknowledged: true }
 
@@ -23,7 +24,7 @@
         index: test-crypto-crud
 
   - match: { test-crypto-crud.settings.index.store.type: "cryptofs" }
-  - match: { test-crypto-crud.settings.index.store.crypto.kms.type: "dummy" }
+  - match: { test-crypto-crud.settings.index.store.crypto.key_provider: "dummy" }
 
   # Index a document
   - do:
@@ -152,7 +153,8 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
+            index.store.crypto.kms.key_arn: "dummyArn"
 
   # Index complex document with nested objects and arrays
   - do:
@@ -228,7 +230,8 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
+            index.store.crypto.kms.key_arn: "dummyArn"
 
   # Index documents
   - do:

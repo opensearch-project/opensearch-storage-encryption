@@ -13,7 +13,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   # Index a very large document (150KB) spanning ~19 cache blocks (8KB each)
   - do:
@@ -69,7 +69,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   # Index multiple 25KB documents to fill cache and trigger eviction
   # Each document spans 3-4 cache blocks (8KB each)
@@ -139,7 +139,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   # Bulk index 10 medium documents (10KB each)
   # Tests sequential access and read-ahead behavior
@@ -219,7 +219,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   # Index documents with varying sizes
   - do:
@@ -302,7 +302,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   # Index large documents with varied content
   - do:
@@ -379,7 +379,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   # Index a large document
   - do:

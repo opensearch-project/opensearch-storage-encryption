@@ -13,7 +13,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   # Index documents without refresh (stays in translog)
   - do:
@@ -102,7 +102,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   # Index some documents and flush
   - do:
@@ -224,7 +224,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
             index.translog.durability: "request"
 
   # Verify settings
@@ -322,7 +322,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
             index.translog.flush_threshold_size: "1mb"
 
   # Index documents to trigger multiple flushes
@@ -423,7 +423,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
             refresh_interval: -1
 
   # Bulk index many documents without refresh
@@ -532,7 +532,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   # Get initial translog stats
   - do:
@@ -609,7 +609,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   # Simulate concurrent writes with bulk
   - do:

@@ -47,7 +47,8 @@ public class CryptoDirectoryIntegTestCases extends OpenSearchIntegTestCase {
             .builder()
             .put(super.indexSettings())
             .put("index.store.type", "cryptofs")
-            .put("index.store.crypto.kms.type", "dummy")
+            .put("index.store.crypto.key_provider", "dummy")
+            .put("index.store.crypto.kms.key_arn", "dummyArn")
             .build();
     }
 

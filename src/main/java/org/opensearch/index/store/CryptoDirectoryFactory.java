@@ -82,6 +82,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         super();
     }
 
+    public static final String CRYPTO_SETTING = "index.store.crypto";
+
     /**
      * Specifies a crypto provider to be used for encryption. The default value
      * is SunJCE.
@@ -96,19 +98,51 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     }, Property.IndexScope, Property.InternalIndex);
 
     /**
-     * Specifies the Key management plugin type to be used. The desired KMS
+     * Specifies the Key management plugin type to be used. The desired CryptoKeyProviderPlugin
      * plugin should be installed.
      */
-    public static final Setting<String> INDEX_KMS_TYPE_SETTING = new Setting<>(
-        "index.store.crypto.kms.type",
+    public static final Setting<String> INDEX_KEY_PROVIDER_SETTING = new Setting<>(
+        "index.store.crypto.key_provider",
         "",
         Function.identity(),
         (s) -> {
             if (s == null || s.isEmpty()) {
-                throw new SettingsException("index.store.crypto.kms.type must be set");
+                throw new SettingsException("index.store.crypto.key_provider must be set");
             }
         },
         Property.NodeScope,
+        Property.IndexScope
+    );
+
+    /**
+     * AWS KMS key ARN for index-level encryption.
+     * Specifies the Amazon Resource Name of the KMS key used as master key for encrypting index data.
+     */
+    public static final Setting<String> INDEX_KMS_ARN_SETTING = new Setting<>(
+        "index.store.crypto.kms.key_arn",
+        "",
+        Function.identity(),
+        (s) -> {
+            if (s == null || s.isEmpty()) {
+                throw new SettingsException("index.store.kms.arn must be set");
+            }
+        },
+        Property.IndexScope
+    );
+
+    /**
+     * AWS KMS encryption context for additional authenticated data.
+     * Provides extra security by requiring the same context for both encrypt and decrypt operations.
+    */
+    public static final Setting<String> INDEX_KMS_ENC_CTX_SETTING = new Setting<>(
+        "index.store.crypto.kms.encryption_context",
+        "",
+        Function.identity(),
+        (s) -> {
+            if (s == null || s.isEmpty()) {
+                throw new SettingsException("index.store.kms.arn must be set");
+            }
+        },
         Property.IndexScope
     );
 
@@ -134,25 +168,21 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         );
 
     MasterKeyProvider getKeyProvider(IndexSettings indexSettings) {
-        final String KEY_PROVIDER_TYPE = indexSettings.getValue(INDEX_KMS_TYPE_SETTING);
+        final String KEY_PROVIDER = indexSettings.getValue(INDEX_KEY_PROVIDER_SETTING);
 
         // Handle dummy type for testing
-        if (KeyProviderType.DUMMY.getValue().equals(KEY_PROVIDER_TYPE)) {
+        if (KeyProviderType.DUMMY.getValue().equals(KEY_PROVIDER)) {
             LOGGER.debug("Using dummy key provider for testing");
             return DummyKeyProvider.create();
         }
 
-        // Normal path for production key providers
-        final Settings settings = Settings.builder().put(indexSettings.getNodeSettings(), false).build();
-        CryptoMetadata cryptoMetadata = new CryptoMetadata("", KEY_PROVIDER_TYPE, settings);
+        Settings settings = indexSettings.getSettings().getAsSettings(CRYPTO_SETTING);
+        CryptoMetadata cryptoMetadata = new CryptoMetadata(KEY_PROVIDER, "", settings);
         MasterKeyProvider keyProvider;
         try {
-            keyProvider = CryptoHandlerRegistry
-                .getInstance()
-                .getCryptoKeyProviderPlugin(KEY_PROVIDER_TYPE)
-                .createKeyProvider(cryptoMetadata);
+            keyProvider = CryptoHandlerRegistry.getInstance().getCryptoKeyProviderPlugin(KEY_PROVIDER).createKeyProvider(cryptoMetadata);
         } catch (NullPointerException npe) {
-            throw new RuntimeException("could not find key provider: " + KEY_PROVIDER_TYPE, npe);
+            throw new RuntimeException("could not find key provider: " + KEY_PROVIDER, npe);
         }
         return keyProvider;
     }

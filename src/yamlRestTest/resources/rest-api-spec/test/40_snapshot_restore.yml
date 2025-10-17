@@ -24,7 +24,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   - do:
       bulk:
@@ -130,7 +130,7 @@
         index: test-crypto-snapshot
 
   - match: { test-crypto-snapshot.settings.index.store.type: "cryptofs" }
-  - match: { test-crypto-snapshot.settings.index.store.crypto.kms.type: "dummy" }
+  - match: { test-crypto-snapshot.settings.index.store.crypto.key_provider: "dummy" }
 
   # Verify we can write to restored index
   - do:
@@ -189,7 +189,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   - do:
       indices.create:
@@ -199,7 +199,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   - do:
       indices.create:
@@ -209,7 +209,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   # Index data into each
   - do:
@@ -321,7 +321,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   - do:
       bulk:
@@ -389,7 +389,7 @@
         index: restored-crypto-index
 
   - match: { restored-crypto-index.settings.index.store.type: "cryptofs" }
-  - match: { restored-crypto-index.settings.index.store.crypto.kms.type: "dummy" }
+  - match: { restored-crypto-index.settings.index.store.crypto.key_provider: "dummy" }
 
   # Cleanup
   - do:
@@ -433,7 +433,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   # Index initial data
   - do:
@@ -579,7 +579,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   - do:
       indices.create:
@@ -589,7 +589,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   - do:
       indices.create:
@@ -599,7 +599,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
 
   # Populate each index
   - do:
@@ -756,7 +756,7 @@
             number_of_shards: 1
             number_of_replicas: 0
             index.store.type: "cryptofs"
-            index.store.crypto.kms.type: "dummy"
+            index.store.crypto.key_provider: "dummy"
           mappings:
             properties:
               title:
