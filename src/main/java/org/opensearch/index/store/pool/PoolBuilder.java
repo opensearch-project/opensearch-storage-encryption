@@ -36,24 +36,27 @@ public final class PoolBuilder {
     /**
      * Container for shared pool resources with lifecycle management.
      * This class holds references to the shared memory segment pool, block cache,
-     * and telemetry thread, providing proper cleanup when closed.
+     * telemetry thread, and cache removal executor, providing proper cleanup when closed.
      */
     public static class PoolResources implements Closeable {
         private final Pool<RefCountedMemorySegment> segmentPool;
         private final BlockCache<RefCountedMemorySegment> blockCache;
         private final long maxCacheBlocks;
         private final TelemetryThread telemetry;
+        private final java.util.concurrent.ThreadPoolExecutor removalExecutor;
 
         PoolResources(
             Pool<RefCountedMemorySegment> segmentPool,
             BlockCache<RefCountedMemorySegment> blockCache,
             long maxCacheBlocks,
-            TelemetryThread telemetry
+            TelemetryThread telemetry,
+            java.util.concurrent.ThreadPoolExecutor removalExecutor
         ) {
             this.segmentPool = segmentPool;
             this.blockCache = blockCache;
             this.maxCacheBlocks = maxCacheBlocks;
             this.telemetry = telemetry;
+            this.removalExecutor = removalExecutor;
         }
 
         /**
@@ -84,12 +87,23 @@ public final class PoolBuilder {
         }
 
         /**
-         * Closes the shared pool resources and stops the telemetry thread.
+         * Closes the shared pool resources, stops the telemetry thread, and shuts down the removal executor.
          */
         @Override
         public void close() {
             if (telemetry != null) {
                 telemetry.close();
+            }
+            if (removalExecutor != null) {
+                removalExecutor.shutdown();
+                try {
+                    if (!removalExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        removalExecutor.shutdownNow();
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    removalExecutor.shutdownNow();
+                }
             }
         }
     }
@@ -172,13 +186,16 @@ public final class PoolBuilder {
         segmentPool.warmUp(warmupBlocks);
         LOGGER.info("Warmed up {} blocks ({}% of {} cache blocks)", warmupBlocks, warmupPercentage * 100, maxCacheBlocks);
 
-        // Initialize shared cache with removal listener
-        BlockCache<RefCountedMemorySegment> blockCache = BlockCacheBuilder.build(CACHE_INITIAL_SIZE, maxCacheBlocks);
+        // Initialize shared cache with removal listener and get its executor
+        BlockCacheBuilder.CacheWithExecutor<RefCountedMemorySegment, RefCountedMemorySegment> cacheWithExecutor = BlockCacheBuilder
+            .build(CACHE_INITIAL_SIZE, maxCacheBlocks);
+        BlockCache<RefCountedMemorySegment> blockCache = cacheWithExecutor.getCache();
+        java.util.concurrent.ThreadPoolExecutor removalExecutor = cacheWithExecutor.getExecutor();
         LOGGER.info("Creating shared block cache with blocks={}", maxCacheBlocks);
 
         // Start telemetry
         TelemetryThread telemetry = new TelemetryThread(segmentPool);
 
-        return new PoolResources(segmentPool, blockCache, maxCacheBlocks, telemetry);
+        return new PoolResources(segmentPool, blockCache, maxCacheBlocks, telemetry, removalExecutor);
     }
 }

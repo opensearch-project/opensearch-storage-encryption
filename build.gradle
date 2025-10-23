@@ -59,12 +59,6 @@ repositories {
     maven { url "https://artifacts.opensearch.org/snapshots/lucene/" }
 }
 
-configurations.all {
-    resolutionStrategy {
-        force 'com.google.errorprone:error_prone_annotations:2.41.0'
-    }
-}
-
 dependencies {
     compileOnly "org.opensearch:opensearch:${opensearch_version}"
     runtimeOnly "org.apache.logging.log4j:log4j-slf4j-impl:${versions.log4j}"
@@ -73,11 +67,7 @@ dependencies {
 
     // Integration test dependencies
     testImplementation "org.opensearch.plugin:reindex-client:${opensearch_version}"
-    internalClusterTestImplementation "org.opensearch.plugin:reindex-client:${opensearch_version}"
-    internalClusterTestImplementation "org.opensearch.plugin:lang-mustache-client:${opensearch_version}"
-    internalClusterTestImplementation "org.opensearch.plugin:parent-join-client:${opensearch_version}"
     internalClusterTestImplementation "org.opensearch.plugin:crypto-kms:${opensearch_version}"
-    internalClusterTestImplementation "org.opensearch.plugin:aggs-matrix-stats-client:${opensearch_version}"
 
     implementation 'com.github.ben-manes.caffeine:caffeine:3.0.0'
     api "io.netty:netty-buffer:4.2.5.Final"
@@ -96,9 +86,8 @@ test {
         showStandardStreams = true
     }
     systemProperty 'tests.security.manager', 'false'
-    systemProperty 'tests.jvm.argline', '--enable-preview --enable-native-access=ALL-UNNAMED'
+    systemProperty 'tests.jvm.argline', '--enable-native-access=ALL-UNNAMED'
     jvmArgs += [
-        "--enable-preview",
         '--enable-native-access=ALL-UNNAMED'
     ]
 }
@@ -128,7 +117,6 @@ compileJava {
     targetCompatibility = JavaVersion.VERSION_21
     options.encoding = 'UTF-8'
     options.compilerArgs << '-Xlint:unchecked' << '-Xlint:-deprecation'
-    options.compilerArgs += ['--enable-preview']
 }
 
 compileTestJava {
