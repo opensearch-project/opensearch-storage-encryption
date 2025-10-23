@@ -27,7 +27,10 @@ public final class BlockCacheBuilder {
 
     /**
      * Result containing both the cache and the executor that must be shut down
-     * on node closure
+     * on node closure.
+     *
+     * @param <T> the type of cached block values
+     * @param <V> the type returned by the block loader
      */
     public static class CacheWithExecutor<T extends AutoCloseable, V> {
         private final CaffeineBlockCache<T, V> cache;
@@ -38,10 +41,21 @@ public final class BlockCacheBuilder {
             this.executor = executor;
         }
 
+        /**
+         * Returns the configured block cache.
+         *
+         * @return the block cache instance
+         */
         public CaffeineBlockCache<T, V> getCache() {
             return cache;
         }
 
+        /**
+         * Returns the executor used for asynchronous cache removal operations.
+         * This executor must be shut down when the cache is no longer needed.
+         *
+         * @return the thread pool executor
+         */
         public ThreadPoolExecutor getExecutor() {
             return executor;
         }

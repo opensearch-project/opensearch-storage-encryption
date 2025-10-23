@@ -21,6 +21,11 @@ public enum KeyProviderType {
         this.value = value;
     }
 
+    /**
+     * Returns the string value of this key provider type.
+     *
+     * @return the string value
+     */
     public String getValue() {
         return value;
     }

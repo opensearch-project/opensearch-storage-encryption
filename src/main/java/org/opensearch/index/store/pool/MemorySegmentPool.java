@@ -52,6 +52,9 @@ public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoClo
 
     /**
      * Creates a pool with lazy allocation and memory zeroing enabled for security.
+     *
+     * @param totalMemory total memory in bytes (must be a multiple of segmentSize)
+     * @param segmentSize size of each memory segment in bytes
      */
     public MemorySegmentPool(long totalMemory, int segmentSize) {
         this(totalMemory, segmentSize, true);
@@ -59,6 +62,10 @@ public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoClo
 
     /**
      * Creates a pool with configurable allocation strategy and zeroing behavior.
+     *
+     * @param totalMemory total memory in bytes (must be a multiple of segmentSize)
+     * @param segmentSize size of each memory segment in bytes
+     * @param requiresZeroing if true, memory is zeroed on release for security
      */
     public MemorySegmentPool(long totalMemory, int segmentSize, boolean requiresZeroing) {
         if (totalMemory % segmentSize != 0) {
@@ -128,7 +135,11 @@ public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoClo
         }
     }
 
-    /** Release multiple segments efficiently in one lock operation. */
+    /**
+     * Release multiple segments efficiently in one lock operation.
+     *
+     * @param segments the segments to release
+     */
     public void releaseAll(RefCountedMemorySegment... segments) {
         if (segments.length == 0)
             return;
@@ -167,6 +178,12 @@ public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoClo
         return (long) (free + canAllocate) * segmentSize;
     }
 
+    /**
+     * Returns the accurate available memory by acquiring the lock.
+     * This is more accurate than {@link #availableMemory()} but requires locking.
+     *
+     * @return available memory in bytes
+     */
     public long availableMemoryAccurate() {
         lock.lock();
         try {
@@ -183,6 +200,11 @@ public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoClo
         return segmentSize;
     }
 
+    /**
+     * Returns current pool statistics.
+     *
+     * @return pool statistics snapshot
+     */
     public PoolStats getStats() {
         return new PoolStats(maxSegments, allocatedSegments, freeList.size(), maxSegments - allocatedSegments);
     }
@@ -253,14 +275,22 @@ public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoClo
             );
     }
 
-    /** Monitoring snapshot of pool metrics. */
+    /**
+     * Monitoring snapshot of pool metrics.
+     */
     @SuppressForbidden(reason = "custom string builder")
     public static class PoolStats {
+        /** Maximum number of segments the pool can allocate. */
         public final int maxSegments;
+        /** Number of segments currently allocated. */
         public final int allocatedSegments;
+        /** Number of segments in the free list. */
         public final int freeSegments;
+        /** Number of segments that can still be allocated. */
         public final int unallocatedSegments;
+        /** Ratio of segments in use (allocated - free) / max. */
         public final double utilizationRatio;
+        /** Ratio of allocated segments to max segments. */
         public final double allocationRatio;
 
         PoolStats(int maxSegments, int allocatedSegments, int freeSegments, int unallocatedSegments) {

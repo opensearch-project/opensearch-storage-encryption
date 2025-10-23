@@ -119,6 +119,8 @@ public final class PanamaNativeAccess {
 
     /**
      * Returns true if Panama FFI native access was successfully initialized.
+     *
+     * @return true if native access is available, false otherwise
      */
     public static boolean isAvailable() {
         return NATIVE_ACCESS_AVAILABLE;
@@ -126,6 +128,8 @@ public final class PanamaNativeAccess {
 
     /**
      * Returns the system page size in bytes, or 4096 on fallback.
+     *
+     * @return the system page size in bytes
      */
     public static int getPageSize() {
         if (!NATIVE_ACCESS_AVAILABLE) {
@@ -142,6 +146,9 @@ public final class PanamaNativeAccess {
     /**
      * Advises the kernel to drop page cache for the specified file (no-op if
      * unsupported).
+     *
+     * @param filePath the path to the file whose cache should be dropped
+     * @return true if the cache was successfully dropped, false otherwise
      */
     public static boolean dropFileCache(String filePath) {
         if (!NATIVE_ACCESS_AVAILABLE || filePath == null || filePath.isEmpty()) {
@@ -177,6 +184,11 @@ public final class PanamaNativeAccess {
 
     /**
      * Allocates native memory via libc malloc(size).
+     *
+     * @param size number of bytes to allocate
+     * @return MemorySegment representing the allocated region
+     * @throws UnsupportedOperationException if Panama FFI is not available
+     * @throws OutOfMemoryError if malloc returns NULL
      */
     public static MemorySegment malloc(long size) {
         if (!NATIVE_ACCESS_AVAILABLE) {
@@ -195,6 +207,8 @@ public final class PanamaNativeAccess {
 
     /**
      * Frees native memory allocated via malloc().
+     *
+     * @param segment the MemorySegment to free
      */
     public static void free(MemorySegment segment) {
         if (segment == null || !NATIVE_ACCESS_AVAILABLE) {

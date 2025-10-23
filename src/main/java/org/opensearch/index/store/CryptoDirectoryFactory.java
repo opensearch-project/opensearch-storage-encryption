@@ -82,6 +82,9 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         super();
     }
 
+    /**
+     * Base setting prefix for crypto-related index settings.
+     */
     public static final String CRYPTO_SETTING = "index.store.crypto";
 
     /**
