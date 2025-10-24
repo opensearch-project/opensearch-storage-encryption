@@ -2,7 +2,7 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.iv;
+package org.opensearch.index.store.key;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -30,12 +30,16 @@ import org.mockito.MockitoAnnotations;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.CryptoDirectoryFactory;
+import org.opensearch.index.store.key.DefaultKeyResolver;
+import org.opensearch.index.store.key.IndexKeyResolverRegistry;
+import org.opensearch.index.store.key.KeyResolver;
+import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.test.OpenSearchTestCase;
 
 public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
 
     @Mock
-    private DefaultKeyIvResolver mockResolver;
+    private DefaultKeyResolver mockResolver;
 
     private Key testKey1;
     private Key testKey2;
@@ -77,7 +81,7 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         Field resolverCacheField = IndexKeyResolverRegistry.class.getDeclaredField("resolverCache");
         resolverCacheField.setAccessible(true);
         @SuppressWarnings("unchecked")
-        ConcurrentMap<String, KeyIvResolver> resolverCache = (ConcurrentMap<String, KeyIvResolver>) resolverCacheField.get(null);
+        ConcurrentMap<String, KeyResolver> resolverCache = (ConcurrentMap<String, KeyResolver>) resolverCacheField.get(null);
         resolverCache.put(indexUuid, mockResolver);
     }
 

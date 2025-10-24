@@ -2,7 +2,7 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.iv;
+package org.opensearch.index.store.key;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
@@ -30,9 +30,9 @@ import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.test.OpenSearchTestCase;
 
 /**
- * Unit tests for {@link DefaultKeyIvResolver}
+ * Unit tests for {@link DefaultKeyResolver}
  */
-public class DefaultKeyIvResolverTests extends OpenSearchTestCase {
+public class DefaultKeyResolverTests extends OpenSearchTestCase {
 
     @Mock
     private MasterKeyProvider mockKeyProvider;
@@ -70,12 +70,12 @@ public class DefaultKeyIvResolverTests extends OpenSearchTestCase {
     /**
      * Helper method to register a resolver in the IndexKeyResolverRegistry
      */
-    private void registerResolver(String indexUuid, KeyIvResolver resolver) throws Exception {
+    private void registerResolver(String indexUuid, KeyResolver resolver) throws Exception {
         java.lang.reflect.Field resolverCacheField = IndexKeyResolverRegistry.class.getDeclaredField("resolverCache");
         resolverCacheField.setAccessible(true);
         @SuppressWarnings("unchecked")
-        java.util.concurrent.ConcurrentMap<String, KeyIvResolver> resolverCache =
-            (java.util.concurrent.ConcurrentMap<String, KeyIvResolver>) resolverCacheField.get(null);
+        java.util.concurrent.ConcurrentMap<String, KeyResolver> resolverCache =
+            (java.util.concurrent.ConcurrentMap<String, KeyResolver>) resolverCacheField.get(null);
         resolverCache.put(indexUuid, resolver);
     }
 
@@ -91,7 +91,7 @@ public class DefaultKeyIvResolverTests extends OpenSearchTestCase {
         when(mockKeyProvider.generateDataPair()).thenReturn(keyPair);
         when(mockKeyProvider.decryptKey(any())).thenReturn(dataKey);
 
-        DefaultKeyIvResolver resolver = new DefaultKeyIvResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
+        DefaultKeyResolver resolver = new DefaultKeyResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
         registerResolver(TEST_INDEX_UUID, resolver);
 
         assertNotNull(resolver);
@@ -113,14 +113,14 @@ public class DefaultKeyIvResolverTests extends OpenSearchTestCase {
         when(mockKeyProvider.decryptKey(any())).thenReturn(dataKey);
 
         // First resolver creates the key
-        DefaultKeyIvResolver resolver1 = new DefaultKeyIvResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
+        DefaultKeyResolver resolver1 = new DefaultKeyResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
         registerResolver(TEST_INDEX_UUID, resolver1);
 
         byte[] iv1 = resolver1.getIvBytes();
         Key key1 = resolver1.getDataKey();
 
         // Second resolver should read existing key
-        DefaultKeyIvResolver resolver2 = new DefaultKeyIvResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
+        DefaultKeyResolver resolver2 = new DefaultKeyResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
 
         byte[] iv2 = resolver2.getIvBytes();
         Key key2 = resolver2.getDataKey();
@@ -144,7 +144,7 @@ public class DefaultKeyIvResolverTests extends OpenSearchTestCase {
         when(mockKeyProvider.generateDataPair()).thenReturn(keyPair);
         when(mockKeyProvider.decryptKey(any())).thenReturn(dataKey);
 
-        DefaultKeyIvResolver resolver = new DefaultKeyIvResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
+        DefaultKeyResolver resolver = new DefaultKeyResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
         registerResolver(TEST_INDEX_UUID, resolver);
 
         Key key = resolver.getDataKey();
@@ -165,7 +165,7 @@ public class DefaultKeyIvResolverTests extends OpenSearchTestCase {
         when(mockKeyProvider.generateDataPair()).thenReturn(keyPair);
         when(mockKeyProvider.decryptKey(any())).thenReturn(dataKey);
 
-        DefaultKeyIvResolver resolver = new DefaultKeyIvResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
+        DefaultKeyResolver resolver = new DefaultKeyResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
 
         byte[] iv = resolver.getIvBytes();
         assertNotNull(iv);
@@ -188,7 +188,7 @@ public class DefaultKeyIvResolverTests extends OpenSearchTestCase {
         when(mockKeyProvider.generateDataPair()).thenReturn(keyPair);
         when(mockKeyProvider.decryptKey(any())).thenReturn(dataKey);
 
-        DefaultKeyIvResolver resolver = new DefaultKeyIvResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
+        DefaultKeyResolver resolver = new DefaultKeyResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
 
         Key loadedKey = resolver.loadKeyFromMasterKeyProvider();
         assertNotNull(loadedKey);
@@ -208,13 +208,13 @@ public class DefaultKeyIvResolverTests extends OpenSearchTestCase {
         when(mockKeyProvider.decryptKey(any())).thenReturn(dataKey);
 
         // Create multiple resolvers
-        DefaultKeyIvResolver resolver1 = new DefaultKeyIvResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
+        DefaultKeyResolver resolver1 = new DefaultKeyResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
         registerResolver(TEST_INDEX_UUID, resolver1);
 
-        DefaultKeyIvResolver resolver2 = new DefaultKeyIvResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
+        DefaultKeyResolver resolver2 = new DefaultKeyResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
         registerResolver(TEST_INDEX_UUID, resolver2);
 
-        DefaultKeyIvResolver resolver3 = new DefaultKeyIvResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
+        DefaultKeyResolver resolver3 = new DefaultKeyResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
         registerResolver(TEST_INDEX_UUID, resolver3);
 
         // All should have same key and IV
@@ -236,7 +236,7 @@ public class DefaultKeyIvResolverTests extends OpenSearchTestCase {
         when(mockKeyProvider.generateDataPair()).thenReturn(keyPair);
         when(mockKeyProvider.decryptKey(any())).thenReturn(dataKey);
 
-        DefaultKeyIvResolver resolver = new DefaultKeyIvResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
+        DefaultKeyResolver resolver = new DefaultKeyResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
 
         // Verify key file exists
         String[] files = directory.listAll();
@@ -268,7 +268,7 @@ public class DefaultKeyIvResolverTests extends OpenSearchTestCase {
         when(mockKeyProvider.generateDataPair()).thenReturn(keyPair);
         when(mockKeyProvider.decryptKey(any())).thenReturn(dataKey);
 
-        DefaultKeyIvResolver resolver = new DefaultKeyIvResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
+        DefaultKeyResolver resolver = new DefaultKeyResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
 
         byte[] iv1 = resolver.getIvBytes();
         byte[] iv2 = resolver.getIvBytes();
@@ -290,7 +290,7 @@ public class DefaultKeyIvResolverTests extends OpenSearchTestCase {
         when(mockKeyProvider.generateDataPair()).thenReturn(keyPair);
         when(mockKeyProvider.decryptKey(any())).thenReturn(dataKey);
 
-        DefaultKeyIvResolver resolver = new DefaultKeyIvResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
+        DefaultKeyResolver resolver = new DefaultKeyResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
         registerResolver(TEST_INDEX_UUID, resolver);
 
         Key key1 = resolver.getDataKey();
@@ -305,7 +305,7 @@ public class DefaultKeyIvResolverTests extends OpenSearchTestCase {
         when(mockKeyProvider.generateDataPair()).thenThrow(new RuntimeException("Key provider unavailable"));
 
         try {
-            new DefaultKeyIvResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
+            new DefaultKeyResolver(TEST_INDEX_UUID, directory, provider, mockKeyProvider);
             fail("Expected IOException");
         } catch (IOException e) {
             assertTrue(e.getMessage().contains("Failed to initialize"));

@@ -8,31 +8,33 @@ import java.io.IOException;
 import java.security.Provider;
 import java.util.Set;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.FileSwitchDirectory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.index.store.directio.CryptoDirectIODirectory;
-import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 
 /**
  * A hybrid directory implementation that intelligently routes file operations to different
  * underlying directory implementations based on file extensions.
- * 
+ *
  * <p>This directory combines the benefits of different I/O strategies:
  * <ul>
  * <li><strong>Direct I/O</strong> for large, performance-critical files (via {@link CryptoDirectIODirectory})</li>
  * <li><strong>NIO</strong> for smaller files and metadata (via {@link CryptoNIOFSDirectory})</li>
  * </ul>
- * 
+ *
  * <p>File routing is determined by extension:
  * <ul>
  * <li><strong>Direct I/O extensions:</strong> kdd, cfs, doc, dvd, nvd, tim</li>
  * <li><strong>NIO extensions:</strong> all other extensions (segments files, .si files, etc.)</li>
  * </ul>
- * 
+ *
  * <p>The routing strategy is designed to:
  * <ul>
  * <li>Use Direct I/O for large data files that benefit from bypassing OS cache</li>
@@ -40,14 +42,13 @@ import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
  * <li>Maintain compatibility with standard Lucene file operations</li>
  * <li>Provide transparent encryption for both file types</li>
  * </ul>
- * 
+ *
  * <p>Both underlying directories share the same encryption keys and IV resolution,
  * ensuring consistent encryption across all file types.
- * 
+ *
  * @opensearch.internal
  */
 public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
-
     private final CryptoDirectIODirectory cryptoDirectIODirectory;
 
     // Only these extensions get special routing - everything else goes to NIOFS
@@ -55,19 +56,19 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
 
     /**
      * Creates a new HybridCryptoDirectory that routes operations between NIO and Direct I/O.
-     * 
+     *
      * <p>The hybrid directory uses the provided CryptoDirectIODirectory for performance-critical
      * large files and falls back to NIO operations for smaller files and metadata.
-     * 
+     *
      * @param lockFactory the lock factory for coordinating access across both directories
      * @param delegate the CryptoDirectIODirectory to use for Direct I/O operations
      * @param provider the security provider for cryptographic operations
      * @param keyIvResolver resolver for encryption keys and initialization vectors (shared across both directories)
      * @throws IOException if either directory cannot be initialized
      */
-    public HybridCryptoDirectory(LockFactory lockFactory, CryptoDirectIODirectory delegate, Provider provider, KeyIvResolver keyIvResolver)
+    public HybridCryptoDirectory(LockFactory lockFactory, CryptoDirectIODirectory delegate, Provider provider, KeyResolver keyResolver)
         throws IOException {
-        super(lockFactory, delegate.getDirectory(), provider, keyIvResolver);
+        super(lockFactory, delegate.getDirectory(), provider, keyResolver);
         this.cryptoDirectIODirectory = delegate;
         // todo can be moved to buffer-io with caching
         // "kdm", "tip", "tmd", "psm", "fdm", "kdi");

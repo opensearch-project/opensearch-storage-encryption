@@ -9,24 +9,24 @@ import java.util.function.BooleanSupplier;
 import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
 
-import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.key.KeyResolver;
 
 /**
  * A factory for creating crypto-enabled translogs that use unified key management.
- * This factory creates translog instances that use the same KeyIvResolver as index files
+ * This factory creates translog instances that use the same KeyResolver as index files
  * for consistent key management across all encrypted components.
  */
 public class CryptoTranslogFactory implements TranslogFactory {
 
-    private final KeyIvResolver keyIvResolver;
+    private final KeyResolver keyResolver;
 
     /**
      * Constructor for CryptoTranslogFactory.
      *
-     * @param keyIvResolver the unified key/IV resolver (same as used by index files)
+     * @param keyResolver the unified key resolver (same as used by index files)
      */
-    public CryptoTranslogFactory(KeyIvResolver keyIvResolver) {
-        this.keyIvResolver = keyIvResolver;
+    public CryptoTranslogFactory(KeyResolver keyResolver) {
+        this.keyResolver = keyResolver;
     }
 
     @Override
@@ -47,7 +47,7 @@ public class CryptoTranslogFactory implements TranslogFactory {
             globalCheckpointSupplier,
             primaryTermSupplier,
             persistedSequenceNumberConsumer,
-            keyIvResolver
+            keyResolver
         );
 
         return cryptoTranslog;
@@ -73,7 +73,7 @@ public class CryptoTranslogFactory implements TranslogFactory {
             primaryTermSupplier,
             persistedSequenceNumberConsumer,
             translogOperationHelper,
-            keyIvResolver
+            keyResolver
         );
 
         return cryptoTranslog;

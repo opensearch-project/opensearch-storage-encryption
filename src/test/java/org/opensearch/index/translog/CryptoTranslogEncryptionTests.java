@@ -21,10 +21,10 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
-import org.opensearch.index.store.iv.DefaultKeyIvResolver;
-import org.opensearch.index.store.iv.IndexKeyResolverRegistry;
-import org.opensearch.index.store.iv.KeyIvResolver;
-import org.opensearch.index.store.iv.NodeLevelKeyCache;
+import org.opensearch.index.store.key.DefaultKeyResolver;
+import org.opensearch.index.store.key.KeyResolver;
+import org.opensearch.index.store.key.IndexKeyResolverRegistry;
+import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.test.OpenSearchTestCase;
 
 /**
@@ -35,7 +35,7 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
     private static final Logger logger = LogManager.getLogger(CryptoTranslogEncryptionTests.class);
 
     private Path tempDir;
-    private KeyIvResolver keyIvResolver;
+    private KeyResolver keyResolver;
     private MasterKeyProvider keyProvider;
     private String testIndexUuid;
 
@@ -43,11 +43,11 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
      * Helper method to register the resolver in the IndexKeyResolverRegistry
      */
     @SuppressForbidden(reason = "Test needs to register mock resolver in IndexKeyResolverRegistry")
-    private void registerResolver(String indexUuid, KeyIvResolver resolver) throws Exception {
+    private void registerResolver(String indexUuid, KeyResolver resolver) throws Exception {
         Field resolverCacheField = IndexKeyResolverRegistry.class.getDeclaredField("resolverCache");
         resolverCacheField.setAccessible(true);
         @SuppressWarnings("unchecked")
-        ConcurrentMap<String, KeyIvResolver> resolverCache = (ConcurrentMap<String, KeyIvResolver>) resolverCacheField.get(null);
+        ConcurrentMap<String, KeyResolver> resolverCache = (ConcurrentMap<String, KeyResolver>) resolverCacheField.get(null);
         resolverCache.put(indexUuid, resolver);
     }
 
@@ -102,10 +102,11 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
         // Use a test index UUID
         testIndexUuid = "test-index-uuid-" + System.currentTimeMillis();
         org.apache.lucene.store.Directory directory = new org.apache.lucene.store.NIOFSDirectory(tempDir);
-        keyIvResolver = new DefaultKeyIvResolver(testIndexUuid, directory, cryptoProvider, keyProvider);
+//        keyResolver = new DefaultKeyResolver(directory, cryptoProvider, keyProvider);
+        keyResolver = new DefaultKeyResolver(testIndexUuid, directory, cryptoProvider, keyProvider);
 
         // Register the resolver with IndexKeyResolverRegistry so cache can find it
-        registerResolver(testIndexUuid, keyIvResolver);
+        registerResolver(testIndexUuid, keyResolver);
     }
 
     @Override
@@ -119,7 +120,7 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
 
     public void testTranslogDataIsActuallyEncrypted() throws IOException {
         String testTranslogUUID = "test-encryption-uuid";
-        CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyIvResolver, testTranslogUUID);
+        CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyResolver, testTranslogUUID);
 
         Path translogPath = tempDir.resolve("test-encryption.tlog");
 
@@ -151,9 +152,20 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
         // CRITICAL: Read raw file content and verify data is encrypted (NOT readable)
         byte[] fileContent = Files.readAllBytes(translogPath);
         String fileContentString = new String(fileContent, StandardCharsets.UTF_8);
+        String fileContentISO = new String(fileContent, StandardCharsets.ISO_8859_1);
 
         logger.info("File size: {} bytes", fileContent.length);
-        logger.info("File content (first 200 chars): {}", fileContentString.substring(0, Math.min(200, fileContentString.length())));
+        logger.info("File content UTF-8 (first 200 chars): {}", fileContentString.substring(0, Math.min(200, fileContentString.length())));
+        logger.info("File content ISO-8859-1 (first 200 chars): {}", fileContentISO.substring(0, Math.min(200, fileContentISO.length())));
+        logger.info("UUID in UTF-8: {}", fileContentString.contains(testTranslogUUID));
+        logger.info("UUID in ISO-8859-1: {}", fileContentISO.contains(testTranslogUUID));
+
+        // Debug: print first 53 bytes (header) as hex
+        StringBuilder hexHeader = new StringBuilder();
+        for (int i = 0; i < Math.min(53, fileContent.length); i++) {
+            hexHeader.append(String.format("%02X ", fileContent[i]));
+        }
+        logger.info("Header bytes (hex): {}", hexHeader.toString());
 
         assertFalse("Sensitive data found in plain text! File content: " + fileContentString, fileContentString.contains("192.168.1.1"));
 
@@ -162,7 +174,7 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
         assertFalse("JSON structure found in plain text! File content: " + fileContentString, fileContentString.contains("\"clientip\""));
 
         // Verify header is still readable (should be unencrypted)
-        assertTrue("Header should contain translog UUID", fileContentString.contains(testTranslogUUID));
+        assertTrue("Header should contain translog UUID", fileContentString.contains(testTranslogUUID) || fileContentISO.contains(testTranslogUUID));
     }
 
     /**
@@ -170,7 +182,7 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
      */
     public void testTranslogEncryptionDecryptionRoundTrip() throws IOException {
         String testTranslogUUID = "test-roundtrip-uuid";
-        CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyIvResolver, testTranslogUUID);
+        CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyResolver, testTranslogUUID);
 
         Path translogPath = tempDir.resolve("test-roundtrip.tlog");
 

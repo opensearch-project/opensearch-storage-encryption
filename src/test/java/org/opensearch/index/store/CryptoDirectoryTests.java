@@ -28,7 +28,7 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.tests.mockfile.ExtrasFS;
 import org.opensearch.common.Randomness;
-import org.opensearch.index.store.iv.KeyIvResolver;
+import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 
 /**
@@ -49,17 +49,16 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
         rnd.nextBytes(encryptedKey);
 
         // Create mock KeyIvResolver
-        KeyIvResolver keyIvResolver = mock(KeyIvResolver.class);
+        KeyResolver keyResolver = mock(KeyResolver.class);
         byte[] iv = new byte[16]; // 128-bit IV for AES/CTR
         rnd.nextBytes(iv);
 
-        when(keyIvResolver.getDataKey()).thenReturn(new SecretKeySpec(rawKey, "AES"));
-        when(keyIvResolver.getIvBytes()).thenReturn(iv);
+        when(keyResolver.getDataKey()).thenReturn(new SecretKeySpec(rawKey, "AES"));
 
         Provider provider = Security.getProvider("SunJCE");
         assertNotNull("Provider should not be null", provider);
 
-        return new CryptoNIOFSDirectory(FSLockFactory.getDefault(), file, provider, keyIvResolver);
+        return new CryptoNIOFSDirectory(FSLockFactory.getDefault(), file, provider, keyResolver);
     }
 
     @Override
@@ -83,7 +82,6 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
                 .stream(dir.listAll())
                 .filter(file -> !ExtrasFS.isExtra(file)) // remove any ExtrasFS stuff.
                 .filter(file -> !file.equals(KEY_FILE_NAME)) // remove keyfile.
-                .filter(file -> !file.equals("ivFile")) // remove ivFile.
                 .collect(Collectors.toSet());
 
             assertEquals(new HashSet<String>(names), files);
@@ -211,10 +209,10 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
         }
     }
 
-    @Override
-    public void testSliceOutOfBounds() {
-        /*
-         * FIX PENDING: https://github.com/opensearch-project/opensearch-storage-encryption/issues/47
-         */
-    }
+//    @Override
+//    public void testSliceOutOfBounds() {
+//        /*
+//         * FIX PENDING: https://github.com/opensearch-project/opensearch-storage-encryption/issues/47
+//         */
+//    }
 }

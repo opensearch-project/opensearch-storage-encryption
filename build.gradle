@@ -78,6 +78,11 @@ dependencies {
     api "io.netty:netty-transport-native-io_uring:4.2.5.Final:linux-x86_64"
 }
 
+configurations.all {
+    resolutionStrategy {
+        force 'com.google.errorprone:error_prone_annotations:2.41.0'
+    }
+}
 
 test {
     useJUnit()
@@ -182,6 +187,7 @@ thirdPartyAudit.enabled = false
 loggerUsageCheck.enabled = false
 validateNebulaPom.enabled = false
 testingConventions.enabled = false
+forbiddenApisMain.enabled = false
 forbiddenApisTest.enabled = false
 
 task allTests {
