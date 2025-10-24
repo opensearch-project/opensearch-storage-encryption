@@ -385,5 +385,15 @@ public class QueuingWorker implements Worker {
         executor.shutdownNow();
         queue.clear();
         inFlight.clear();
+
+        // Wait for executor to terminate
+        try {
+            if (!executor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                LOGGER.warn("Readahead worker executor did not terminate within 5 seconds");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            LOGGER.warn("Interrupted while waiting for readahead worker executor to terminate");
+        }
     }
 }
