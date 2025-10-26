@@ -25,8 +25,8 @@ import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.EngineFactory;
 import org.opensearch.index.shard.IndexEventListener;
-import org.opensearch.index.store.iv.IndexKeyResolverRegistry;
-import org.opensearch.index.store.iv.NodeLevelKeyCache;
+import org.opensearch.index.store.key.IndexKeyResolverRegistry;
+import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.pool.PoolBuilder;
 import org.opensearch.index.store.pool.PoolSizeCalculator;
 import org.opensearch.indices.cluster.IndicesClusterStateService.AllocatedIndices.IndexRemovalReason;
@@ -126,7 +126,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         if ("cryptofs".equals(storeType)) {
             indexModule.addIndexEventListener(new IndexEventListener() {
                 /*
-                 * The resolvers should be removed only AFTER the index is removed since some ongoing 
+                 * The resolvers should be removed only AFTER the index is removed since some ongoing
                  * operations call to get resolver but fail in case we remove the resolver before index is removed.
                  */
                 @Override

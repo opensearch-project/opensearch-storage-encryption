@@ -10,8 +10,7 @@ import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.util.Set;
 
-import org.opensearch.index.store.iv.KeyIvResolver;
-
+import org.opensearch.index.store.key.KeyResolver;
 /**
  * A ChannelFactory implementation that creates FileChannels with transparent
  * AES-GCM encryption/decryption for translog files.
@@ -20,27 +19,27 @@ import org.opensearch.index.store.iv.KeyIvResolver;
  * - .tlog files: Encrypted using AES-GCM with 8KB authenticated chunks
  * - .ckp files: Not encrypted (checkpoint metadata)
  *
- * Updated to use unified KeyIvResolver (same as index files) for consistent
+ * Updated to use unified KeyResolver (same as index files) for consistent
  * key management across all encrypted components.
  *
  * @opensearch.internal
  */
 public class CryptoChannelFactory implements ChannelFactory {
 
-    private final KeyIvResolver keyIvResolver;
+    private final KeyResolver keyResolver;
     private final String translogUUID;
 
     /**
      * Creates a new CryptoChannelFactory.
      *
-     * @param keyIvResolver the key and IV resolver for encryption keys (unified with index files)
+     * @param keyResolver the key and IV resolver for encryption keys (unified with index files)
      * @param translogUUID the translog UUID for exact header size calculation
      */
-    public CryptoChannelFactory(KeyIvResolver keyIvResolver, String translogUUID) {
+    public CryptoChannelFactory(KeyResolver keyResolver, String translogUUID) {
         if (translogUUID == null) {
             throw new IllegalArgumentException("translogUUID is required for exact header size calculation");
         }
-        this.keyIvResolver = keyIvResolver;
+        this.keyResolver = keyResolver;
         this.translogUUID = translogUUID;
     }
 
@@ -53,6 +52,6 @@ public class CryptoChannelFactory implements ChannelFactory {
         }
 
         Set<OpenOption> optionsSet = Set.of(options);
-        return new CryptoFileChannelWrapper(baseChannel, keyIvResolver, path, optionsSet, translogUUID);
+        return new CryptoFileChannelWrapper(baseChannel, keyResolver, path, optionsSet, translogUUID);
     }
 }

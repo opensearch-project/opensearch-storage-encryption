@@ -2,7 +2,7 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.iv;
+package org.opensearch.index.store.key;
 
 import java.security.Key;
 import java.util.Objects;
@@ -156,11 +156,11 @@ public class NodeLevelKeyCache {
                     @Override
                     public Key load(CacheKey key) throws Exception {
                         // Get resolver from registry
-                        KeyIvResolver resolver = IndexKeyResolverRegistry.getResolver(key.indexUuid);
+                        KeyResolver resolver = IndexKeyResolverRegistry.getResolver(key.indexUuid);
                         if (resolver == null) {
                             throw new IllegalStateException("No resolver registered for index: " + key.indexUuid);
                         }
-                        return ((DefaultKeyIvResolver) resolver).loadKeyFromMasterKeyProvider();
+                        return ((DefaultKeyResolver) resolver).loadKeyFromMasterKeyProvider();
                     }
                     // No reload method needed since refresh is disabled
                 });
@@ -174,24 +174,24 @@ public class NodeLevelKeyCache {
                     @Override
                     public Key load(CacheKey key) throws Exception {
                         // Get resolver from registry
-                        KeyIvResolver resolver = IndexKeyResolverRegistry.getResolver(key.indexUuid);
+                        KeyResolver resolver = IndexKeyResolverRegistry.getResolver(key.indexUuid);
                         if (resolver == null) {
                             throw new IllegalStateException("No resolver registered for index: " + key.indexUuid);
                         }
-                        return ((DefaultKeyIvResolver) resolver).loadKeyFromMasterKeyProvider();
+                        return ((DefaultKeyResolver) resolver).loadKeyFromMasterKeyProvider();
                     }
 
                     @Override
                     public Key reload(CacheKey key, Key oldValue) throws Exception {
                         try {
                             // Get resolver from registry
-                            KeyIvResolver resolver = IndexKeyResolverRegistry.getResolver(key.indexUuid);
+                            KeyResolver resolver = IndexKeyResolverRegistry.getResolver(key.indexUuid);
                             if (resolver == null) {
                                 // Index might have been deleted, keep using old key
                                 return oldValue;
                             }
 
-                            Key newKey = ((DefaultKeyIvResolver) resolver).loadKeyFromMasterKeyProvider();
+                            Key newKey = ((DefaultKeyResolver) resolver).loadKeyFromMasterKeyProvider();
                             return newKey;
                         } catch (Exception e) {
                             return oldValue;
