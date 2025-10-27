@@ -81,6 +81,9 @@ public class ShardMigrationIntegTests extends OpenSearchIntegTestCase {
             .put(cryptoIndexSettings())
             .put("index.number_of_shards", 2)
             .put("index.number_of_replicas", 0)
+            // Disable delayed allocation to allow immediate shard reallocation after node restart
+            // OpenSearch's default 60s delay would cause test timeout
+            .put("index.unassigned.node_left.delayed_timeout", "0")
             .build();
 
         createIndex("test-shard-relocation", settings);
@@ -149,34 +152,39 @@ public class ShardMigrationIntegTests extends OpenSearchIntegTestCase {
             // Wait for relocation to complete with timeout
             ensureGreen(TimeValue.timeValueSeconds(60), "test-shard-relocation");
 
-            // Additional wait to ensure all nodes have registered resolvers
-            Thread.sleep(2000);
+            // Use assertBusy to retry data verification until encryption keys are properly registered
+            // This handles the race condition where the target node needs time to register resolvers
+            final int finalNumDocs = numDocs;
+            final int randomDoc = randomIntBetween(0, numDocs - 1);
+            
+            assertBusy(() -> {
+                // Verify data integrity after relocation
+                SearchResponse response2 = client().prepareSearch("test-shard-relocation").setSize(0).get();
+                assertThat(
+                    "Document count should remain same after relocation",
+                    response2.getHits().getTotalHits().value(),
+                    equalTo((long) finalNumDocs)
+                );
 
-            // Verify data integrity after relocation
-            SearchResponse response2 = client().prepareSearch("test-shard-relocation").setSize(0).get();
-            assertThat(
-                "Document count should remain same after relocation",
-                response2.getHits().getTotalHits().value(),
-                equalTo((long) numDocs)
-            );
+                // Verify we can still read specific documents
+                SearchResponse specificDoc = client()
+                    .prepareSearch("test-shard-relocation")
+                    .setQuery(org.opensearch.index.query.QueryBuilders.termQuery("number", randomDoc))
+                    .get();
+                assertThat(specificDoc.getHits().getTotalHits().value(), equalTo(1L));
+            }, 30, TimeUnit.SECONDS);
 
-            // Verify we can still read specific documents
-            int randomDoc = randomIntBetween(0, numDocs - 1);
-            SearchResponse specificDoc = client()
-                .prepareSearch("test-shard-relocation")
-                .setQuery(org.opensearch.index.query.QueryBuilders.termQuery("number", randomDoc))
-                .get();
-            assertThat(specificDoc.getHits().getTotalHits().value(), equalTo(1L));
+            // Verify we can still write after relocation - with retry for encryption key availability
+            final int newDocs = 50;
+            assertBusy(() -> {
+                for (int i = finalNumDocs; i < finalNumDocs + newDocs; i++) {
+                    index("test-shard-relocation", "_doc", String.valueOf(i), "field", "value" + i, "number", i);
+                }
+                refresh();
 
-            // Verify we can still write after relocation
-            int newDocs = 50;
-            for (int i = numDocs; i < numDocs + newDocs; i++) {
-                index("test-shard-relocation", "_doc", String.valueOf(i), "field", "value" + i, "number", i);
-            }
-            refresh();
-
-            SearchResponse response3 = client().prepareSearch("test-shard-relocation").setSize(0).get();
-            assertThat(response3.getHits().getTotalHits().value(), equalTo((long) (numDocs + newDocs)));
+                SearchResponse response3 = client().prepareSearch("test-shard-relocation").setSize(0).get();
+                assertThat(response3.getHits().getTotalHits().value(), equalTo((long) (finalNumDocs + newDocs)));
+            }, 30, TimeUnit.SECONDS);
         } else {
             logger.info("No relocation performed - shards already optimally distributed");
         }
@@ -236,23 +244,30 @@ public class ShardMigrationIntegTests extends OpenSearchIntegTestCase {
         ensureStableCluster(3);
         ensureGreen("test-replica-recovery");
 
-        // Verify data is still accessible after node restart
-        SearchResponse response2 = client().prepareSearch("test-replica-recovery").setSize(0).get();
-        assertThat(
-            "All documents should be accessible after node restart",
-            response2.getHits().getTotalHits().value(),
-            equalTo((long) numDocs)
-        );
+        // Use assertBusy to retry data verification until encryption keys are properly registered after restart
+        // This handles the race condition where the restarted node needs time to register resolvers
+        final int finalNumDocs = numDocs;
+        assertBusy(() -> {
+            // Verify data is still accessible after node restart
+            SearchResponse response2 = client().prepareSearch("test-replica-recovery").setSize(0).get();
+            assertThat(
+                "All documents should be accessible after node restart",
+                response2.getHits().getTotalHits().value(),
+                equalTo((long) finalNumDocs)
+            );
+        }, 30, TimeUnit.SECONDS);
 
-        // Verify we can still write
-        int newDocs = 50;
-        for (int i = numDocs; i < numDocs + newDocs; i++) {
-            index("test-replica-recovery", "_doc", String.valueOf(i), "field", "value" + i, "number", i);
-        }
-        refresh();
+        // Verify we can still write - with retry for encryption key availability
+        final int newDocs = 50;
+        assertBusy(() -> {
+            for (int i = finalNumDocs; i < finalNumDocs + newDocs; i++) {
+                index("test-replica-recovery", "_doc", String.valueOf(i), "field", "value" + i, "number", i);
+            }
+            refresh();
 
-        SearchResponse response3 = client().prepareSearch("test-replica-recovery").setSize(0).get();
-        assertThat(response3.getHits().getTotalHits().value(), equalTo((long) (numDocs + newDocs)));
+            SearchResponse response3 = client().prepareSearch("test-replica-recovery").setSize(0).get();
+            assertThat(response3.getHits().getTotalHits().value(), equalTo((long) (finalNumDocs + newDocs)));
+        }, 30, TimeUnit.SECONDS);
     }
 
     /**
@@ -455,18 +470,14 @@ public class ShardMigrationIntegTests extends OpenSearchIntegTestCase {
         // Add more documents while node is restarting
         internalCluster().restartNode(nodeToRestart, new org.opensearch.test.InternalTestCluster.RestartCallback() {
             @Override
-            public Settings onNodeStopped(String nodeName) {
-                try {
-                    // Index more documents while node is down
-                    int additionalDocs = 50;
-                    for (int i = numDocs; i < numDocs + additionalDocs; i++) {
-                        index("test-replica-sync", "_doc", String.valueOf(i), "field", "value" + i, "number", i);
-                    }
-                    refresh();
-                } catch (Exception e) {
-                    logger.error("Failed to index during node restart", e);
+            public Settings onNodeStopped(String nodeName) throws Exception {
+                // Index more documents while node is down
+                int additionalDocs = 50;
+                for (int i = numDocs; i < numDocs + additionalDocs; i++) {
+                    index("test-replica-sync", "_doc", String.valueOf(i), "field", "value" + i, "number", i);
                 }
-                return null;
+                refresh();
+                return Settings.EMPTY;
             }
         });
 
