@@ -42,6 +42,12 @@ public class BlockSlotTinyCache {
     private static final int SLOT_COUNT = 32;
     private static final int SLOT_MASK = SLOT_COUNT - 1;
 
+    /**
+     * Result of a cache lookup operation, containing the value and whether it was found in cache.
+     */
+    public record LookupResult(BlockCacheValue<RefCountedMemorySegment> value, boolean wasCacheHit) {
+    }
+
     private record Slot(long blockIdx, BlockCacheValue<RefCountedMemorySegment> val, int generation) {
     }
 
@@ -65,16 +71,16 @@ public class BlockSlotTinyCache {
 
     /**
      * Acquires a reference-counted memory segment for the specified block offset.
-     * 
+     *
      * <p>This method implements a fast L1 cache lookup with generation-based staleness detection.
      * It first checks the last accessed block, then checks the slot cache, and finally falls back
      * to the main cache if needed.
-     * 
+     *
      * @param blockOff the byte offset within the file, must be block-aligned
-     * @return a cached value containing the reference-counted memory segment for the block
+     * @return a LookupResult containing the cached value and whether it was found in any cache tier
      * @throws IOException if an I/O error occurs while loading the block from the underlying storage
      */
-    public BlockCacheValue<RefCountedMemorySegment> acquireRefCountedValue(long blockOff) throws IOException {
+    public LookupResult acquireRefCountedValue(long blockOff) throws IOException {
         final long blockIdx = blockOff >>> CACHE_BLOCK_SIZE_POWER;
 
         // Fast path: last accessed (avoid slot calculation if possible)
@@ -82,7 +88,7 @@ public class BlockSlotTinyCache {
         if (blockIdx == lastBlockIdx && lastVal != null) {
             RefCountedMemorySegment seg = lastVal.value();
             if (seg.getGeneration() == lastGeneration) {
-                return lastVal;
+                return new LookupResult(lastVal, true);
             }
         }
 
@@ -100,21 +106,24 @@ public class BlockSlotTinyCache {
                     lastBlockIdx = blockIdx;
                     lastVal = val;
                     lastGeneration = currentGen;
-                    return val;
+                    return new LookupResult(val, true);
                 }
                 // Generation mismatch - segment was evicted/recycled, fall through to reload
             }
         }
 
-        // Cache miss path - reuse pre-allocated key if possible
+        // Cache miss in L1 - check main cache
         FileBlockCacheKey key = slotKeys[slotIdx];
         if (key == null || key.fileOffset() != blockOff) {
             key = new FileBlockCacheKey(path, blockOff);
             slotKeys[slotIdx] = key; // Cache for future use
         }
-        BlockCacheValue<RefCountedMemorySegment> val = cache.get(key);
 
-        if (val == null) {
+        // Check main cache first to determine hit/miss
+        BlockCacheValue<RefCountedMemorySegment> val = cache.get(key);
+        boolean wasCacheHit = (val != null);
+
+        if (!wasCacheHit) {
             val = cache.getOrLoad(key);
         }
 
@@ -125,7 +134,7 @@ public class BlockSlotTinyCache {
         lastVal = val;
         lastGeneration = generation;
 
-        return val;
+        return new LookupResult(val, wasCacheHit);
     }
 
     /**

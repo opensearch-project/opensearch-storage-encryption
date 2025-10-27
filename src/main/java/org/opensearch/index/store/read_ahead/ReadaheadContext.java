@@ -52,24 +52,57 @@ import java.io.Closeable;
 public interface ReadaheadContext extends Closeable {
 
     /**
+     * Records a block access event (cache hit or miss) for readahead pattern tracking.
+     *
+     * <p>This method should be extremely fast (~2-5ns) as it's called on the critical hot path
+     * for every new block access. It uses lock-free atomic operations to record the access,
+     * and defers all expensive work (pattern detection, decision making, prefetch scheduling)
+     * to a background thread.
+     *
+     * <p>The method simply records:
+     * <ul>
+     * <li>The block offset that was accessed</li>
+     * <li>Whether it was a cache hit or miss</li>
+     * </ul>
+     *
+     * <p>A background thread periodically processes these notifications to:
+     * <ul>
+     * <li>Detect sequential access patterns</li>
+     * <li>Adjust readahead window size</li>
+     * <li>Schedule prefetch operations if needed</li>
+     * </ul>
+     *
+     * @param blockOffset the block-aligned file offset that was accessed
+     * @param wasHit true if this was a cache hit, false if it was a cache miss
+     */
+    void onAccess(long blockOffset, boolean wasHit);
+
+    /**
      * Called on cache miss to update access pattern tracking and possibly trigger readahead operations.
-     * 
-     * <p>This method analyzes the access pattern based on the current and previous file offsets
-     * to determine if a sequential access pattern is detected. If sequential access is identified
-     * and the readahead policy determines it's appropriate, this will trigger prefetch operations.
+     *
+     * <p><strong>Deprecated:</strong> Use {@link #onAccess(long, boolean)} instead for better performance.
+     * This method will be removed in a future version.
      *
      * @param fileOffset the absolute file offset where the cache miss occurred
+     * @deprecated Use {@link #onAccess(long, boolean)} with wasHit=false instead
      */
-    void onCacheMiss(long fileOffset);
+    @Deprecated
+    default void onCacheMiss(long fileOffset) {
+        onAccess(fileOffset, false);
+    }
 
     /**
      * Called on cache hits to track hit streaks for adaptive readahead behavior.
-     * 
-     * <p>This method updates internal statistics about cache performance, which can be used
-     * by readahead policies to adapt their behavior. High cache hit rates may indicate
-     * successful readahead operations and could influence future prefetch decisions.
+     *
+     * <p><strong>Deprecated:</strong> Use {@link #onAccess(long, boolean)} instead for better performance.
+     * This method will be removed in a future version.
+     *
+     * @deprecated Use {@link #onAccess(long, boolean)} with wasHit=true instead
      */
-    void onCacheHit();
+    @Deprecated
+    default void onCacheHit() {
+        // No-op in default implementation - subclasses should override onAccess
+    }
 
     /**
      * Manually triggers readahead operations starting from the specified file offset.
@@ -113,13 +146,46 @@ public interface ReadaheadContext extends Closeable {
 
     /**
      * Gets the readahead policy associated with this context.
-     * 
+     *
      * <p>The policy determines readahead behavior such as when to trigger prefetch operations,
      * how much data to prefetch, and how to adapt to observed access patterns.
-     * 
+     *
      * @return the readahead policy governing this context's prefetch behavior
      */
     ReadaheadPolicy policy();
+
+    /**
+     * Drains and processes any queued readahead tasks from the background thread.
+     *
+     * <p>This method is called by the ReadaheadManager's background processing thread
+     * to handle deferred work from {@link #onAccess} calls. It drains pending events,
+     * applies readahead policies, and schedules prefetch operations without blocking
+     * the hot read path.
+     *
+     * <p>Implementations should process all pending work atomically and return true
+     * if any work was performed, or false if the queue was empty.
+     *
+     * @return true if any queued tasks were processed, false if queue was empty
+     */
+    default boolean processQueue() {
+        return false;
+    }
+
+    /**
+     * Checks if the readahead task queue has pending work.
+     *
+     * <p>Used by the background processing thread to determine if there is queued
+     * work that needs processing. This helps avoid unnecessary processing attempts
+     * and allows efficient parking when no work is pending.
+     *
+     * <p>Note: This is a hint for optimization. Due to concurrent access, the return
+     * value may become stale immediately after the call returns.
+     *
+     * @return true if there may be queued work, false if queue is definitely empty
+     */
+    default boolean hasQueuedWork() {
+        return false;
+    }
 
     @Override
     void close();

@@ -454,7 +454,8 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
         when(value.value()).thenReturn(refSegment);
         when(value.tryPin()).thenReturn(true);
 
-        when(mockTinyCache.acquireRefCountedValue(eq(offset))).thenReturn(value);
+        BlockSlotTinyCache.LookupResult result = new BlockSlotTinyCache.LookupResult(value, true);
+        when(mockTinyCache.acquireRefCountedValue(eq(offset))).thenReturn(result);
         when(mockCache.getOrLoad(any(FileBlockCacheKey.class))).thenReturn(value);
     }
 
