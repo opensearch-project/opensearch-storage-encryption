@@ -156,7 +156,7 @@ public class ShardMigrationIntegTests extends OpenSearchIntegTestCase {
             // This handles the race condition where the target node needs time to register resolvers
             final int finalNumDocs = numDocs;
             final int randomDoc = randomIntBetween(0, numDocs - 1);
-            
+
             assertBusy(() -> {
                 // Verify data integrity after relocation
                 SearchResponse response2 = client().prepareSearch("test-shard-relocation").setSize(0).get();
