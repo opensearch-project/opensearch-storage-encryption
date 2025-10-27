@@ -152,11 +152,12 @@ public class DefaultKeyIvResolver implements KeyIvResolver {
      * {@inheritDoc}
      * Returns the data key for all operations.
      * The cache handles MasterKey Provider failures by returning the last known key.
+     * Passes this resolver directly to the cache to eliminate registry lookup race conditions.
      */
     @Override
     public Key getDataKey() {
         try {
-            return NodeLevelKeyCache.getInstance().get(indexUuid);
+            return NodeLevelKeyCache.getInstance().get(indexUuid, this);
         } catch (Exception e) {
             throw new RuntimeException("Failed to get encryption key", e);
         }

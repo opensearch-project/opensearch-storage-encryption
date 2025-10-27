@@ -195,6 +195,9 @@ public class ShardMigrationIntegTests extends OpenSearchIntegTestCase {
             .put(cryptoIndexSettings())
             .put("index.number_of_shards", 2)
             .put("index.number_of_replicas", 1) // 1 replica per shard
+            // Disable delayed allocation to allow immediate shard reallocation after node restart
+            // OpenSearch's default 60s delay would cause test timeout
+            .put("index.unassigned.node_left.delayed_timeout", "0")
             .build();
 
         createIndex("test-replica-recovery", settings);
@@ -415,6 +418,9 @@ public class ShardMigrationIntegTests extends OpenSearchIntegTestCase {
             .put(cryptoIndexSettings())
             .put("index.number_of_shards", 2)
             .put("index.number_of_replicas", 1)
+            // Disable delayed allocation to allow immediate shard reallocation after node restart
+            // OpenSearch's default 60s delay would cause test timeout
+            .put("index.unassigned.node_left.delayed_timeout", "0")
             .build();
 
         createIndex("test-replica-sync", settings);

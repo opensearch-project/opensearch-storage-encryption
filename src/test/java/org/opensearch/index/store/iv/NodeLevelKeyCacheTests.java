@@ -101,7 +101,7 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         // Register the mock resolver before using the cache
         registerMockResolver(TEST_INDEX_UUID);
 
-        Key retrievedKey = cache.get(TEST_INDEX_UUID);
+        Key retrievedKey = cache.get(TEST_INDEX_UUID, mockResolver);
 
         assertEquals(testKey1, retrievedKey);
         verify(mockResolver, times(1)).loadKeyFromMasterKeyProvider();
@@ -120,7 +120,7 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         
         Exception thrown = null;
         try {
-            cache.get(TEST_INDEX_UUID);
+            cache.get(TEST_INDEX_UUID, mockResolver);
             fail("Expected exception not thrown");
         } catch (Exception e) {
             thrown = e;
@@ -139,9 +139,9 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         registerMockResolver(TEST_INDEX_UUID);
 
         // First call should load
-        Key key1 = cache.get(TEST_INDEX_UUID);
+        Key key1 = cache.get(TEST_INDEX_UUID, mockResolver);
         // Second call should hit cache
-        Key key2 = cache.get(TEST_INDEX_UUID);
+        Key key2 = cache.get(TEST_INDEX_UUID, mockResolver);
 
         assertEquals(key1, key2);
         // Should only load once
@@ -163,20 +163,20 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         registerMockResolver(TEST_INDEX_UUID);
 
         // Initial load
-        Key initialKey = cache.get(TEST_INDEX_UUID);
+        Key initialKey = cache.get(TEST_INDEX_UUID, mockResolver);
         assertEquals(testKey1, initialKey);
 
         // Wait for refresh to trigger and complete
         Thread.sleep(1500);
 
         // Force a get to ensure refresh is complete
-        cache.get(TEST_INDEX_UUID);
+        cache.get(TEST_INDEX_UUID, mockResolver);
 
         // Wait a bit more for async refresh to complete
         Thread.sleep(500);
 
         // Access again - should get refreshed key
-        Key refreshedKey = cache.get(TEST_INDEX_UUID);
+        Key refreshedKey = cache.get(TEST_INDEX_UUID, mockResolver);
         assertEquals(testKey2, refreshedKey);
 
         verify(mockResolver, org.mockito.Mockito.atLeast(2)).loadKeyFromMasterKeyProvider();
@@ -197,7 +197,7 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         registerMockResolver(TEST_INDEX_UUID);
 
         // Initial load
-        Key initialKey = cache.get(TEST_INDEX_UUID);
+        Key initialKey = cache.get(TEST_INDEX_UUID, mockResolver);
         assertEquals(testKey1, initialKey);
 
         // Wait for refresh to trigger (longer wait for async refresh)
@@ -205,7 +205,7 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
 
         // Force multiple gets to ensure refresh is triggered and completed
         for (int i = 0; i < 3; i++) {
-            Key stillOldKey = cache.get(TEST_INDEX_UUID);
+            Key stillOldKey = cache.get(TEST_INDEX_UUID, mockResolver);
             assertEquals(testKey1, stillOldKey);
             Thread.sleep(100); // Small delay between attempts
         }
@@ -234,13 +234,13 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         registerMockResolver(TEST_INDEX_UUID);
 
         // Initial load
-        Key initialKey = cache.get(TEST_INDEX_UUID);
+        Key initialKey = cache.get(TEST_INDEX_UUID, mockResolver);
         assertEquals(testKey1, initialKey);
 
         // Multiple accesses with failed refreshes
         for (int i = 0; i < 3; i++) {
             Thread.sleep(1200);
-            Key key = cache.get(TEST_INDEX_UUID);
+            Key key = cache.get(TEST_INDEX_UUID, mockResolver);
             assertEquals(testKey1, key); // Should always return original key
         }
 
@@ -256,14 +256,14 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         registerMockResolver(TEST_INDEX_UUID);
 
         // Load key
-        cache.get(TEST_INDEX_UUID);
+        cache.get(TEST_INDEX_UUID, mockResolver);
         assertEquals(1, cache.size());
 
         // Evict
         cache.evict(TEST_INDEX_UUID);
 
         // Key should be loaded again
-        cache.get(TEST_INDEX_UUID);
+        cache.get(TEST_INDEX_UUID, mockResolver);
 
         // Should have loaded twice (once before eviction, once after)
         verify(mockResolver, times(2)).loadKeyFromMasterKeyProvider();
@@ -280,10 +280,10 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         registerMockResolver("index1");
         registerMockResolver("index2");
 
-        cache.get("index1");
+        cache.get("index1", mockResolver);
         assertEquals(1, cache.size());
 
-        cache.get("index2");
+        cache.get("index2", mockResolver);
         assertEquals(2, cache.size());
     }
 
@@ -296,8 +296,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         registerMockResolver("index1");
         registerMockResolver("index2");
 
-        cache.get("index1");
-        cache.get("index2");
+        cache.get("index1", mockResolver);
+        cache.get("index2", mockResolver);
         assertEquals(2, cache.size());
 
         cache.clear();
@@ -345,7 +345,7 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         for (int i = 0; i < threadCount; i++) {
             executor.submit(() -> {
                 try {
-                    Key key = cache.get(TEST_INDEX_UUID);
+                    Key key = cache.get(TEST_INDEX_UUID, mockResolver);
                     assertEquals(testKey1, key);
                 } catch (Exception e) {
                     fail("Unexpected exception: " + e.getMessage());
@@ -370,12 +370,22 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         // Test null index UUID
         Exception thrown = null;
         try {
-            cache.get(null);
+            cache.get(null, mockResolver);
         } catch (NullPointerException e) {
             thrown = e;
         }
         assertNotNull(thrown);
         assertTrue(thrown.getMessage().contains("indexUuid cannot be null"));
+
+        // Test null resolver
+        thrown = null;
+        try {
+            cache.get(TEST_INDEX_UUID, null);
+        } catch (NullPointerException e) {
+            thrown = e;
+        }
+        assertNotNull(thrown);
+        assertTrue(thrown.getMessage().contains("resolver cannot be null"));
 
         // Test evict with null
         thrown = null;
@@ -411,14 +421,14 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         registerMockResolver(TEST_INDEX_UUID);
 
         // Initial load
-        Key initialKey = cache.get(TEST_INDEX_UUID);
+        Key initialKey = cache.get(TEST_INDEX_UUID, mockResolver);
         assertEquals(testKey1, initialKey);
 
         // Wait for what would be a refresh period
         Thread.sleep(2000);
 
         // Access again - should still get same key (no refresh)
-        Key sameKey = cache.get(TEST_INDEX_UUID);
+        Key sameKey = cache.get(TEST_INDEX_UUID, mockResolver);
         assertEquals(testKey1, sameKey);
 
         // Should only load once (no refresh)
