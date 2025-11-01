@@ -78,33 +78,6 @@ public interface ReadaheadContext extends Closeable {
     void onAccess(long blockOffset, boolean wasHit);
 
     /**
-     * Called on cache miss to update access pattern tracking and possibly trigger readahead operations.
-     *
-     * <p><strong>Deprecated:</strong> Use {@link #onAccess(long, boolean)} instead for better performance.
-     * This method will be removed in a future version.
-     *
-     * @param fileOffset the absolute file offset where the cache miss occurred
-     * @deprecated Use {@link #onAccess(long, boolean)} with wasHit=false instead
-     */
-    @Deprecated
-    default void onCacheMiss(long fileOffset) {
-        onAccess(fileOffset, false);
-    }
-
-    /**
-     * Called on cache hits to track hit streaks for adaptive readahead behavior.
-     *
-     * <p><strong>Deprecated:</strong> Use {@link #onAccess(long, boolean)} instead for better performance.
-     * This method will be removed in a future version.
-     *
-     * @deprecated Use {@link #onAccess(long, boolean)} with wasHit=true instead
-     */
-    @Deprecated
-    default void onCacheHit() {
-        // No-op in default implementation - subclasses should override onAccess
-    }
-
-    /**
      * Manually triggers readahead operations starting from the specified file offset.
      * 
      * <p>This method bypasses the normal access pattern detection and forces readahead

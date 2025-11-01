@@ -102,28 +102,12 @@ public class ReadaheadManagerImpl implements ReadaheadManager {
             throw new IllegalStateException("ReadaheadContext already registered");
         }
 
-        WindowedReadAheadConfig config = WindowedReadAheadConfig.of(4, 16, 4, 50);
+        WindowedReadAheadConfig config = WindowedReadAheadConfig.defaultConfig();
 
         // Pass processing thread reference for unpark notifications
         this.context = WindowedReadAheadContext.build(path, fileLength, worker, config, processingThread);
 
         return this.context;
-    }
-
-    @Override
-    public void onCacheMiss(ReadaheadContext ctx, long startFileOffset) {
-        if (closed.get() || ctx == null) {
-            return;
-        }
-        ctx.onCacheMiss(startFileOffset);
-    }
-
-    @Override
-    public void onCacheHit(ReadaheadContext ctx) {
-        if (closed.get() || ctx == null) {
-            return;
-        }
-        ctx.onCacheHit();
     }
 
     @Override

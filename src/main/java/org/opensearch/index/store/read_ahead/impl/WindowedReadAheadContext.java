@@ -4,6 +4,8 @@
  */
 package org.opensearch.index.store.read_ahead.impl;
 
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
+
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.nio.file.Path;
@@ -12,63 +14,46 @@ import java.util.concurrent.locks.LockSupport;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadPolicy;
 import org.opensearch.index.store.read_ahead.Worker;
 
 /**
- * Batching, low-overhead readahead context for sequential access patterns.
+ * Handles cache hits/misses, batches readahead requests, rate-limits worker wakeups.
  *
- * <p>Design:
- * <ul>
- *   <li>Hot path (onAccess) has no per-access atomics or fences.</li>
- *   <li>Hits are suppressed and only extend when near the scheduled tail (guard band).</li>
- *   <li>Misses are batched; we extend once per batch and rate-limit unparks.</li>
- *   <li>Worker always schedules a single contiguous span from the tail.</li>
- * </ul>
- *
- * <p>Threading assumptions:
- * <ul>
- *   <li>Typically one context per IndexInput clone (single reader thread).</li>
- *   <li>If multiple reader threads ever share this context, {@link #extendDesiredTo(long)}
- *       uses an atomic max via VarHandle to remain correct.</li>
- * </ul>
+ * Hot path: no atomics, best-effort counters.
+ * Delegates pattern tracking to Policy, manages I/O scheduling.
  */
 public class WindowedReadAheadContext implements ReadaheadContext {
     private static final Logger LOGGER = LogManager.getLogger(WindowedReadAheadContext.class);
 
     private final Path path;
-    private final long fileLength;
-    private final long lastFileSeg; // inclusive, in block units
+    private final long lastFileSeg;
     private final Worker worker;
     private final WindowedReadaheadPolicy policy;
     private final Thread processingThread;
 
+    // ---- Adaptive thresholds ----
     private static final int HIT_NOP_THRESHOLD_BASE = 8;
     private static final int HIT_NOP_THRESHOLD_MAX = 512;
     private int hitNopThreshold = HIT_NOP_THRESHOLD_BASE;
 
-    private static final int MISS_BATCH = 3;                        // misses to batch before readahead
-    private static final long MIN_UNPARK_INTERVAL_NS = 300_000L;    // 300 µs rate-limit
+    private static final int MISS_BATCH = 3;                   // batch N misses before triggering
+    private static final long MIN_UNPARK_INTERVAL_NS = 300_000L; // 300µs min wake interval
+    private static final long MERGE_SPIN_NS = 60_000L;         // 60µs worker spin to coalesce
 
-    // these are states shared between readers and worker, so need synchonizations.
-    private volatile long desiredEndBlock = 0;        // coalesced target (exclusive, in blocks)
-    private volatile long lastScheduledEndBlock = 0;  // watermark (exclusive, in blocks)
+    // ---- Shared state ----
+    private volatile long desiredEndBlock = 0;
+    private volatile long lastScheduledEndBlock = 0;
 
-    // Best-effort counters (non-volatile): typically one context per IndexInput (single thread).
-    // If shared across threads, races are acceptable for readahead heuristics.
-    // Keeping non-volatile saves ~2-3 cycles per access on hot path.
+    // ---- Reader-local, non-volatile ----
     private int consecutiveHits = 0;
     private int missCount = 0;
     private long missMaxBlock = -1;
 
-    // Small rate limiter for unparks. Volatile to avoid redundant wake storms if multiple threads call onAccess.
     private volatile long lastUnparkNanos = 0;
-
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
-    // VarHandle used ONLY to implement atomic-max for desiredEndBlock if this context is shared.
     private static final VarHandle DESIRED_END_VH;
     static {
         try {
@@ -80,7 +65,6 @@ public class WindowedReadAheadContext implements ReadaheadContext {
 
     private WindowedReadAheadContext(Path path, long fileLength, Worker worker, WindowedReadaheadPolicy policy, Thread processingThread) {
         this.path = path;
-        this.fileLength = fileLength;
         this.worker = worker;
         this.policy = policy;
         this.processingThread = processingThread;
@@ -95,69 +79,79 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         WindowedReadAheadConfig config,
         Thread processingThread
     ) {
-        var policy = new WindowedReadaheadPolicy(
-            path,
-            config.initialWindow(),
-            config.maxWindowSegments(),
-            config.shrinkOnRandomThreshold()
-        );
+        var policy = new WindowedReadaheadPolicy(path, config.initialWindow(), config.maxWindowSegments(), config.randomAccessThreshold());
         return new WindowedReadAheadContext(path, fileLength, worker, policy, processingThread);
     }
 
-    // HOT PATH: Called per access, has to be very cheap.
+    // hot path. keep it always optimized and fast
     @Override
     public void onAccess(long blockOffset, boolean wasHit) {
         final long currBlock = blockOffset >>> CACHE_BLOCK_SIZE_POWER;
 
-        // -----------------------------
-        // Cache Hit Path
-        // -----------------------------
         if (wasHit) {
-            if (++consecutiveHits < hitNopThreshold) {
-                // Still within suppression window
-                return;
-            }
-
-            // Guard-band: only extend when we're close to the scheduled tail
-            final long scheduledEnd = lastScheduledEndBlock;
-            if (scheduledEnd > 0) {
-                final long guardStart = Math.max(0, scheduledEnd - policy.leadBlocks());
-                if (currBlock >= guardStart && currBlock < scheduledEnd) {
-                    final long newEnd = Math.min(currBlock + policy.leadBlocks(), lastFileSeg + 1);
-                    extendDesiredTo(newEnd);
-                    maybeUnpark();
-                }
-            }
-
-            // Exponential backoff: if cache is extremely hot, reduce wakeups
-            if (hitNopThreshold < HIT_NOP_THRESHOLD_MAX) {
-                hitNopThreshold <<= 1; // double the threshold
-            }
-
-            consecutiveHits = 0;
+            handleCacheHit(currBlock);
             return;
         }
+        handleCacheMiss(currBlock);
+    }
 
-        // -----------------------------
-        // Cache Miss Path
-        // -----------------------------
+    private void handleCacheHit(long currBlock) {
+        if (++consecutiveHits < hitNopThreshold)
+            return;
+
+        guardedExtend(currBlock);
+
+        // exponentially back off hit window to reduce wakeups
+        if (hitNopThreshold < HIT_NOP_THRESHOLD_MAX)
+            hitNopThreshold <<= 1;
+
         consecutiveHits = 0;
-        hitNopThreshold = HIT_NOP_THRESHOLD_BASE; // reset adaptive suppression
+    }
+
+    private void handleCacheMiss(long currBlock) {
+        consecutiveHits = 0;
+        hitNopThreshold = HIT_NOP_THRESHOLD_BASE;
 
         missCount++;
-        if (currBlock > missMaxBlock) {
+        if (currBlock > missMaxBlock)
             missMaxBlock = currBlock;
-        }
 
         final int window = Math.max(1, policy.currentWindow());
         final boolean enoughMisses = missCount >= MISS_BATCH;
         final boolean farAhead = (missMaxBlock - lastScheduledEndBlock) >= Math.max(1, window / 4);
 
         if (enoughMisses || farAhead) {
-            final long target = Math.min(missMaxBlock + policy.leadBlocks(), lastFileSeg + 1);
-            extendDesiredTo(target);
-            missCount = 0;
-            missMaxBlock = -1;
+            handleSequentialMiss();
+        } else if (currBlock < lastScheduledEndBlock - window) {
+            handleRandomMiss();
+        }
+    }
+
+    /** Sequential miss: extend readahead window and schedule */
+    private void handleSequentialMiss() {
+        final long target = Math.min(missMaxBlock + policy.leadBlocks(), lastFileSeg + 1);
+        extendDesiredTo(target);
+        missCount = 0;
+        missMaxBlock = -1;
+        maybeUnpark();
+    }
+
+    /** Random or backward miss: cancel pending readahead */
+    private void handleRandomMiss() {
+        desiredEndBlock = lastScheduledEndBlock;
+        missCount = 0;
+        missMaxBlock = -1;
+    }
+
+    /** Extend readahead if we are close to scheduled tail */
+    private void guardedExtend(long currBlock) {
+        final long scheduledEnd = lastScheduledEndBlock;
+        if (scheduledEnd <= 0)
+            return;
+        final long guardStart = Math.max(0, scheduledEnd - policy.leadBlocks());
+        if (currBlock >= guardStart && currBlock < scheduledEnd) {
+            final long newEnd = Math.min(currBlock + policy.leadBlocks(), lastFileSeg + 1);
+            extendDesiredTo(newEnd);
             maybeUnpark();
         }
     }
@@ -167,10 +161,20 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         if (closed.get())
             return false;
 
-        final long desired = desiredEndBlock;
+        long desired = desiredEndBlock;
         final long scheduled = lastScheduledEndBlock;
         if (desired <= scheduled)
             return false;
+
+        // brief spin to absorb recent updates
+        final long spinUntil = System.nanoTime() + MERGE_SPIN_NS;
+        while (System.nanoTime() < spinUntil) {
+            long d2 = desiredEndBlock;
+            if (d2 <= desired)
+                break;
+            desired = d2;
+            Thread.onSpinWait();
+        }
 
         final long startSeg = scheduled;
         final long endExclusive = Math.min(desired, lastFileSeg + 1);
@@ -179,7 +183,7 @@ public class WindowedReadAheadContext implements ReadaheadContext {
             return false;
 
         final long anchorOffset = startSeg << CACHE_BLOCK_SIZE_POWER;
-        final boolean accepted = worker.schedule(path, anchorOffset, blockCount);
+        boolean accepted = worker.schedule(path, anchorOffset, blockCount);
         if (accepted)
             lastScheduledEndBlock = endExclusive;
 
@@ -199,26 +203,15 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         return accepted;
     }
 
-    /**
-     * Extend desiredEndBlock to at least {@code newEndExclusive} using an atomic max.
-     * This is practically free in the common case (when no extension is needed),
-     * and preserves correctness if multiple reader threads share the context.
-     */
     private void extendDesiredTo(long newEndExclusive) {
         long prev;
         do {
-            // Plain volatile read first (cheaper than getAcquire)
             prev = desiredEndBlock;
             if (newEndExclusive <= prev)
                 return;
-            // weak CAS is fine; contention is rare and best-effort acceptable
         } while (!DESIRED_END_VH.weakCompareAndSetRelease(this, prev, newEndExclusive));
     }
 
-    /**
-     * Wake the processing thread only when the delta is meaningful and not too frequent.
-     * The minimum batch size is dynamic, derived from current policy window.
-     */
     private void maybeUnpark() {
         final long delta = desiredEndBlock - lastScheduledEndBlock;
         if (delta <= 0)
@@ -235,28 +228,6 @@ public class WindowedReadAheadContext implements ReadaheadContext {
 
         lastUnparkNanos = now;
         LockSupport.unpark(processingThread);
-    }
-
-    @Override
-    public void onCacheMiss(long fileOffset) {
-        onAccess(fileOffset, false);
-    }
-
-    /**
-     * Called when the caller observed a cache hit but doesn’t provide the file offset.
-     * We conservatively extend from the scheduled tail after a small hit streak.
-     */
-    @Override
-    public void onCacheHit() {
-        if (++consecutiveHits < HIT_NOP_THRESHOLD_BASE)
-            return;
-
-        final long scheduledEnd = lastScheduledEndBlock;
-        if (scheduledEnd > 0) {
-            extendDesiredTo(Math.min(scheduledEnd + policy.leadBlocks(), lastFileSeg + 1));
-            maybeUnpark();
-        }
-        consecutiveHits = 0;
     }
 
     @Override
@@ -282,7 +253,6 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         missCount = 0;
         missMaxBlock = -1;
         consecutiveHits = 0;
-        // do not reset lastUnparkNanos to preserve rate-limiter window
     }
 
     @Override
