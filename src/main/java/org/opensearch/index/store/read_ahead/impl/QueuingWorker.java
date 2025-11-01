@@ -4,8 +4,6 @@
  */
 package org.opensearch.index.store.read_ahead.impl;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
-
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.NoSuchFileException;
@@ -14,7 +12,6 @@ import java.util.Set;
 import java.util.concurrent.BlockingDeque;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -23,6 +20,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
 import org.opensearch.index.store.read_ahead.Worker;
 
 /**
@@ -81,31 +79,21 @@ public final class QueuingWorker implements Worker {
     private final Set<Task> inFlight;
     private final BlockCache<RefCountedMemorySegment> blockCache;
 
-    private static final AtomicInteger WORKER_ID = new AtomicInteger();
-    private static final int LARGE_WINDOW_THRESHOLD = 512;
     private static final int DUP_WARN_THRESHOLD = 10;
 
     private final AtomicInteger duplicateCounter = new AtomicInteger();
     private volatile boolean closed = false;
 
-    /** Creates a readahead worker with the given capacity, threads, and block cache. */
-    public QueuingWorker(int capacity, int threads, BlockCache<RefCountedMemorySegment> blockCache) {
+    /** Creates worker with shared executor (avoids per-shard thread explosion) */
+    public QueuingWorker(int capacity, ExecutorService sharedExecutor, BlockCache<RefCountedMemorySegment> blockCache) {
         this.queue = new LinkedBlockingDeque<>(capacity);
         this.capacity = capacity;
         this.blockCache = blockCache;
         this.inFlight = ConcurrentHashMap.newKeySet();
+        this.executor = sharedExecutor;
 
-        this.executor = Executors.newFixedThreadPool(threads, r -> {
-            Thread t = new Thread(r, "readahead-worker-" + WORKER_ID.incrementAndGet());
-            t.setDaemon(true);
-            return t;
-        });
-
-        for (int i = 0; i < threads; i++) {
-            executor.submit(this::processLoop);
-        }
-
-        LOGGER.info("Readahead worker initialized threads={} capacity={}", threads, capacity);
+        executor.submit(this::processLoop);
+        LOGGER.debug("Readahead worker initialized capacity={} sharedExecutor=true", capacity);
     }
 
     @Override
@@ -121,8 +109,6 @@ public final class QueuingWorker implements Worker {
         // Quick sanity diagnostics
         if (blockCount <= 1) {
             LOGGER.trace("Tiny readahead request path={} off={} blocks={}", path, offset, blockCount);
-        } else if (blockCount > LARGE_WINDOW_THRESHOLD) {
-            LOGGER.warn("Large readahead request path={} off={} blocks={} (possible runaway window)", path, offset, blockCount);
         }
 
         // Overlap detection
@@ -252,7 +238,6 @@ public final class QueuingWorker implements Worker {
                 LOGGER.warn("Readahead failed path={} msg={}", e.getMessage(), e);
             }
         }
-        LOGGER.info("Readahead thread exiting: {}", Thread.currentThread().getName());
     }
 
     @Override
@@ -276,19 +261,7 @@ public final class QueuingWorker implements Worker {
             return;
         closed = true;
 
-        executor.shutdownNow();
         queue.clear();
         inFlight.clear();
-
-        try {
-            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
-                LOGGER.warn("Readahead executor did not terminate within 5s");
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            LOGGER.warn("Interrupted while shutting down readahead executor");
-        }
-
-        LOGGER.info("Readahead worker shut down cleanly");
     }
 }

@@ -11,6 +11,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Provider;
 import java.security.Security;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Function;
 
 import org.apache.logging.log4j.LogManager;
@@ -69,6 +71,12 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * Initialized once per node and shared across all CryptoDirectIODirectory instances.
      */
     private static volatile PoolBuilder.PoolResources poolResources;
+
+    /**
+     * Shared readahead executor (node-level). All shard workers submit to same thread pool.
+     * Avoids thread explosion: was shards × 4, now fixed pool of 8.
+     */
+    private static volatile ExecutorService sharedReadAheadExecutor;
 
     /**
      * Lock for thread-safe initialization of shared resources.
@@ -313,9 +321,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             poolResources.getMaxCacheBlocks()
         );
 
-        // Create read-ahead worker for asynchronous prefetching
-        int threads = Math.max(4, Runtime.getRuntime().availableProcessors() / 4);
-        Worker readaheadWorker = new QueuingWorker(READ_AHEAD_QUEUE_SIZE, threads, directoryCache);
+        ExecutorService sharedExecutor = initializeSharedReadAheadExecutor();
+        Worker readaheadWorker = new QueuingWorker(READ_AHEAD_QUEUE_SIZE, sharedExecutor, directoryCache);
 
         return new CryptoDirectIODirectory(
             location,
@@ -349,5 +356,28 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             }
         }
         return poolResources;
+    }
+
+    /**
+     * Initializes shared readahead executor (node-level, all shards use same pool).
+     * Uses double-checked locking pattern for thread-safe lazy initialization.
+     *
+     * @return the shared executor
+     */
+    @SuppressWarnings("DoubleCheckedLocking")
+    public static ExecutorService initializeSharedReadAheadExecutor() {
+        if (sharedReadAheadExecutor == null) {
+            synchronized (initLock) {
+                if (sharedReadAheadExecutor == null) {
+                    sharedReadAheadExecutor = Executors.newFixedThreadPool(4, r -> {
+                        Thread t = new Thread(r, "shared-readahead-" + r.hashCode());
+                        t.setDaemon(true);
+                        return t;
+                    });
+                    LOGGER.info("Initialized shared readahead executor threads=4");
+                }
+            }
+        }
+        return sharedReadAheadExecutor;
     }
 }
