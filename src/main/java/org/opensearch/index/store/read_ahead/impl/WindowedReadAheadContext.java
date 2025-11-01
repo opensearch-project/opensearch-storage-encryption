@@ -4,8 +4,6 @@
  */
 package org.opensearch.index.store.read_ahead.impl;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
-
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.nio.file.Path;
@@ -14,68 +12,71 @@ import java.util.concurrent.locks.LockSupport;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadPolicy;
 import org.opensearch.index.store.read_ahead.Worker;
 
 /**
- * Windowed readahead context implementation that manages adaptive prefetching
- * for sequential file access patterns.
- * 
- * <p>This implementation uses a configurable window-based readahead strategy
- * that adapts to access patterns. It coordinates with a Worker to schedule
- * bulk prefetch operations and integrates with cache miss/hit feedback to
- * optimize readahead behavior.
+ * Batching, low-overhead readahead context for sequential access patterns.
  *
- * @opensearch.internal
+ * <p>Design:
+ * <ul>
+ *   <li>Hot path (onAccess) has no per-access atomics or fences.</li>
+ *   <li>Hits are suppressed and only extend when near the scheduled tail (guard band).</li>
+ *   <li>Misses are batched; we extend once per batch and rate-limit unparks.</li>
+ *   <li>Worker always schedules a single contiguous span from the tail.</li>
+ * </ul>
+ *
+ * <p>Threading assumptions:
+ * <ul>
+ *   <li>Typically one context per IndexInput clone (single reader thread).</li>
+ *   <li>If multiple reader threads ever share this context, {@link #extendDesiredTo(long)}
+ *       uses an atomic max via VarHandle to remain correct.</li>
+ * </ul>
  */
 public class WindowedReadAheadContext implements ReadaheadContext {
     private static final Logger LOGGER = LogManager.getLogger(WindowedReadAheadContext.class);
 
     private final Path path;
     private final long fileLength;
+    private final long lastFileSeg; // inclusive, in block units
     private final Worker worker;
     private final WindowedReadaheadPolicy policy;
-    private final Thread processingThread; // Reference for unpark
+    private final Thread processingThread;
 
-    /**
-     * Readahead signal encoding: 64-bit value packs cache hit/miss flag + block offset
-     *
-     * <pre>
-     * ┌──────────────────────────────── 64-bit Encoded Signal ─────────────────────────────────┐
-     * │                                                                                        │
-     * │  ┌─────────┬───────────────────────────────────────────────────────────────────────┐   │
-     * │  │  Bit 63 │  Bits 62 ─────────────────────────────── Bits 0                       │   │
-     * │  ├─────────┼───────────────────────────────────────────────────────────────────────┤   │
-     * │  │ Hit (1) │                    Block Offset (63 bits)                             │   │
-     * │  │ Miss(0) │              (supports files up to 8 Exabytes)                        │   │
-     * │  └─────────┴───────────────────────────────────────────────────────────────────────┘   │
-     * └────────────────────────────────────────────────────────────────────────────────────────┘
-     * </pre>
-     */
-    private static final long HIT_FLAG = 1L << 63;    // High bit: cache hit indicator
-    private static final long OFFSET_MASK = ~HIT_FLAG; // Lower 63 bits: block offset
-    private static final long EMPTY_SIGNAL = -1L;      // Sentinel: no pending signal
+    private static final int HIT_NOP_THRESHOLD_BASE = 8;
+    private static final int HIT_NOP_THRESHOLD_MAX = 512;
+    private int hitNopThreshold = HIT_NOP_THRESHOLD_BASE;
 
-    // VarHandle for optimized readahead signal updates (hot path uses setRelease)
-    private static final VarHandle READAHEAD_SIGNAL_VH;
+    private static final int MISS_BATCH = 3;                        // misses to batch before readahead
+    private static final long MIN_UNPARK_INTERVAL_NS = 300_000L;    // 300 µs rate-limit
+
+    // these are states shared between readers and worker, so need synchonizations.
+    private volatile long desiredEndBlock = 0;        // coalesced target (exclusive, in blocks)
+    private volatile long lastScheduledEndBlock = 0;  // watermark (exclusive, in blocks)
+
+    // Best-effort counters (non-volatile): typically one context per IndexInput (single thread).
+    // If shared across threads, races are acceptable for readahead heuristics.
+    // Keeping non-volatile saves ~2-3 cycles per access on hot path.
+    private int consecutiveHits = 0;
+    private int missCount = 0;
+    private long missMaxBlock = -1;
+
+    // Small rate limiter for unparks. Volatile to avoid redundant wake storms if multiple threads call onAccess.
+    private volatile long lastUnparkNanos = 0;
+
+    private final AtomicBoolean closed = new AtomicBoolean(false);
+
+    // VarHandle used ONLY to implement atomic-max for desiredEndBlock if this context is shared.
+    private static final VarHandle DESIRED_END_VH;
     static {
         try {
-            MethodHandles.Lookup l = MethodHandles.lookup();
-            READAHEAD_SIGNAL_VH = l.findVarHandle(WindowedReadAheadContext.class, "readaheadSignal", long.class);
+            DESIRED_END_VH = MethodHandles.lookup().findVarHandle(WindowedReadAheadContext.class, "desiredEndBlock", long.class);
         } catch (ReflectiveOperationException e) {
             throw new ExceptionInInitializerError(e);
         }
     }
-
-    @SuppressWarnings("unused") // accessed via VarHandle
-    private volatile long readaheadSignal = EMPTY_SIGNAL;
-
-    // Watermark: last scheduled end block (exclusive) to avoid redundant triggers
-    private volatile long lastScheduledEndBlock = 0;
-
-    // Scheduling state (per file)
-    private final AtomicBoolean closed = new AtomicBoolean(false);
 
     private WindowedReadAheadContext(Path path, long fileLength, Worker worker, WindowedReadaheadPolicy policy, Thread processingThread) {
         this.path = path;
@@ -83,18 +84,10 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         this.worker = worker;
         this.policy = policy;
         this.processingThread = processingThread;
+        this.lastFileSeg = Math.max(0L, (fileLength - 1) >>> CACHE_BLOCK_SIZE_POWER);
     }
 
-    /**
-     * Creates a new WindowedReadAheadContext with the specified configuration.
-     *
-     * @param path the file path for readahead operations
-     * @param fileLength the total length of the file in bytes
-     * @param worker the worker to schedule readahead operations
-     * @param config the readahead configuration settings
-     * @param processingThread the background thread for unpark notifications
-     * @return a new WindowedReadAheadContext instance
-     */
+    /** Factory */
     public static WindowedReadAheadContext build(
         Path path,
         long fileLength,
@@ -111,17 +104,61 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         return new WindowedReadAheadContext(path, fileLength, worker, policy, processingThread);
     }
 
+    // HOT PATH: Called per access, has to be very cheap.
     @Override
     public void onAccess(long blockOffset, boolean wasHit) {
-        long encoded = (blockOffset & OFFSET_MASK) | (wasHit ? HIT_FLAG : 0);
+        final long currBlock = blockOffset >>> CACHE_BLOCK_SIZE_POWER;
 
-        // Fast path: we use setRelease (like lazySet) - eventual visibility is sufficient
-        // Missing a few signals is acceptable over peformance for readahead
-        long prev = (long) READAHEAD_SIGNAL_VH.getAndSetRelease(this, encoded);
+        // -----------------------------
+        // Cache Hit Path
+        // -----------------------------
+        if (wasHit) {
+            if (++consecutiveHits < hitNopThreshold) {
+                // Still within suppression window
+                return;
+            }
 
-        // Only unpark if the background thread had no pending work
-        if (prev == EMPTY_SIGNAL) {
-            LockSupport.unpark(processingThread);
+            // Guard-band: only extend when we're close to the scheduled tail
+            final long scheduledEnd = lastScheduledEndBlock;
+            if (scheduledEnd > 0) {
+                final long guardStart = Math.max(0, scheduledEnd - policy.leadBlocks());
+                if (currBlock >= guardStart && currBlock < scheduledEnd) {
+                    final long newEnd = Math.min(currBlock + policy.leadBlocks(), lastFileSeg + 1);
+                    extendDesiredTo(newEnd);
+                    maybeUnpark();
+                }
+            }
+
+            // Exponential backoff: if cache is extremely hot, reduce wakeups
+            if (hitNopThreshold < HIT_NOP_THRESHOLD_MAX) {
+                hitNopThreshold <<= 1; // double the threshold
+            }
+
+            consecutiveHits = 0;
+            return;
+        }
+
+        // -----------------------------
+        // Cache Miss Path
+        // -----------------------------
+        consecutiveHits = 0;
+        hitNopThreshold = HIT_NOP_THRESHOLD_BASE; // reset adaptive suppression
+
+        missCount++;
+        if (currBlock > missMaxBlock) {
+            missMaxBlock = currBlock;
+        }
+
+        final int window = Math.max(1, policy.currentWindow());
+        final boolean enoughMisses = missCount >= MISS_BATCH;
+        final boolean farAhead = (missMaxBlock - lastScheduledEndBlock) >= Math.max(1, window / 4);
+
+        if (enoughMisses || farAhead) {
+            final long target = Math.min(missMaxBlock + policy.leadBlocks(), lastFileSeg + 1);
+            extendDesiredTo(target);
+            missCount = 0;
+            missMaxBlock = -1;
+            maybeUnpark();
         }
     }
 
@@ -130,106 +167,74 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         if (closed.get())
             return false;
 
-        // Get and clear readahead signal atomically (consumer uses full barrier)
-        long encoded = (long) READAHEAD_SIGNAL_VH.getAndSet(this, EMPTY_SIGNAL);
-        if (encoded == EMPTY_SIGNAL) {
-            return false; // No pending signal
-        }
+        final long desired = desiredEndBlock;
+        final long scheduled = lastScheduledEndBlock;
+        if (desired <= scheduled)
+            return false;
 
-        // Decode hit/miss and offset
-        boolean wasHit = (encoded & HIT_FLAG) != 0;
-        long blockOffset = encoded & OFFSET_MASK;
-        long currentBlock = blockOffset >>> CACHE_BLOCK_SIZE_POWER;
-
-        if (wasHit) {
-            policy.onCacheHit();
-
-            // Hit-ahead: if we're near the tail of scheduled window, extend it
-            // Check if current block is in the "guard band" near lastScheduledEndBlock
-            long scheduledEnd = lastScheduledEndBlock;
-            if (scheduledEnd > 0) {
-                long leadBlocks = policy.leadBlocks();
-                long guardStart = scheduledEnd - leadBlocks;
-
-                // If hit crosses into guard band, pre-trigger extension
-                if (currentBlock >= guardStart && currentBlock < scheduledEnd) {
-                    if (LOGGER.isDebugEnabled()) {
-                        LOGGER.debug("Hit-ahead trigger: block={} guard=[{}-{})", currentBlock, guardStart, scheduledEnd);
-                    }
-                    trigger(blockOffset);
-                }
-            }
-        } else {
-            // Cache miss - ncheck if we should trigger readahead
-            if (policy.shouldTrigger(blockOffset)) {
-                trigger(blockOffset);
-            }
-        }
-
-        return true;
-    }
-
-    private void trigger(long anchorFileOffset) {
-        if (closed.get() || worker == null)
-            return;
-
-        final long startSeg = anchorFileOffset >>> CACHE_BLOCK_SIZE_POWER;
-        final long lastSeg = (fileLength - 1) >>> CACHE_BLOCK_SIZE_POWER;
-        final long safeEndSeg = Math.max(0, lastSeg);
-
-        final long windowSegs = policy.currentWindow();
-        if (windowSegs <= 0 || startSeg > safeEndSeg)
-            return;
-
-        final long endExclusive = Math.min(startSeg + windowSegs, safeEndSeg + 1);
-        if (startSeg >= endExclusive)
-            return;
-
-        // Watermark check: if desired end is already covered, skip scheduling
-        long currentWatermark = lastScheduledEndBlock;
-        if (endExclusive <= currentWatermark) {
-            if (LOGGER.isTraceEnabled()) {
-                LOGGER.trace("Skipping trigger: endExclusive={} <= watermark={}", endExclusive, currentWatermark);
-            }
-            return;
-        }
-
+        final long startSeg = scheduled;
+        final long endExclusive = Math.min(desired, lastFileSeg + 1);
         final long blockCount = endExclusive - startSeg;
+        if (blockCount < 1)
+            return false;
 
-        if (blockCount > 0) {
-            // Schedule the entire window
-            final boolean accepted = worker.schedule(path, anchorFileOffset, blockCount);
+        final long anchorOffset = startSeg << CACHE_BLOCK_SIZE_POWER;
+        final boolean accepted = worker.schedule(path, anchorOffset, blockCount);
+        if (accepted)
+            lastScheduledEndBlock = endExclusive;
 
-            if (accepted) {
-                // Update watermark: we've scheduled up to endExclusive
-                lastScheduledEndBlock = endExclusive;
-            }
-
+        if (LOGGER.isDebugEnabled()) {
             LOGGER
                 .debug(
-                    "RA_BULK_TRIGGER path={} anchorOff={} startSeg={} endExclusive={} windowSegs={} scheduledBlocks={} accepted={} watermark={}",
+                    "RA_TRIGGER path={} startSeg={} endExclusive={} blocks={} accepted={} desired={} watermark={}",
                     path,
-                    anchorFileOffset,
                     startSeg,
                     endExclusive,
-                    windowSegs,
                     blockCount,
                     accepted,
+                    desired,
                     lastScheduledEndBlock
                 );
-
-            if (!accepted) {
-                LOGGER
-                    .info(
-                        "Window bulk readahead backpressure path={} length={} startSeg={} endExclusive={} windowBlocks={}",
-                        path,
-                        fileLength,
-                        startSeg,
-                        endExclusive,
-                        blockCount
-                    );
-            }
         }
+        return accepted;
+    }
+
+    /**
+     * Extend desiredEndBlock to at least {@code newEndExclusive} using an atomic max.
+     * This is practically free in the common case (when no extension is needed),
+     * and preserves correctness if multiple reader threads share the context.
+     */
+    private void extendDesiredTo(long newEndExclusive) {
+        long prev;
+        do {
+            // Plain volatile read first (cheaper than getAcquire)
+            prev = desiredEndBlock;
+            if (newEndExclusive <= prev)
+                return;
+            // weak CAS is fine; contention is rare and best-effort acceptable
+        } while (!DESIRED_END_VH.weakCompareAndSetRelease(this, prev, newEndExclusive));
+    }
+
+    /**
+     * Wake the processing thread only when the delta is meaningful and not too frequent.
+     * The minimum batch size is dynamic, derived from current policy window.
+     */
+    private void maybeUnpark() {
+        final long delta = desiredEndBlock - lastScheduledEndBlock;
+        if (delta <= 0)
+            return;
+
+        final int w = Math.max(1, policy.currentWindow());
+        final int minBatch = Math.max(16, Math.max(policy.leadBlocks(), w / 2));
+        if (delta < minBatch)
+            return;
+
+        final long now = System.nanoTime();
+        if (now - lastUnparkNanos < MIN_UNPARK_INTERVAL_NS)
+            return;
+
+        lastUnparkNanos = now;
+        LockSupport.unpark(processingThread);
     }
 
     @Override
@@ -237,36 +242,53 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         onAccess(fileOffset, false);
     }
 
+    /**
+     * Called when the caller observed a cache hit but doesn’t provide the file offset.
+     * We conservatively extend from the scheduled tail after a small hit streak.
+     */
     @Override
     public void onCacheHit() {
-        onAccess(-1L, true); // Offset doesn't matter for hits
+        if (++consecutiveHits < HIT_NOP_THRESHOLD_BASE)
+            return;
+
+        final long scheduledEnd = lastScheduledEndBlock;
+        if (scheduledEnd > 0) {
+            extendDesiredTo(Math.min(scheduledEnd + policy.leadBlocks(), lastFileSeg + 1));
+            maybeUnpark();
+        }
+        consecutiveHits = 0;
     }
 
     @Override
     public boolean hasQueuedWork() {
-        return (long) READAHEAD_SIGNAL_VH.get(this) != EMPTY_SIGNAL;
+        return desiredEndBlock > lastScheduledEndBlock;
     }
 
     @Override
     public ReadaheadPolicy policy() {
-        return this.policy;
+        return policy;
     }
 
     @Override
     public void triggerReadahead(long fileOffset) {
-        trigger(fileOffset);
+        final long start = fileOffset >>> CACHE_BLOCK_SIZE_POWER;
+        extendDesiredTo(Math.min(start + policy.currentWindow(), lastFileSeg + 1));
+        maybeUnpark();
     }
 
     @Override
     public void reset() {
-        policy.reset();
+        desiredEndBlock = lastScheduledEndBlock;
+        missCount = 0;
+        missMaxBlock = -1;
+        consecutiveHits = 0;
+        // do not reset lastUnparkNanos to preserve rate-limiter window
     }
 
     @Override
     public void cancel() {
-        if (worker != null) {
+        if (worker != null)
             worker.cancel(path);
-        }
     }
 
     @Override
@@ -276,8 +298,7 @@ public class WindowedReadAheadContext implements ReadaheadContext {
 
     @Override
     public void close() {
-        if (closed.compareAndSet(false, true)) {
+        if (closed.compareAndSet(false, true))
             cancel();
-        }
     }
 }

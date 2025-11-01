@@ -138,38 +138,10 @@ public class QueuingWorker implements Worker {
             return false;
         }
 
-        // Cache-aware scheduling: find uncached regions
-        List<CacheGap> uncachedGaps = findUncachedRanges(path, offset, blockCount);
-
-        if (uncachedGaps.isEmpty()) {
-            if (LOGGER.isDebugEnabled()) {
-                LOGGER.debug("All blocks cached, skipping: path={} off={} blocks={}", path, offset, blockCount);
-            }
-            return true;
-        }
-
-        // Consolidate gaps using initialWindow (4) as merge threshold
-        List<CacheGap> consolidatedGaps = consolidateGaps(uncachedGaps, 4);
-
-        if (LOGGER.isDebugEnabled()) {
-            LOGGER
-                .debug(
-                    "Cache gaps: path={} orig={} consolidated={} totalBlocks={}",
-                    path,
-                    uncachedGaps.size(),
-                    consolidatedGaps.size(),
-                    blockCount
-                );
-        }
-
-        // Schedule consolidated gaps
-        boolean allAccepted = true;
-        for (CacheGap gap : consolidatedGaps) {
-            boolean accepted = scheduleGap(path, gap);
-            allAccepted &= accepted;
-        }
-
-        return allAccepted;
+        // Schedule all blocks as a single task
+        long startBlockIndex = offset >>> CACHE_BLOCK_SIZE_POWER;
+        CacheGap gap = new CacheGap(startBlockIndex, blockCount);
+        return scheduleGap(path, gap);
     }
 
     /**
@@ -258,14 +230,15 @@ public class QueuingWorker implements Worker {
             long blockOffset = blockIndex << CACHE_BLOCK_SIZE_POWER;
             BlockCacheKey key = new FileBlockCacheKey(path, blockOffset);
 
-            if (blockCache.get(key) != null) {
+            if (blockCache.get(key) == null) {
+                // Block is NOT cached - part of a gap
                 if (currentGapStartIndex == -1) {
                     // Start of new gap
                     currentGapStartIndex = blockIndex;
                 }
                 // Gap continues (no action needed)
             } else if (currentGapStartIndex != -1) {
-                // End of gap - record it
+                // Block IS cached - end of gap, record it
                 long gapBlocks = blockIndex - currentGapStartIndex;
                 gaps.add(new CacheGap(currentGapStartIndex, gapBlocks));
                 currentGapStartIndex = -1;
