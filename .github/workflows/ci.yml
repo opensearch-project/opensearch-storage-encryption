@@ -64,6 +64,11 @@ jobs:
           # Preserve environment variables when switching users
           su ci-runner -c "export JAVA_HOME=$JAVA_HOME && export GRADLE_OPTS='$GRADLE_OPTS' && cd $GITHUB_WORKSPACE && ./gradlew check -x internalClusterTest -Dbuild.snapshot=false"
 
+      - name: Run internal cluster tests
+        if: always()
+        run: |
+          su ci-runner -c "export JAVA_HOME=$JAVA_HOME && export GRADLE_OPTS='$GRADLE_OPTS' && cd $GITHUB_WORKSPACE && ./gradlew internalClusterTest -Dbuild.snapshot=false"
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         if: always()
