@@ -12,6 +12,7 @@ import java.util.concurrent.TimeUnit;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.index.store.CryptoDirectoryFactory;
 
 import com.github.benmanes.caffeine.cache.CacheLoader;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -84,7 +85,7 @@ public class NodeLevelKeyCache {
      */
     public static synchronized void initialize(Settings nodeSettings) {
         if (INSTANCE == null) {
-            int globalTtlSeconds = nodeSettings.getAsInt("node.store.data_key_ttl_seconds", 3600);
+            int globalTtlSeconds = CryptoDirectoryFactory.NODE_KEY_REFRESH_INTERVAL_SECS_SETTING.get(nodeSettings);
 
             INSTANCE = new NodeLevelKeyCache((long) globalTtlSeconds);
 

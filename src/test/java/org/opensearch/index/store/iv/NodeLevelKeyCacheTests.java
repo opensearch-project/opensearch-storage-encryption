@@ -82,7 +82,7 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
     }
 
     public void testInitialization() {
-        Settings settings = Settings.builder().put("node.store.data_key_ttl_seconds", 60).build();
+        Settings settings = Settings.builder().put("node.store.crypto.key_refresh_interval_secs", 60).build();
 
         NodeLevelKeyCache.initialize(settings);
 
@@ -150,7 +150,7 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
 
     public void testRefreshSuccess() throws Exception {
         // Use a very short TTL for testing
-        Settings settings = Settings.builder().put("node.store.data_key_ttl_seconds", 1).build();
+        Settings settings = Settings.builder().put("node.store.crypto.key_refresh_interval_secs", 1).build();
 
         when(mockResolver.loadKeyFromMasterKeyProvider())
             .thenReturn(testKey1)  // Initial load
@@ -184,7 +184,7 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
 
     public void testRefreshFailureReturnsOldKey() throws Exception {
         // Use a very short TTL for testing
-        Settings settings = Settings.builder().put("node.store.data_key_ttl_seconds", 1).build();
+        Settings settings = Settings.builder().put("node.store.crypto.key_refresh_interval_secs", 1).build();
 
         when(mockResolver.loadKeyFromMasterKeyProvider())
             .thenReturn(testKey1)  // Initial load
@@ -219,7 +219,7 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
 
     public void testMultipleRefreshFailures() throws Exception {
         // Use a very short TTL for testing
-        Settings settings = Settings.builder().put("node.store.data_key_ttl_seconds", 1).build();
+        Settings settings = Settings.builder().put("node.store.crypto.key_refresh_interval_secs", 1).build();
 
         when(mockResolver.loadKeyFromMasterKeyProvider())
             .thenReturn(testKey1)  // Initial load
@@ -413,7 +413,7 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
             .thenReturn(testKey2); // Should never be called with -1 TTL
 
         // Initialize with TTL = -1 (never refresh)
-        Settings settings = Settings.builder().put("node.store.data_key_ttl_seconds", -1).build();
+        Settings settings = Settings.builder().put("node.store.crypto.key_refresh_interval_secs", -1).build();
         NodeLevelKeyCache.initialize(settings);
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
