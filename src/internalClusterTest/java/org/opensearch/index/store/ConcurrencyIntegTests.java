@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.opensearch.action.admin.cluster.health.ClusterHealthResponse;
 import org.opensearch.action.admin.cluster.reroute.ClusterRerouteResponse;
+import org.opensearch.action.admin.cluster.state.ClusterStateResponse;
 import org.opensearch.action.admin.indices.delete.DeleteIndexRequest;
 import org.opensearch.action.admin.indices.forcemerge.ForceMergeResponse;
 import org.opensearch.action.admin.indices.stats.IndicesStatsResponse;
@@ -328,18 +329,25 @@ public class ConcurrencyIntegTests extends OpenSearchIntegTestCase {
 
     /**
      * Tests CryptoEngineFactory and translog encryption with recovery.
+     * Enhanced to ensure translog recovery actually happens by:
+     * 1. Using aggressive translog retention settings to prevent auto-flush
+     * 2. Identifying and restarting the node that actually has the shard
+     * 3. Verifying translog state before and after recovery
      */
     public void testTranslogEncryptionWithRecovery() throws Exception {
         internalCluster().startNodes(2);
 
-        // Create encrypted index with translog settings
+        // Create encrypted index with aggressive translog retention settings
         Settings settings = Settings
             .builder()
             .put(cryptoIndexSettings())
             .put("index.number_of_shards", 1)
             .put("index.number_of_replicas", 0)  // No replicas so index can go green with single node
-            .put("index.translog.flush_threshold_size", "512mb") // Prevent auto-flush
-            .put("index.translog.sync_interval", "10s")
+            // Aggressive settings to prevent any auto-flushing
+            .put("index.translog.flush_threshold_size", "1gb") // Very high threshold
+            .put("index.translog.sync_interval", "30s") // Long sync interval
+            .put("index.translog.durability", "async") // Async durability
+            .put("index.refresh_interval", "-1") // Disable automatic refresh to prevent potential flush triggers
             .build();
 
         createIndex("test-translog", settings);
@@ -350,20 +358,32 @@ public class ConcurrencyIntegTests extends OpenSearchIntegTestCase {
         for (int i = 0; i < numDocs; i++) {
             index("test-translog", "_doc", String.valueOf(i), "field", "value" + i, "number", i);
         }
-        // Don't flush - keep data in translog
+        // Explicitly do NOT call refresh() or flush() - keep data in translog only
 
-        // Verify documents are searchable
-        refresh();
-        SearchResponse response1 = client().prepareSearch("test-translog").setSize(0).get();
-        assertThat(response1.getHits().getTotalHits().value(), equalTo((long) numDocs));
+        // Get shard routing to find which node has the primary shard
+        ClusterStateResponse clusterState = client().admin().cluster().prepareState().get();
+        String nodeIdWithShard = clusterState
+            .getState()
+            .routingTable()
+            .index("test-translog")
+            .shard(0)  // We have 1 shard (shardId = 0)
+            .primaryShard()
+            .currentNodeId();
 
-        // Restart a node (non-master) to trigger translog recovery
-        String[] nodeNames = internalCluster().getNodeNames();
-        String clusterManager = internalCluster().getClusterManagerName();
-        String nodeToRestart = nodeNames[0].equals(clusterManager) ? nodeNames[1] : nodeNames[0];
+        String nodeNameWithShard = clusterState.getState().nodes().get(nodeIdWithShard).getName();
+        logger.info("Primary shard is on node: {} (id: {})", nodeNameWithShard, nodeIdWithShard);
 
-        logger.info("Restarting node to test translog recovery: {}", nodeToRestart);
-        internalCluster().restartNode(nodeToRestart);
+        // Verify translog has unflushed operations before restart
+        IndicesStatsResponse statsBeforeRestart = client().admin().indices().prepareStats("test-translog").get();
+        long translogOpsBefore = statsBeforeRestart.getIndex("test-translog").getTotal().getTranslog().getUncommittedOperations();
+        long translogSizeBefore = statsBeforeRestart.getIndex("test-translog").getTotal().getTranslog().getUncommittedSizeInBytes();
+
+        logger.info("Translog state before restart: {} uncommitted operations, {} bytes", translogOpsBefore, translogSizeBefore);
+        assertThat("Translog should have uncommitted operations to test recovery", translogOpsBefore, greaterThan(0L));
+
+        // Restart specifically the node that has the shard to guarantee translog recovery
+        logger.info("Restarting node with shard to test translog recovery: {}", nodeNameWithShard);
+        internalCluster().restartNode(nodeNameWithShard);
 
         // Ensure cluster is stable with 2 nodes
         ensureStableCluster(2);
@@ -371,21 +391,53 @@ public class ConcurrencyIntegTests extends OpenSearchIntegTestCase {
         // Wait for green after node comes back
         ensureGreen("test-translog");
 
+        // NOW refresh to make recovered documents searchable
+        refresh();
+
         // Verify all documents recovered from encrypted translog
         SearchResponse response2 = client().prepareSearch("test-translog").setSize(0).get();
         assertThat(
-            "Documents should be recovered from encrypted translog",
+            "All documents should be recovered from encrypted translog",
             response2.getHits().getTotalHits().value(),
             equalTo((long) numDocs)
         );
 
-        // Verify data integrity
+        // Verify data integrity - check specific documents
+        int randomDoc = randomIntBetween(0, numDocs - 1);
+        SearchResponse specificDoc = client()
+            .prepareSearch("test-translog")
+            .setQuery(org.opensearch.index.query.QueryBuilders.termQuery("number", randomDoc))
+            .get();
+        assertThat("Should be able to read specific documents after recovery", specificDoc.getHits().getTotalHits().value(), equalTo(1L));
+
+        // Verify we can retrieve all documents
         SearchResponse response3 = client()
             .prepareSearch("test-translog")
             .setQuery(org.opensearch.index.query.QueryBuilders.matchAllQuery())
             .setSize(numDocs)
             .get();
-        assertThat(response3.getHits().getHits().length, equalTo(numDocs));
+        assertThat("Should retrieve all documents after recovery", response3.getHits().getHits().length, equalTo(numDocs));
+
+        // Verify translog state after recovery
+        IndicesStatsResponse statsAfterRestart = client().admin().indices().prepareStats("test-translog").get();
+        long translogOpsAfter = statsAfterRestart.getIndex("test-translog").getTotal().getTranslog().getUncommittedOperations();
+        logger.info("Translog operations after recovery: {}", translogOpsAfter);
+
+        // Verify we can still write after recovery
+        int additionalDocs = 50;
+        for (int i = numDocs; i < numDocs + additionalDocs; i++) {
+            index("test-translog", "_doc", String.valueOf(i), "field", "value" + i, "number", i);
+        }
+        refresh();
+
+        SearchResponse response4 = client().prepareSearch("test-translog").setSize(0).get();
+        assertThat(
+            "Should be able to write new documents after recovery",
+            response4.getHits().getTotalHits().value(),
+            equalTo((long) (numDocs + additionalDocs))
+        );
+
+        logger.info("Translog encryption recovery test completed successfully");
     }
 
     // ==================== P2: Index-Level Key Isolation ====================
