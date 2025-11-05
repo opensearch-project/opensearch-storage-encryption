@@ -75,7 +75,7 @@ dependencies {
     api "io.netty:netty-transport-native-unix-common:4.2.5.Final"
     api "io.netty:netty-transport-classes-io_uring:4.2.5.Final"
     api "io.netty:netty-common:4.2.5.Final"
-    api "io.netty:netty-transport-native-io_uring:4.2.5.Final:linux-x86_64"
+    api "io.netty:netty-transport-native-io_uring:4.2.5.Final"
 }
 
 
