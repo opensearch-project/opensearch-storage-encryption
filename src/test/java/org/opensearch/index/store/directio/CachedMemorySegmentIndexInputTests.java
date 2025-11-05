@@ -1424,4 +1424,129 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         return CachedMemorySegmentIndexInput
             .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache);
     }
+
+    /**
+     * Test for the bug that caused negative file offsets in production.
+     *
+     * The old MultiSegmentImpl implementation would double-count offsets when creating slices,
+     * leading to negative overflow in the block cache key calculation.
+     *
+     * Error scenario from logs:
+     * FileBlockCacheKey[filePath=.../_26.cfs, fileOffset=-933888]
+     * Bulk read failed: offset=-933888 err=java.lang.IllegalArgumentException: Negative position
+     */
+    public void testSliceDoesNotProduceNegativeOffsets() throws IOException {
+        // Create a large file spanning multiple blocks
+        long fileLength = BLOCK_SIZE * 10; // 81920 bytes
+
+        // Setup blocks that span a realistic file
+        MemorySegment block0 = arena.allocate(BLOCK_SIZE);
+        MemorySegment block1 = arena.allocate(BLOCK_SIZE);
+        MemorySegment block2 = arena.allocate(BLOCK_SIZE);
+
+        // Fill blocks with test data
+        for (int i = 0; i < BLOCK_SIZE; i++) {
+            block0.set(LAYOUT_BYTE, i, (byte) (i & 0xFF));
+            block1.set(LAYOUT_BYTE, i, (byte) ((i + 1) & 0xFF));
+            block2.set(LAYOUT_BYTE, i, (byte) ((i + 2) & 0xFF));
+        }
+
+        setupBlock(0, block0);
+        setupBlock(BLOCK_SIZE, block1);
+        setupBlock(BLOCK_SIZE * 2, block2);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+
+        // Create a slice at a large offset (simulating compound file structure)
+        long sliceOffset = BLOCK_SIZE * 5 + 1000; // 41960 bytes into the file
+        long sliceLength = BLOCK_SIZE * 2; // 16384 bytes
+
+        CachedMemorySegmentIndexInput slice1 = input.slice("slice1", sliceOffset, sliceLength);
+
+        // Verify the slice has correct properties
+        assertEquals(sliceLength, slice1.length());
+        assertEquals(0L, slice1.getFilePointer());
+
+        // The absolute offset should be parent's base + sliceOffset
+        long expectedAbsoluteOffset = sliceOffset;
+        assertEquals(expectedAbsoluteOffset, slice1.getAbsoluteFileOffset());
+
+        // Seek within the slice and verify absolute offset is still correct
+        slice1.seek(100L);
+        assertEquals(expectedAbsoluteOffset + 100L, slice1.getAbsoluteFileOffset());
+
+        // Create a nested slice (slice of a slice) - this was particularly problematic
+        long nestedSliceOffset = 500L;
+        long nestedSliceLength = 1000L;
+        CachedMemorySegmentIndexInput slice2 = slice1.slice("slice2", nestedSliceOffset, nestedSliceLength);
+
+        assertEquals(nestedSliceLength, slice2.length());
+        assertEquals(0L, slice2.getFilePointer());
+
+        // The absolute offset should be original + slice1Offset + slice2Offset
+        long expectedNestedAbsoluteOffset = sliceOffset + nestedSliceOffset;
+        assertEquals(expectedNestedAbsoluteOffset, slice2.getAbsoluteFileOffset());
+
+        // Most importantly: verify that when we access the cache, we NEVER produce negative offsets
+        // The bug would cause fileOffset = absoluteBaseOffset + curPosition to overflow negative
+        slice2.seek(100L);
+        long finalAbsoluteOffset = slice2.getAbsoluteFileOffset();
+
+        // This should be positive and within the file bounds
+        assertTrue("Absolute offset should be positive, got: " + finalAbsoluteOffset, finalAbsoluteOffset >= 0);
+        assertTrue("Absolute offset should be within file, got: " + finalAbsoluteOffset, finalAbsoluteOffset < fileLength);
+
+        // The exact offset should be: sliceOffset + nestedSliceOffset + current position
+        assertEquals(sliceOffset + nestedSliceOffset + 100L, finalAbsoluteOffset);
+
+        // Triple-nested slice to really stress test the offset calculation
+        CachedMemorySegmentIndexInput slice3 = slice2.slice("slice3", 50L, 500L);
+        slice3.seek(25L);
+        long tripleNestedOffset = slice3.getAbsoluteFileOffset();
+
+        assertTrue("Triple-nested absolute offset should be positive, got: " + tripleNestedOffset, tripleNestedOffset >= 0);
+        assertTrue("Triple-nested absolute offset should be within file, got: " + tripleNestedOffset, tripleNestedOffset < fileLength);
+
+        // Should be: sliceOffset + nestedSliceOffset + 50 + 25
+        assertEquals(sliceOffset + nestedSliceOffset + 50L + 25L, tripleNestedOffset);
+
+        // Close all slices
+        slice3.close();
+        slice2.close();
+        slice1.close();
+        input.close();
+    }
+
+    /**
+     * Test that verifies the getAbsoluteFileOffset(pos) method works correctly for slices.
+     * This method is used internally for cache key generation.
+     */
+    public void testSliceAbsoluteFileOffsetWithPosition() throws IOException {
+        long fileLength = BLOCK_SIZE * 5;
+        MemorySegment block0 = arena.allocate(BLOCK_SIZE);
+        setupBlock(0, block0);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+
+        // Create a slice
+        long sliceOffset = BLOCK_SIZE + 100;
+        long sliceLength = BLOCK_SIZE * 2;
+        CachedMemorySegmentIndexInput slice = input.slice("slice", sliceOffset, sliceLength);
+
+        // Test getAbsoluteFileOffset(pos) with various positions
+        assertEquals(sliceOffset + 0, slice.getAbsoluteFileOffset(0));
+        assertEquals(sliceOffset + 50, slice.getAbsoluteFileOffset(50));
+        assertEquals(sliceOffset + 1000, slice.getAbsoluteFileOffset(1000));
+        assertEquals(sliceOffset + sliceLength - 1, slice.getAbsoluteFileOffset(sliceLength - 1));
+
+        // All offsets should be positive and within file bounds
+        for (long pos = 0; pos < sliceLength; pos += 100) {
+            long absoluteOffset = slice.getAbsoluteFileOffset(pos);
+            assertTrue("Offset at position " + pos + " should be positive, got: " + absoluteOffset, absoluteOffset >= 0);
+            assertTrue("Offset at position " + pos + " should be within file, got: " + absoluteOffset, absoluteOffset < fileLength);
+        }
+
+        slice.close();
+        input.close();
+    }
 }
