@@ -29,6 +29,7 @@ import org.opensearch.index.store.block_cache.BlockCacheValue;
  * </ol>
  *
  */
+@SuppressWarnings("preview")
 public final class RefCountedMemorySegment implements BlockCacheValue<RefCountedMemorySegment> {
 
     private static final Logger LOGGER = LogManager.getLogger(RefCountedMemorySegment.class);
