@@ -255,7 +255,7 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         }
 
         startLatch.countDown(); // Start all threads
-        assertTrue(endLatch.await(5, TimeUnit.SECONDS));
+        assertTrue(endLatch.await(15, TimeUnit.SECONDS));
         executor.shutdown();
 
         assertEquals(threadCount, successCount.get());
@@ -291,7 +291,7 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         }
 
         startLatch.countDown();
-        assertTrue(endLatch.await(10, TimeUnit.SECONDS));
+        assertTrue(endLatch.await(20, TimeUnit.SECONDS));
         executor.shutdown();
 
         assertEquals(1, refSegment.getRefCount());

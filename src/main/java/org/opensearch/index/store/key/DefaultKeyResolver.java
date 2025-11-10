@@ -18,6 +18,8 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.opensearch.common.crypto.DataKeyPair;
 import org.opensearch.common.crypto.MasterKeyProvider;
+import org.opensearch.index.store.metrics.CryptoMetricsService;
+import org.opensearch.index.store.metrics.ErrorType;
 
 /**
  * Default implementation of {@link KeyResolver} responsible for managing
@@ -77,6 +79,7 @@ public class DefaultKeyResolver implements KeyResolver {
                 throw new IOException("Failed to initialize key for index: " + indexUuid, ex);
             }
         } catch (Exception e) {
+            CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, this.indexUuid);
             throw new IOException("Failed to initialize key for index: " + indexUuid, e);
         }
     }
@@ -119,11 +122,17 @@ public class DefaultKeyResolver implements KeyResolver {
      */
     Key loadKeyFromMasterKeyProvider() throws Exception {
         // Attempt decryption
-        byte[] encryptedKey = readByteArrayFile(KEY_FILE);
-        byte[] masterKey = keyProvider.decryptKey(encryptedKey);
-        byte[] indexKey = HkdfKeyDerivation.deriveIndexKey(masterKey, indexUuid);
-        byte[] directoryKey = HkdfKeyDerivation.deriveDirectoryKey(indexKey, shardId);
-        return new SecretKeySpec(directoryKey, "AES");
+        try {
+            byte[] encryptedKey = readByteArrayFile(KEY_FILE);
+            byte[] masterKey = keyProvider.decryptKey(encryptedKey);
+            byte[] indexKey = HkdfKeyDerivation.deriveIndexKey(masterKey, indexUuid);
+            byte[] directoryKey = HkdfKeyDerivation.deriveDirectoryKey(indexKey, shardId);
+            return new SecretKeySpec(directoryKey, "AES");
+        } catch (Exception e) {
+            CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, this.indexUuid);
+            throw e;
+        }
+
     }
 
     /**

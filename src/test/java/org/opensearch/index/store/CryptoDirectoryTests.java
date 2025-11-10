@@ -30,7 +30,9 @@ import org.apache.lucene.tests.mockfile.ExtrasFS;
 import org.opensearch.common.Randomness;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.key.KeyResolver;
+import org.opensearch.index.store.metrics.CryptoMetricsService;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
+import org.opensearch.telemetry.metrics.MetricsRegistry;
 
 /**
  * SMB Tests using NIO FileSystem as index store type.
@@ -42,6 +44,9 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
 
     @Override
     protected Directory getDirectory(Path file) throws IOException {
+        // Create mock metricService
+        CryptoMetricsService.initialize(mock(MetricsRegistry.class));
+
         // Create raw AES key
         byte[] rawKey = new byte[32]; // 256-bit AES key
         byte[] encryptedKey = new byte[32]; // Not used in test but needed for interface

@@ -95,4 +95,6 @@ public interface Pool<T> {
      * @return true if the pool is closed, false otherwise
      */
     boolean isClosed();
+
+    void recordStats();
 }

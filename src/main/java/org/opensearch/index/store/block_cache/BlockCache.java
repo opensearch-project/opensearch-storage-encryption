@@ -91,4 +91,9 @@ public interface BlockCache<T> {
      * @return string representation of cache statistics including hit/miss ratios, sizes, etc.
      */
     String cacheStats();
+
+    /**
+     * record cache stats
+     */
+    void recordStats();
 }

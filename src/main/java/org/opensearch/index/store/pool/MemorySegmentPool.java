@@ -16,6 +16,7 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.PanamaNativeAccess;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.metrics.CryptoMetricsService;
 
 /**
  * High-performance primary memory pool for off-heap memory segment allocation using
@@ -315,5 +316,14 @@ public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoClo
                     allocationRatio * 100
                 );
         }
+    }
+
+    @Override
+    public void recordStats() {
+        double utilization = (double) (allocatedSegments - cachedFreeListSize) / maxSegments;
+        double allocation = (double) allocatedSegments / maxSegments;
+        CryptoMetricsService
+            .getInstance()
+            .recordPoolStats(SegmentType.PRIMARY, maxSegments, allocatedSegments, cachedFreeListSize, utilization, allocation);
     }
 }

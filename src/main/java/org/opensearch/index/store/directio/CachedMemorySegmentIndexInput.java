@@ -25,6 +25,8 @@ import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
+import org.opensearch.index.store.metrics.CryptoMetricsService;
+import org.opensearch.index.store.metrics.ErrorType;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
 
@@ -193,6 +195,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             }
 
             if (attempts == maxAttempts - 1) {
+                CryptoMetricsService.getInstance().recordError(ErrorType.INTERNAL_ERROR);
                 throw new IOException(
                     "Unable to pin memory segment for block at offset " + blockOffset + " after " + maxAttempts + " attempts"
                 );

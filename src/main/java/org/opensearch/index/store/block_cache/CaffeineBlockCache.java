@@ -16,6 +16,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block_loader.BlockLoader;
+import org.opensearch.index.store.metrics.CryptoMetricsService;
 
 import com.github.benmanes.caffeine.cache.Cache;
 
@@ -241,6 +242,22 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      */
     public Cache<BlockCacheKey, BlockCacheValue<T>> getCache() {
         return cache;
+    }
+
+    @Override
+    public void recordStats() {
+        var stats = cache.stats();
+        CryptoMetricsService
+            .getInstance()
+            .recordCacheStats(
+                cache.estimatedSize(),
+                stats.hitCount(),
+                stats.missCount(),
+                stats.hitRate() * 100,
+                stats.loadCount(),
+                stats.evictionCount(),
+                stats.averageLoadPenalty() / 1_000_000.0  // Convert to ms
+            );
     }
 
 }

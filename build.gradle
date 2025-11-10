@@ -60,6 +60,8 @@ repositories {
 
 dependencies {
     compileOnly "org.opensearch:opensearch:${opensearch_version}"
+    compileOnly 'org.projectlombok:lombok:1.18.30'
+    annotationProcessor 'org.projectlombok:lombok:1.18.30'
     runtimeOnly "org.apache.logging.log4j:log4j-slf4j-impl:${versions.log4j}"
     testImplementation "org.opensearch.test:framework:${opensearch_version}"
     testImplementation "commons-io:commons-io:2.13.0"

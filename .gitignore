@@ -5,3 +5,4 @@ build/
 *.iws
 *.ipr
 .DS_Store
+bin/

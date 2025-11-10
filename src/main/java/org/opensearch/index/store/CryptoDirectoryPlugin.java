@@ -27,14 +27,18 @@ import org.opensearch.index.engine.EngineFactory;
 import org.opensearch.index.shard.IndexEventListener;
 import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
+import org.opensearch.index.store.metrics.CryptoMetricsService;
 import org.opensearch.index.store.pool.PoolBuilder;
 import org.opensearch.index.store.pool.PoolSizeCalculator;
 import org.opensearch.indices.cluster.IndicesClusterStateService.AllocatedIndices.IndexRemovalReason;
 import org.opensearch.plugins.EnginePlugin;
 import org.opensearch.plugins.IndexStorePlugin;
 import org.opensearch.plugins.Plugin;
+import org.opensearch.plugins.TelemetryAwarePlugin;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.script.ScriptService;
+import org.opensearch.telemetry.metrics.MetricsRegistry;
+import org.opensearch.telemetry.tracing.Tracer;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.client.Client;
 import org.opensearch.watcher.ResourceWatcherService;
@@ -42,7 +46,7 @@ import org.opensearch.watcher.ResourceWatcherService;
 /**
  * A plugin that enables index level encryption and decryption.
  */
-public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, EnginePlugin {
+public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, EnginePlugin, TelemetryAwarePlugin {
 
     private PoolBuilder.PoolResources sharedPoolResources;
 
@@ -103,10 +107,13 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         NodeEnvironment nodeEnvironment,
         NamedWriteableRegistry namedWriteableRegistry,
         IndexNameExpressionResolver expressionResolver,
-        Supplier<RepositoriesService> repositoriesServiceSupplier
+        Supplier<RepositoriesService> repositoriesServiceSupplier,
+        Tracer tracer,
+        MetricsRegistry metricsRegistry
     ) {
         sharedPoolResources = CryptoDirectoryFactory.initializeSharedPool(environment.settings());
         NodeLevelKeyCache.initialize(environment.settings());
+        CryptoMetricsService.initialize(metricsRegistry);
 
         return Collections.emptyList();
     }
