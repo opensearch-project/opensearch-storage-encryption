@@ -23,12 +23,53 @@ import org.opensearch.index.store.block_cache.FileBlockCacheKey;
  * and other overhead which we want to avoid on a very hot paths.
  * This tiny cache eliminates that overhead for the most recently accessed blocks.
  *
- * KEY OPTIMIZATIONS:
- * 2. Minimal contention on reads - thread-local MRU means no synchronization for cache hits
- * 3. CPU cache-friendly - padding eliminates false sharing between slots (the data store here)
- * 4. Generation tracking - handles memory segment pool reuse safely without stale references
+ *
+ * PIN/UNPIN LIFECYCLE FOR A SINGLE IndexInput
+ * -------------------------------------------
+ *  When and index input moves from one
+ * block to another, it pins the new block and unpins the previous one. This keeps
+ * memory usage extremely small: at any moment, *only one block is pinned per
+ * IndexInput*.
+ *
+ * Typical flow:
+ *    1. acquireRefCountedValue(offset) → returns a *pinned* block
+ *    2. IndexInput reads from that block
+ *    3. When moving to a new block:
+ *          oldBlock.unpin()        // refCount--
+ *          newBlock.tryPin()       // refCount++
+ *
+ *
+ * Blocks (MemorySegments) come from a pool. When a block is evicted from the main
+ * cache, the pool increments the segment's generation and may reuse it for a
+ * completely different file or offset.
+ *
+ * This means cached references can become stale:
+ *    • same memory
+ *    • different contents
+ *    • different file/offset
+ *
+ * To prevent returning a recycled segment, the tiny cache records the generation at
+ * the moment the slot was filled and compares it against the current generation:
+ *
+ *        cachedGeneration == segment.getGeneration()
+ *
+ * If they differ, the segment was evicted/reused → the slot is ignored and we reload.
+ *
+ *
+ * BlockSlotTinyCache only stores *pointers* (blockIdx, value, generation). It never
+ * keeps segments pinned. Only the IndexInput pins the block it is actively reading.
+ *
+ * On lookup:
+ *    • First check thread-local MRU (fastest path).
+ *    • Then check the slot (fast path).
+ *    • Both require: matching blockIdx + matching generation + successful tryPin().
+ *    • If any check fails, we fall back to the main cache and fill the slot/MRU.
+ *
+ * Because the tiny cache never holds pinned blocks, it never blocks eviction, and
+ * generation mismatches automatically invalidate stale entries.
  *
  */
+
 public class BlockSlotTinyCache {
 
     // 32 slots provides good hit rate while keeping memory footprint tiny (~8KB with padding).
