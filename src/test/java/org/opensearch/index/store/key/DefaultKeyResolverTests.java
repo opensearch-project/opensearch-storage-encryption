@@ -9,6 +9,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
@@ -26,10 +27,12 @@ import org.junit.After;
 import org.junit.Before;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.common.crypto.DataKeyPair;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.test.OpenSearchTestCase;
+import org.opensearch.transport.client.Client;
 
 /**
  * Unit tests for {@link DefaultKeyResolver}
@@ -55,9 +58,11 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
         provider = Security.getProvider("SunJCE");
         assertNotNull("SunJCE provider should be available", provider);
 
-        // Initialize NodeLevelKeyCache
+        // Initialize NodeLevelKeyCache with mock Client and ClusterService
         NodeLevelKeyCache.reset();
-        NodeLevelKeyCache.initialize(org.opensearch.common.settings.Settings.EMPTY);
+        Client mockClient = mock(Client.class);
+        ClusterService mockClusterService = mock(ClusterService.class);
+        NodeLevelKeyCache.initialize(org.opensearch.common.settings.Settings.EMPTY, mockClient, mockClusterService);
     }
 
     @After

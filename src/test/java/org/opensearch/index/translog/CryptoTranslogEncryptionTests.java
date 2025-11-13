@@ -4,6 +4,8 @@
  */
 package org.opensearch.index.translog;
 
+import static org.mockito.Mockito.mock;
+
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
@@ -18,6 +20,7 @@ import java.util.concurrent.ConcurrentMap;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
@@ -27,6 +30,7 @@ import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardCacheKey;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
 import org.opensearch.test.OpenSearchTestCase;
+import org.opensearch.transport.client.Client;
 
 /**
  * Verify that translog data encryption actually works.
@@ -66,7 +70,12 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
             .builder()
             .put("node.store.crypto.key_refresh_interval_secs", 300) // 5 minutes for tests
             .build();
-        NodeLevelKeyCache.initialize(nodeSettings);
+
+        // Create mock Client and ClusterService for testing
+        Client mockClient = mock(Client.class);
+        ClusterService mockClusterService = mock(ClusterService.class);
+
+        NodeLevelKeyCache.initialize(nodeSettings, mockClient, mockClusterService);
 
         Provider cryptoProvider = Security.getProvider("SunJCE");
 

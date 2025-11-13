@@ -6,6 +6,7 @@ package org.opensearch.index.store.key;
 
 import java.io.IOException;
 import java.security.Provider;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -133,5 +134,25 @@ public class ShardKeyResolverRegistry {
      */
     public static boolean hasResolver(String indexUuid, int shardId) {
         return resolverCache.containsKey(new ShardCacheKey(indexUuid, shardId));
+    }
+
+    /**
+     * Gets any resolver for the specified index UUID that exists on this node.
+     * Since all shards of an index share the same master key (stored at index level),
+     * any shard's resolver can be used to check key availability.
+     * 
+     * This is useful for operations that need a resolver but don't know which
+     * specific shards exist locally (e.g., health checks, key availability checks).
+     * 
+     * @param indexUuid the unique identifier for the index
+     * @return any KeyResolver for this index, or null if no shards exist on this node
+     */
+    public static KeyResolver getAnyResolverForIndex(String indexUuid) {
+        for (Map.Entry<ShardCacheKey, KeyResolver> entry : resolverCache.entrySet()) {
+            if (entry.getKey().getIndexUuid().equals(indexUuid)) {
+                return entry.getValue();  // Return first match - all shards share same master key
+            }
+        }
+        return null;  // No shards for this index on this node
     }
 }

@@ -70,7 +70,8 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                 CryptoDirectoryFactory.INDEX_CRYPTO_PROVIDER_SETTING,
                 CryptoDirectoryFactory.INDEX_KMS_ARN_SETTING,
                 CryptoDirectoryFactory.INDEX_KMS_ENC_CTX_SETTING,
-                CryptoDirectoryFactory.NODE_KEY_REFRESH_INTERVAL_SECS_SETTING,
+                CryptoDirectoryFactory.NODE_KEY_REFRESH_INTERVAL_SETTING,
+                CryptoDirectoryFactory.NODE_KEY_EXPIRY_INTERVAL_SETTING,
                 PoolSizeCalculator.NODE_POOL_SIZE_PERCENTAGE_SETTING,
                 PoolSizeCalculator.NODE_CACHE_TO_POOL_RATIO_SETTING,
                 PoolSizeCalculator.NODE_WARMUP_PERCENTAGE_SETTING
@@ -115,7 +116,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
     ) {
         this.nodeEnvironment = nodeEnvironment;
         sharedPoolResources = CryptoDirectoryFactory.initializeSharedPool(environment.settings());
-        NodeLevelKeyCache.initialize(environment.settings());
+        NodeLevelKeyCache.initialize(environment.settings(), client, clusterService);
         CryptoMetricsService.initialize(metricsRegistry);
 
         return Collections.emptyList();
@@ -165,6 +166,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                     int nShards = idxSettings.getNumberOfShards();
                     for (int i = 0; i < nShards; i++) {
                         ShardKeyResolverRegistry.removeResolver(index.getUUID(), i);
+                        NodeLevelKeyCache.getInstance().evict(index.getUUID(), i);
                     }
                 }
             });
