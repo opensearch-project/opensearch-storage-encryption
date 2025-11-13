@@ -13,7 +13,6 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
-import java.util.concurrent.locks.LockSupport;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -24,9 +23,6 @@ import org.apache.lucene.util.GroupVIntUtil;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
-import org.opensearch.index.store.block_cache.FileBlockCacheKey;
-import org.opensearch.index.store.metrics.CryptoMetricsService;
-import org.opensearch.index.store.metrics.ErrorType;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
 
@@ -164,11 +160,11 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     /**
     * Optimized method to get both cache block and offset in one operation.
-    * Handles cache eviction races by retrying pin attempts a bounded number of times.
+    * Returns a pinned block that must be managed via currentBlock.
     *
     * @param pos position relative to this input
     * @return MemorySegment for the cache block (offset available in lastOffsetInBlock)
-    * @throws IOException if the block cannot be pinned after retries
+    * @throws IOException if the block cannot be acquired
     */
     private MemorySegment getCacheBlockWithOffset(long pos) throws IOException {
         final long fileOffset = absoluteBaseOffset + pos;
@@ -184,30 +180,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             return currentBlock.value().segment();
         }
 
-        final int maxAttempts = 3;
-        BlockCacheValue<RefCountedMemorySegment> cacheValue = null;
-
-        for (int attempts = 0; attempts < maxAttempts; attempts++) {
-            // First attempt via PinRegistry, retries via cache loader
-            cacheValue = (attempts == 0)
-                ? blockSlotTinyCache.acquireRefCountedValue(blockOffset)
-                : blockCache.getOrLoad(new FileBlockCacheKey(path, blockOffset));
-
-            if (cacheValue != null && cacheValue.tryPin()) {
-                // Successfully pinned
-                break;
-            }
-
-            if (attempts == maxAttempts - 1) {
-                CryptoMetricsService.getInstance().recordError(ErrorType.INTERNAL_ERROR);
-                throw new IOException(
-                    "Unable to pin memory segment for block at offset " + blockOffset + " after " + maxAttempts + " attempts"
-                );
-            }
-
-            // Brief backoff to allow eviction race to resolve
-            LockSupport.parkNanos(100_000L); // ~100µs
-        }
+        // BlockSlotTinyCache returns already-pinned values
+        BlockCacheValue<RefCountedMemorySegment> cacheValue = blockSlotTinyCache.acquireRefCountedValue(blockOffset);
 
         if (cacheValue == null) {
             throw new IOException("Failed to acquire cache value for block at offset " + blockOffset);
@@ -215,10 +189,11 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
         RefCountedMemorySegment pinnedBlock = cacheValue.value();
 
-        // Swap in new block, unpin old
+        // Unpin old block before swapping
         if (currentBlock != null) {
             currentBlock.unpin();
         }
+
         currentBlockOffset = blockOffset;
         currentBlock = cacheValue;
 
@@ -680,15 +655,15 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         // Mark as closed to ensure all future accesses throw AlreadyClosedException
         isOpen = false;
 
-        if (!isSlice) {
-            // Assertions for master instance
-            assert !isSlice : "Master instance should not be marked as slice";
+        // Both master and slices must unpin their current block
+        if (currentBlock != null) {
+            currentBlock.unpin();
+            currentBlock = null;
+        }
 
-            // Unpin current block before cleanup
-            if (currentBlock != null) {
-                currentBlock.unpin();
-                currentBlock = null;
-            }
+        if (!isSlice) {
+            // Master instance cleanup
+            assert !isSlice : "Master instance should not be marked as slice";
 
             if (blockSlotTinyCache != null) {
                 blockSlotTinyCache.clear();
@@ -696,8 +671,9 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
             readaheadManager.close();
         } else {
-            // Assertions for slice instance
+            // Slice instance cleanup
             assert isSlice : "Slice instance should be marked as slice";
+            // Slices share cache and readahead manager, so don't close them
         }
     }
 }

@@ -8,6 +8,7 @@ import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SI
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.concurrent.locks.LockSupport;
 
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
@@ -15,133 +16,205 @@ import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 
 /**
- * Fast L1 cache for recently accessed blocks.
- * Sits in front of the main Caffeine cache to reduce cache lookup overhead.
+ * An optimized tiny L1 block cache in front of the main Caffeine L2 cache for fast lookups.
  *
- * <h2>Generation-based Staleness Detection</h2>
- * Each cached entry stores a generation number snapshot from the underlying
- * RefCountedMemorySegment. The generation counter is incremented when a segment
- * is evicted from the main cache (via close()), invalidating all L1 cache references.
+ * Sequential and near-sequential reads (common in Lucene) tend to access the same blocks repeatedly.
+ * Even with a large Caffeine cache, every lookup involves ConcurrentHashMap operations, 
+ * and other overhead which we want to avoid on a very hot paths.
+ * This tiny cache eliminates that overhead for the most recently accessed blocks.
  *
- * This prevents returning stale data in two scenarios:
- *
- * <h3>Scenario 1: Eviction without reuse</h3>
- * 1. File A's block cached in L1 → RefCountedMemorySegment@X (gen=5)
- * 2. Main cache evicts → close() increments gen to 6
- * 3. L1 checks: cached gen(5) ≠ current gen(6) → reload from main cache
- *
- * <h3>Scenario 2: Eviction with pool reuse</h3>
- * 1. File A's block cached in L1 → RefCountedMemorySegment@X (gen=5)
- * 2. Main cache evicts → close() increments gen to 6, segment returned to pool
- * 3. Pool reuses segment for File B → RefCountedMemorySegment@X (gen=6, new data)
- * 4. Reader requests File A → L1 checks: cached gen(5) ≠ current gen(6) → reload
+ * KEY OPTIMIZATIONS:
+ * 2. Minimal contention on reads - thread-local MRU means no synchronization for cache hits
+ * 3. CPU cache-friendly - padding eliminates false sharing between slots (the data store here)
+ * 4. Generation tracking - handles memory segment pool reuse safely without stale references
  *
  */
 public class BlockSlotTinyCache {
 
+    // 32 slots provides good hit rate while keeping memory footprint tiny (~8KB with padding).
+    // fits easily into cpu LI cache.
     private static final int SLOT_COUNT = 32;
     private static final int SLOT_MASK = SLOT_COUNT - 1;
 
-    private record Slot(long blockIdx, BlockCacheValue<RefCountedMemorySegment> val, int generation) {
+    /**
+     * Mutable slot object reused in place.
+     *
+     * PADDING OPTIMIZATION:
+     * CPU cache lines are typically 64 bytes. When multiple threads access adjacent memory locations,
+     * they can cause "false sharing" - where updating one slot invalidates another thread's cache line,
+     * causing expensive cross-core cache coherency traffic. 
+     *
+     * Each padding field (long) is 8 bytes:
+     * - 7 longs before = 56 bytes padding
+     * - 3 hot fields (long + reference + int) = ~24 bytes (with alignment)
+     * - 7 longs after = 56 bytes padding
+     * Total: ~136 bytes per slot, ensuring hot fields sit on their own cache line.
+     *
+     * This matters because multiple threads may simultaneously access different slots in the array,
+     * and without padding, they'd constantly invalidate each other's CPU caches.
+     */
+    private static final class Slot {
+        // Padding before the hot fields (helps isolate from object header / neighbors)
+        @SuppressWarnings("unused")
+        long p1, p2, p3, p4, p5, p6, p7;
+
+        // Hot fields - accessed on every slot check
+        long blockIdx = -1;         // Which block this slot caches
+        BlockCacheValue<RefCountedMemorySegment> val;  // The cached value
+        int generation;              // Generation number to detect pool reuse
+
+        // Padding after the hot fields (helps keep next Slot on a different cache line)
+        @SuppressWarnings("unused")
+        long q1, q2, q3, q4, q5, q6, q7;
+    }
+
+    /**
+     * Thread-local mutable MRU (Most Recently Used) entry.
+     *
+     * WHY THREAD-LOCAL:
+     * This is an optimization over using (varhandles or volaties). THREAD-LOCAL (small) 
+     * give us zero synchronization cost which has huge benefit on very hot path. Each thread tracks its
+     * most recent block access independently. Since Lucene tends to read sequentially within
+     * a thread (e.g., scanning a posting list).
+     *
+     */
+    private static final class LastAccessed {
+        long blockIdx = -1;
+        BlockCacheValue<RefCountedMemorySegment> val;
+        int generation;
     }
 
     private final BlockCache<RefCountedMemorySegment> cache;
     private final Path path;
-    private final Slot[] slots;
 
-    // Pre-allocated keys for hot slots to reduce allocation pressure
+    private final Slot[] slots;
     private final FileBlockCacheKey[] slotKeys;
 
-    private long lastBlockIdx = -1;
-    private BlockCacheValue<RefCountedMemorySegment> lastVal;
-    private int lastGeneration = -1;
+    /** Thread-local MRU; no allocation after initialization. */
+    private final ThreadLocal<LastAccessed> lastAccessed = ThreadLocal.withInitial(LastAccessed::new);
 
-    BlockSlotTinyCache(BlockCache<RefCountedMemorySegment> cache, Path path, long fileLength) {
+    public BlockSlotTinyCache(BlockCache<RefCountedMemorySegment> cache, Path path, long fileLength) {
         this.cache = cache;
         this.path = path;
+
         this.slots = new Slot[SLOT_COUNT];
+        for (int i = 0; i < SLOT_COUNT; i++) {
+            slots[i] = new Slot();
+        }
+
         this.slotKeys = new FileBlockCacheKey[SLOT_COUNT];
     }
 
     /**
-     * Acquires a reference-counted memory segment for the specified block offset.
-     * 
-     * <p>This method implements a fast L1 cache lookup with generation-based staleness detection.
-     * It first checks the last accessed block, then checks the slot cache, and finally falls back
-     * to the main cache if needed.
-     * 
-     * @param blockOff the byte offset within the file, must be block-aligned
-     * @return a cached value containing the reference-counted memory segment for the block
-     * @throws IOException if an I/O error occurs while loading the block from the underlying storage
+     * Returns an already-pinned block. Caller "must" unpin() when done.
      */
     public BlockCacheValue<RefCountedMemorySegment> acquireRefCountedValue(long blockOff) throws IOException {
+
         final long blockIdx = blockOff >>> CACHE_BLOCK_SIZE_POWER;
 
-        // Fast path: last accessed (avoid slot calculation if possible)
-
-        if (blockIdx == lastBlockIdx && lastVal != null) {
-            RefCountedMemorySegment seg = lastVal.value();
-            if (seg.getGeneration() == lastGeneration) {
-                return lastVal;
+        LastAccessed last = lastAccessed.get();
+        if (last.blockIdx == blockIdx) {
+            BlockCacheValue<RefCountedMemorySegment> v = last.val;
+            // Generation check ensures the pooled segment wasn't recycled and reused.
+            if (v != null && v.value().getGeneration() == last.generation && v.tryPin()) {
+                return v;
             }
         }
 
-        final int slotIdx = (int) (blockIdx & SLOT_MASK);
+        // Apply a small XOR fold to mix high bits into the low bits before masking.
+        // Without this mixing, sequential block indices alias every SLOT_COUNT blocks,
+        // causing predictable collisions. The fold spreads access patterns more evenly.
+        final int slotIdx = (int) ((blockIdx ^ (blockIdx >>> 17)) & SLOT_MASK);
 
-        // Slot lookup - single memory access, better cache locality
         Slot slot = slots[slotIdx];
-        if (slot != null && slot.blockIdx == blockIdx) {
-            BlockCacheValue<RefCountedMemorySegment> val = slot.val;
-            if (val != null) {
-                // Check generation to detect segment eviction or reuse
-                int currentGen = val.value().getGeneration();
-                if (currentGen == slot.generation) {
-                    // Cache both slot and last reference atomically
-                    lastBlockIdx = blockIdx;
-                    lastVal = val;
-                    lastGeneration = currentGen;
-                    return val;
+        if (slot.blockIdx == blockIdx) {
+            BlockCacheValue<RefCountedMemorySegment> v = slot.val;
+            if (v != null) {
+                int currentGen = v.value().getGeneration();
+                // Generation check is critical: memory segments are pooled and reused.
+                // Without this check, we could return a segment that was recycled and now
+                // contains completely different (or partially overwritten) data.
+                if (currentGen == slot.generation && v.tryPin()) {
+                    // Promote to thread-local MRU for next access (note: we do in-place update, no allocations)
+                    last.blockIdx = blockIdx;
+                    last.val = v;
+                    last.generation = currentGen;
+                    return v;
                 }
-                // Generation mismatch - segment was evicted/recycled, fall through to reload
             }
         }
 
-        // Cache miss path - reuse pre-allocated key if possible
+        // TIER 3: Main Caffeine cache lookup with retry logic
+        // This path is slower but unavoidable for true cache misses or highly contended blocks.
+        final int maxAttempts = 10;
+        BlockCacheValue<RefCountedMemorySegment> val = null;
+
+        // KEY REUSE OPTIMIZATION:
+        // FileBlockCacheKey is small but not free to allocate. Since we're hashing by slot,
+        // there's a good chance the same slot will be used for the same file/offset again.
+        // Reusing the key saves object allocation overhead.
         FileBlockCacheKey key = slotKeys[slotIdx];
         if (key == null || key.fileOffset() != blockOff) {
             key = new FileBlockCacheKey(path, blockOff);
-            slotKeys[slotIdx] = key; // Cache for future use
-        }
-        BlockCacheValue<RefCountedMemorySegment> val = cache.get(key);
-
-        if (val == null) {
-            val = cache.getOrLoad(key);
+            slotKeys[slotIdx] = key;
         }
 
-        // Single update point - create new slot record with current generation
-        int generation = val.value().getGeneration();
-        slots[slotIdx] = new Slot(blockIdx, val, generation);
-        lastBlockIdx = blockIdx;
-        lastVal = val;
-        lastGeneration = generation;
+        // RETRY LOOP:
+        // Under heavy concurrent load, a segment might be evicted from the pool between
+        // when we get it from the cache and when we try to pin it. This is rare but possible
+        // when the pool is small relative to working set size. Exponential backoff gives
+        // time for churn to settle.
+        for (int attempts = 0; attempts < maxAttempts; attempts++) {
+            val = cache.get(key);
+            if (val == null) {
+                // Not in cache at all - load from disk (decrypt, decompress if needed)
+                val = cache.getOrLoad(key);
+            }
 
-        return val;
+            if (val != null && val.tryPin()) {
+                int gen = val.value().getGeneration();
+
+                // Populate both caches for next access (in-place updates, zero allocations)
+                slot.blockIdx = blockIdx;
+                slot.val = val;
+                slot.generation = gen;
+
+                last.blockIdx = blockIdx;
+                last.val = val;
+                last.generation = gen;
+
+                return val;
+            }
+
+            // todo: we can also use thread-spin-wait
+            if (attempts < maxAttempts - 1) {
+                LockSupport.parkNanos(50_000L << attempts);
+            }
+        }
+
+        throw new IOException("Unable to pin memory segment for block offset " + blockOff + " after " + maxAttempts + " attempts");
     }
 
     /**
-     * Clears all cached entries and resets the cache state.
-     * 
-     * <p>This method invalidates all slots, clears the last accessed block reference,
-     * and releases all cached keys. It should be called when the cache needs to be
-     * completely reset, such as when the underlying file is closed or invalidated.
+     * Reset the tiny cache.
+     *
+     * Called when the file is closed or when we need to invalidate cached entries.
+     * Thread-local entries are removed (other threads will lazily refresh on next access).
+     * Shared slot entries are cleared immediately to prevent stale references.
+     *
+     * Note: This is not synchronized because:
+     * 1. It's typically called during shutdown/close when concurrent access is unlikely
+     * 2. In the rare case of concurrent access during clear, worst case is a cache miss
+     *    (incorrect generation will be detected and we'll fall through to main cache)
      */
     public void clear() {
-        lastBlockIdx = -1;
-        lastVal = null;
-        lastGeneration = -1;
+        lastAccessed.remove();
         for (int i = 0; i < SLOT_COUNT; i++) {
-            slots[i] = null;
-            slotKeys[i] = null; // Clear cached keys
+            Slot s = slots[i];
+            s.blockIdx = -1;
+            s.val = null;
+            s.generation = 0;
+            slotKeys[i] = null;
         }
     }
 }
