@@ -30,10 +30,12 @@ public final class PoolSizeCalculator {
         .doubleSetting("node.store.crypto.pool_size_percentage", 0.3, 0.0, 1.0, Property.NodeScope);
 
     /**
-     * Ratio of pool size to cache size.
+     * Ratio of cache size to pool size.
+     * cache_size = pool_size * ratio
+     * Default 0.75 means cache is 75% of pool size (enables constant recycling with 25% buffer).
      */
-    public static final Setting<Double> NODE_POOL_TO_CACHE_RATIO_SETTING = Setting
-        .doubleSetting("node.store.crypto.pool_to_cache_ratio", 1.5, 1.0, 10.0, Property.NodeScope);
+    public static final Setting<Double> NODE_CACHE_TO_POOL_RATIO_SETTING = Setting
+        .doubleSetting("node.store.crypto.cache_to_pool_ratio", 0.75, 0.1, 1.0, Property.NodeScope);
 
     /**
      * Percentage of cache blocks to warmup at initialization.

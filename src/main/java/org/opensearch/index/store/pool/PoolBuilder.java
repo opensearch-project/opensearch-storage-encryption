@@ -15,7 +15,6 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheBuilder;
-import org.opensearch.index.store.pool.PoolBuilder.PoolResources;
 
 /**
  * Builder for creating shared pool and cache resources with proper lifecycle management.
@@ -168,7 +167,7 @@ public final class PoolBuilder {
         reservedPoolSizeInBytes = (reservedPoolSizeInBytes / CACHE_BLOCK_SIZE) * CACHE_BLOCK_SIZE;
         long maxBlocks = reservedPoolSizeInBytes / CACHE_BLOCK_SIZE;
 
-        double poolToCacheRatio = PoolSizeCalculator.NODE_POOL_TO_CACHE_RATIO_SETTING.get(settings);
+        double cacheToPoolRatio = PoolSizeCalculator.NODE_CACHE_TO_POOL_RATIO_SETTING.get(settings);
         double warmupPercentage = PoolSizeCalculator.NODE_WARMUP_PERCENTAGE_SETTING.get(settings);
 
         Pool<RefCountedMemorySegment> segmentPool = new MemorySegmentPool(reservedPoolSizeInBytes, CACHE_BLOCK_SIZE);
@@ -180,8 +179,8 @@ public final class PoolBuilder {
                 maxBlocks
             );
 
-        // Calculate cache size: cache = pool / ratio
-        long maxCacheBlocks = (long) (maxBlocks / poolToCacheRatio);
+        // Calculate cache size: cache = pool * ratio
+        long maxCacheBlocks = (long) (maxBlocks * cacheToPoolRatio);
         long warmupBlocks = (long) (maxCacheBlocks * warmupPercentage);
         segmentPool.warmUp(warmupBlocks);
         LOGGER.info("Warmed up {} blocks ({}% of {} cache blocks)", warmupBlocks, warmupPercentage * 100, maxCacheBlocks);

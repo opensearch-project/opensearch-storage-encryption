@@ -13,8 +13,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Setting;
@@ -51,9 +49,6 @@ import org.opensearch.watcher.ResourceWatcherService;
  * A plugin that enables index level encryption and decryption.
  */
 public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, EnginePlugin, TelemetryAwarePlugin {
-
-    private static final Logger LOGGER = LogManager.getLogger(CryptoDirectoryPlugin.class);
-
     private PoolBuilder.PoolResources sharedPoolResources;
     private NodeEnvironment nodeEnvironment;
 
@@ -77,7 +72,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                 CryptoDirectoryFactory.INDEX_KMS_ENC_CTX_SETTING,
                 CryptoDirectoryFactory.NODE_KEY_REFRESH_INTERVAL_SECS_SETTING,
                 PoolSizeCalculator.NODE_POOL_SIZE_PERCENTAGE_SETTING,
-                PoolSizeCalculator.NODE_POOL_TO_CACHE_RATIO_SETTING,
+                PoolSizeCalculator.NODE_CACHE_TO_POOL_RATIO_SETTING,
                 PoolSizeCalculator.NODE_WARMUP_PERCENTAGE_SETTING
             );
     }
@@ -175,5 +170,4 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
             });
         }
     }
-
 }

@@ -39,7 +39,7 @@ public class IndexTemplateIntegTests extends OpenSearchIntegTestCase {
             .put(super.nodeSettings(nodeOrdinal))
             .put("node.store.crypto.pool_size_percentage", 0.05)
             .put("node.store.crypto.warmup_percentage", 0.0)
-            .put("node.store.crypto.pool_to_cache_ratio", 1.25)
+            .put("node.store.crypto.cache_to_pool_ratio", 0.8)
             .put("node.store.crypto.key_refresh_interval_secs", 30)
             .build();
     }
