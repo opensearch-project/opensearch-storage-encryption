@@ -157,7 +157,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         // invalidateAll to trigger removal listener for proper segment cleanup
         // note: invalidateAll doesn't effect eviction count.
         if (!keysToInvalidate.isEmpty()) {
-            LOGGER.info("Invalidating {} cache entries for path prefix: {}", keysToInvalidate.size(), normalized);
+            LOGGER.debug("Invalidating {} cache entries for path prefix: {}", keysToInvalidate.size(), normalized);
             cache.invalidateAll(keysToInvalidate);
         }
     }

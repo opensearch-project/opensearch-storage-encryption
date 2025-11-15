@@ -4,8 +4,6 @@
  */
 package org.opensearch.index.store.metrics;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.opensearch.index.store.pool.SegmentType;
 import org.opensearch.telemetry.metrics.Counter;
 import org.opensearch.telemetry.metrics.Histogram;
@@ -19,8 +17,6 @@ import lombok.NonNull;
  * Provides centralized access to telemetry data collection for encryption/decryption operations.
  */
 public class CryptoMetricsService {
-    private static final Logger LOGGER = LogManager.getLogger(CryptoMetricsService.class);
-
     private static volatile CryptoMetricsService instance;
     private final MetricsRegistry metricsRegistry;
     private final Histogram poolStatsHistogram;
@@ -90,7 +86,6 @@ public class CryptoMetricsService {
      * @param allocation allocation percentage (0-100)
      */
     public void recordPoolStats(SegmentType segmentType, int maxSegments, int allocated, int free, double utilization, double allocation) {
-        LOGGER.info("Publishing pool stats metric");
         if (poolStatsHistogram == null)
             return;
 
@@ -113,7 +108,6 @@ public class CryptoMetricsService {
      * @param avgLoadTimeMs average load time in milliseconds
      */
     public void recordCacheStats(long size, long hits, long misses, double hitRate, long loads, long evictions, double avgLoadTimeMs) {
-        LOGGER.info("Publishing cache stats metric");
         if (cacheStatsHistogram == null)
             return;
 
@@ -131,7 +125,6 @@ public class CryptoMetricsService {
      * @param errorType the type of error
      */
     public void recordError(@NonNull ErrorType errorType) {
-        LOGGER.info("Publishing error metric");
         if (errorCounter != null) {
             errorCounter.add(1.0, Tags.create().addTag(ERROR_TYPE_TAG, errorType.getValue()));
         }
@@ -143,7 +136,6 @@ public class CryptoMetricsService {
      * @param indexName the index name
      */
     public void recordError(@NonNull ErrorType errorType, @NonNull String indexName) {
-        LOGGER.info("Publishing error metric for index: {}", indexName);
         if (errorCounter != null) {
             errorCounter.add(1.0, Tags.create().addTag(ERROR_TYPE_TAG, errorType.getValue()).addTag(INDEX_NAME, indexName));
         }

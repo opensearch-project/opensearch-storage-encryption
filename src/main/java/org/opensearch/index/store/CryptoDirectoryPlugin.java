@@ -143,9 +143,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                 /*
                  * Cache invalidation for closed shards is now handled automatically
                  * by CryptoDirectIODirectory.close() when the directory is closed.
-                 * This ensures cache entries are cleared at the right time.
                  */
-
                 @Override
                 public void afterIndexRemoved(Index index, IndexSettings idxSettings, IndexRemovalReason reason) {
                     if (reason != IndexRemovalReason.DELETED) {
@@ -159,7 +157,16 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                         }
                     }
 
-                    // Clean resolvers + footer caches
+                    /*
+                    * The resolvers should be removed only when the index is actually deleted (DELETED reason).
+                    * We should NOT remove resolvers when shards are relocated (NO_LONGER_ASSIGNED) or during
+                    * node restarts, as other nodes may still need the resolver for their shards.
+                    * 
+                    * This prevents race conditions during:
+                    * - Shard relocation between nodes
+                    * - Node restarts with replica recovery
+                    * - Cluster topology changes
+                    * */
                     int nShards = idxSettings.getNumberOfShards();
                     for (int i = 0; i < nShards; i++) {
                         ShardKeyResolverRegistry.removeResolver(index.getUUID(), i);

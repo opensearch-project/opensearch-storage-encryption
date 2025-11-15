@@ -110,7 +110,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         this.dataKeyBytes = keyResolver.getDataKey().getEncoded();
         this.encryptionMetadataCache = encryptionMetadataCache;
 
-        startCacheStatsTelemetry();
+        // startCacheStatsTelemetry(); // cuncomment for local testing
     }
 
     @Override
@@ -200,7 +200,6 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         // Invalidate all cache entries for this directory to prevent memory leaks
         // when the shard/index is closed or deleted
         if (blockCache != null) {
-            LOGGER.info("Invalidating cache entries for closed directory: {}", dirPath);
             blockCache.invalidateByPathPrefix(dirPath);
         }
     }
