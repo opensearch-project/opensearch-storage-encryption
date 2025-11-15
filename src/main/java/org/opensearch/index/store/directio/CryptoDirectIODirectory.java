@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.Provider;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.logging.log4j.LogManager;
@@ -25,6 +26,7 @@ import org.apache.lucene.store.LockFactory;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
@@ -107,6 +109,8 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         this.dirPath = getDirectory();
         this.dataKeyBytes = keyResolver.getDataKey().getEncoded();
         this.encryptionMetadataCache = encryptionMetadataCache;
+
+        startCacheStatsTelemetry();
     }
 
     @Override
@@ -236,5 +240,38 @@ public final class CryptoDirectIODirectory extends FSDirectory {
             LOGGER.error("Cache miss for footer for file - {}", file.toString());
             throw new RuntimeException("Unexpected footer cache miss for " + file.toString());
         }
+    }
+
+    private void logCacheAndPoolStats() {
+        try {
+
+            if (blockCache instanceof CaffeineBlockCache) {
+                String cacheStats = ((CaffeineBlockCache<?, ?>) blockCache).cacheStats();
+                LOGGER.info("{}", cacheStats);
+            }
+
+        } catch (Exception e) {
+            LOGGER.warn("Failed to log cache/pool stats", e);
+        }
+    }
+
+    private void startCacheStatsTelemetry() {
+        Thread loggerThread = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(Duration.ofMinutes(2));
+                    logCacheAndPoolStats();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                } catch (Throwable t) {
+                    LOGGER.warn("Error in collecting cache stats", t);
+                }
+            }
+        });
+
+        loggerThread.setDaemon(true);
+        loggerThread.setName("DirectIOBufferPoolStatsLogger");
+        loggerThread.start();
     }
 }

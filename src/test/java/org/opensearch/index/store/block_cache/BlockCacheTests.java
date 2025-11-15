@@ -192,6 +192,41 @@ public class BlockCacheTests extends OpenSearchTestCase {
         assertNotNull(blockCache.get(key3)); // Different file, should remain
     }
 
+    public void testInvalidateByPathPrefix() {
+        Path indexPath = Paths.get("/data/indices/index1");
+        Path shard0File = Paths.get("/data/indices/index1/0/index/segments.gen");
+        Path shard1File = Paths.get("/data/indices/index1/1/index/segments.gen");
+        Path otherIndexFile = Paths.get("/data/indices/index2/0/index/segments.gen");
+
+        BlockCacheKey key1 = new FileBlockCacheKey(shard0File, 0);
+        BlockCacheKey key2 = new FileBlockCacheKey(shard0File, 8192);
+        BlockCacheKey key3 = new FileBlockCacheKey(shard1File, 0);
+        BlockCacheKey key4 = new FileBlockCacheKey(otherIndexFile, 0);
+
+        MemorySegment segment1 = arena.allocate(1024);
+        MemorySegment segment2 = arena.allocate(1024);
+        MemorySegment segment3 = arena.allocate(1024);
+        MemorySegment segment4 = arena.allocate(1024);
+
+        RefCountedMemorySegment refSegment1 = new RefCountedMemorySegment(segment1, 1024, (s) -> {});
+        RefCountedMemorySegment refSegment2 = new RefCountedMemorySegment(segment2, 1024, (s) -> {});
+        RefCountedMemorySegment refSegment3 = new RefCountedMemorySegment(segment3, 1024, (s) -> {});
+        RefCountedMemorySegment refSegment4 = new RefCountedMemorySegment(segment4, 1024, (s) -> {});
+
+        blockCache.put(key1, refSegment1);
+        blockCache.put(key2, refSegment2);
+        blockCache.put(key3, refSegment3);
+        blockCache.put(key4, refSegment4);
+
+        // Invalidate all entries under index1
+        blockCache.invalidateByPathPrefix(indexPath);
+
+        assertNull(blockCache.get(key1)); // index1/shard0 - should be removed
+        assertNull(blockCache.get(key2)); // index1/shard0 - should be removed
+        assertNull(blockCache.get(key3)); // index1/shard1 - should be removed
+        assertNotNull(blockCache.get(key4)); // index2 - should remain
+    }
+
     public void testClear() {
         Path filePath1 = Paths.get("/test/file1.txt");
         Path filePath2 = Paths.get("/test/file2.txt");

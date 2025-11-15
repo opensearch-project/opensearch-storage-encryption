@@ -4,6 +4,7 @@
  */
 package org.opensearch.index.store;
 
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -12,6 +13,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Setting;
@@ -25,6 +28,8 @@ import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.EngineFactory;
 import org.opensearch.index.shard.IndexEventListener;
+import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.cipher.EncryptionMetadataCacheRegistry;
 import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
@@ -48,7 +53,10 @@ import org.opensearch.watcher.ResourceWatcherService;
  */
 public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, EnginePlugin, TelemetryAwarePlugin {
 
+    private static final Logger LOGGER = LogManager.getLogger(CryptoDirectoryPlugin.class);
+
     private PoolBuilder.PoolResources sharedPoolResources;
+    private NodeEnvironment nodeEnvironment;
 
     /**
      * The default constructor.
@@ -111,6 +119,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         Tracer tracer,
         MetricsRegistry metricsRegistry
     ) {
+        this.nodeEnvironment = nodeEnvironment;
         sharedPoolResources = CryptoDirectoryFactory.initializeSharedPool(environment.settings());
         NodeLevelKeyCache.initialize(environment.settings());
         CryptoMetricsService.initialize(metricsRegistry);
@@ -136,7 +145,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                  * The resolvers should be removed only when the index is actually deleted (DELETED reason).
                  * We should NOT remove resolvers when shards are relocated (NO_LONGER_ASSIGNED) or during
                  * node restarts, as other nodes may still need the resolver for their shards.
-                 * 
+                 *
                  * This prevents race conditions during:
                  * - Shard relocation between nodes
                  * - Node restarts with replica recovery
@@ -148,8 +157,20 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                     if (reason == IndexRemovalReason.DELETED) {
                         String indexUuid = index.getUUID();
                         int numOfShards = indexSettings.getNumberOfShards();
+
+                        // Invalidate cache entries for all shards in this index
+                        BlockCache<?> cache = CryptoDirectoryFactory.getSharedBlockCache();
+                        if (cache != null && nodeEnvironment != null) {
+                            for (Path indexPath : nodeEnvironment.indexPaths(index)) {
+                                LOGGER.debug("Invalidating cache entries for deleted index: {}", indexPath);
+                                cache.invalidateByPathPrefix(indexPath);
+                            }
+                        }
+
+                        // Remove key resolvers for all shards
                         for (int i = 0; i < numOfShards; i++) {
                             ShardKeyResolverRegistry.removeResolver(indexUuid, i);
+                            EncryptionMetadataCacheRegistry.removeCache(indexUuid, i);
                         }
                     }
                 }

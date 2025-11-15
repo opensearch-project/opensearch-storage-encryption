@@ -83,6 +83,11 @@ public class BlockSlotTinyCacheBenchmarkTests {
         }
 
         @Override
+        public void invalidateByPathPrefix(Path directoryPath) {
+            cache.clear();
+        }
+
+        @Override
         public void clear() {
             cache.clear();
         }

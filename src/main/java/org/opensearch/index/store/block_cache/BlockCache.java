@@ -69,6 +69,14 @@ public interface BlockCache<T> {
     void invalidate(Path normalizedFilePath);
 
     /**
+     * Evict all blocks whose file paths start with the given directory path.
+     * This is useful for clearing cache entries when an index or shard is deleted.
+     *
+     * @param directoryPath the directory path prefix to match
+     */
+    void invalidateByPathPrefix(Path directoryPath);
+
+    /**
      * Clear all blocks from the cache.
      */
     void clear();
