@@ -265,8 +265,12 @@ public final class RefCountedMemorySegment implements BlockCacheValue<RefCounted
      */
     @Override
     public void close() {
-        generation++;
+        // By decrementing refcount before bumping generation,
+        // any concurrent tryPin will see refcount=0 and fail
+        // immediately, avoiding any racees between generation checks
+        // and tryPin()
         decRef();
+        generation++;
     }
 
     /**
