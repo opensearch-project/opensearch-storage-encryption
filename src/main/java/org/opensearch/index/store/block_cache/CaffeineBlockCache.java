@@ -145,6 +145,24 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     }
 
     @Override
+    public void invalidateByPathPrefix(Path directoryPath) {
+        Path normalized = directoryPath.toAbsolutePath().normalize();
+        var keysToInvalidate = cache
+            .asMap()
+            .keySet()
+            .stream()
+            .filter(key -> key instanceof FileBlockCacheKey directIOKey && directIOKey.filePath().startsWith(normalized))
+            .toList();
+
+        // invalidateAll to trigger removal listener for proper segment cleanup
+        // note: invalidateAll doesn't effect eviction count.
+        if (!keysToInvalidate.isEmpty()) {
+            LOGGER.debug("Invalidating {} cache entries for path prefix: {}", keysToInvalidate.size(), normalized);
+            cache.invalidateAll(keysToInvalidate);
+        }
+    }
+
+    @Override
     public void clear() {
         // note: invalidateAll doesn't effect eviction count.
         cache.invalidateAll();

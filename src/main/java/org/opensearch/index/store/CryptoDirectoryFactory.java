@@ -365,4 +365,14 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         }
         return poolResources;
     }
+
+    /**
+     * Get the shared block cache instance.
+     * This can be used for cache invalidation when indices or shards are deleted.
+     *
+     * @return the shared block cache, or null if not initialized
+     */
+    public static BlockCache<?> getSharedBlockCache() {
+        return poolResources != null ? poolResources.getBlockCache() : null;
+    }
 }

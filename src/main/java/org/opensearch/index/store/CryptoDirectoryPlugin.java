@@ -4,6 +4,7 @@
  */
 package org.opensearch.index.store;
 
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -12,6 +13,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Setting;
@@ -25,6 +28,7 @@ import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.EngineFactory;
 import org.opensearch.index.shard.IndexEventListener;
+import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
@@ -48,7 +52,10 @@ import org.opensearch.watcher.ResourceWatcherService;
  */
 public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, EnginePlugin, TelemetryAwarePlugin {
 
+    private static final Logger LOGGER = LogManager.getLogger(CryptoDirectoryPlugin.class);
+
     private PoolBuilder.PoolResources sharedPoolResources;
+    private NodeEnvironment nodeEnvironment;
 
     /**
      * The default constructor.
@@ -111,6 +118,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         Tracer tracer,
         MetricsRegistry metricsRegistry
     ) {
+        this.nodeEnvironment = nodeEnvironment;
         sharedPoolResources = CryptoDirectoryFactory.initializeSharedPool(environment.settings());
         NodeLevelKeyCache.initialize(environment.settings());
         CryptoMetricsService.initialize(metricsRegistry);
@@ -127,30 +135,41 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
 
     @Override
     public void onIndexModule(IndexModule indexModule) {
-        // Only add listener for cryptofs indices
         Settings indexSettings = indexModule.getSettings();
         String storeType = indexSettings.get(IndexModule.INDEX_STORE_TYPE_SETTING.getKey());
+
         if ("cryptofs".equals(storeType)) {
             indexModule.addIndexEventListener(new IndexEventListener() {
                 /*
-                 * The resolvers should be removed only when the index is actually deleted (DELETED reason).
-                 * We should NOT remove resolvers when shards are relocated (NO_LONGER_ASSIGNED) or during
-                 * node restarts, as other nodes may still need the resolver for their shards.
-                 * 
-                 * This prevents race conditions during:
-                 * - Shard relocation between nodes
-                 * - Node restarts with replica recovery
-                 * - Cluster topology changes
+                 * Cache invalidation for closed shards is now handled automatically
+                 * by CryptoDirectIODirectory.close() when the directory is closed.
                  */
                 @Override
-                public void afterIndexRemoved(Index index, IndexSettings indexSettings, IndexRemovalReason reason) {
-                    // Only remove resolver when index is truly deleted, not during shard relocation
-                    if (reason == IndexRemovalReason.DELETED) {
-                        String indexUuid = index.getUUID();
-                        int numOfShards = indexSettings.getNumberOfShards();
-                        for (int i = 0; i < numOfShards; i++) {
-                            ShardKeyResolverRegistry.removeResolver(indexUuid, i);
+                public void afterIndexRemoved(Index index, IndexSettings idxSettings, IndexRemovalReason reason) {
+                    if (reason != IndexRemovalReason.DELETED) {
+                        return;
+                    }
+
+                    BlockCache<?> cache = CryptoDirectoryFactory.getSharedBlockCache();
+                    if (cache != null && nodeEnvironment != null) {
+                        for (Path indexPath : nodeEnvironment.indexPaths(index)) {
+                            cache.invalidateByPathPrefix(indexPath);
                         }
+                    }
+
+                    /*
+                    * The resolvers should be removed only when the index is actually deleted (DELETED reason).
+                    * We should NOT remove resolvers when shards are relocated (NO_LONGER_ASSIGNED) or during
+                    * node restarts, as other nodes may still need the resolver for their shards.
+                    * 
+                    * This prevents race conditions during:
+                    * - Shard relocation between nodes
+                    * - Node restarts with replica recovery
+                    * - Cluster topology changes
+                    * */
+                    int nShards = idxSettings.getNumberOfShards();
+                    for (int i = 0; i < nShards; i++) {
+                        ShardKeyResolverRegistry.removeResolver(index.getUUID(), i);
                     }
                 }
             });
