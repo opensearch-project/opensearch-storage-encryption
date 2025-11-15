@@ -31,6 +31,7 @@ import org.opensearch.index.store.metrics.ErrorType;
  * </ol>
  *
  */
+@SuppressWarnings("preview")
 public final class RefCountedMemorySegment implements BlockCacheValue<RefCountedMemorySegment> {
 
     private static final Logger LOGGER = LogManager.getLogger(RefCountedMemorySegment.class);
