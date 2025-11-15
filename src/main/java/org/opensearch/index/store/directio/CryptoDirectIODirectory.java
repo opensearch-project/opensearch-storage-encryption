@@ -196,6 +196,13 @@ public final class CryptoDirectIODirectory extends FSDirectory {
     public synchronized void close() throws IOException {
         readAheadworker.close();
         encryptionMetadataCache.invalidateDirectory();
+
+        // Invalidate all cache entries for this directory to prevent memory leaks
+        // when the shard/index is closed or deleted
+        if (blockCache != null) {
+            LOGGER.info("Invalidating cache entries for closed directory: {}", dirPath);
+            blockCache.invalidateByPathPrefix(dirPath);
+        }
     }
 
     @Override
@@ -215,7 +222,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
                 }
             } catch (IOException e) {
                 // Fall back to path-based invalidation if file size unavailable
-                LOGGER.warn("Failed to get file size", e);
+                LOGGER.warn("Failed to get file size for clearing cache for deleting shard", e);
             }
         }
         encryptionMetadataCache.invalidateFile(EncryptionMetadataCache.normalizePath(file));
@@ -259,7 +266,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         Thread loggerThread = new Thread(() -> {
             while (true) {
                 try {
-                    Thread.sleep(Duration.ofMinutes(2));
+                    Thread.sleep(Duration.ofSeconds(10));
                     logCacheAndPoolStats();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
