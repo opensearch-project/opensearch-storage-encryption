@@ -14,10 +14,12 @@ import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
+import org.opensearch.test.OpenSearchTestCase;
+
 /**
  * Tests for cipher encryption and decryption operations
  */
-public class CipherEncryptionDecryptionTests {
+public class CipherEncryptionDecryptionTests extends OpenSearchTestCase {
 
     private static final byte[] TEST_KEY = new byte[32]; // 256-bit AES key
     private static final byte[] TEST_IV = new byte[16];  // 128-bit IV
