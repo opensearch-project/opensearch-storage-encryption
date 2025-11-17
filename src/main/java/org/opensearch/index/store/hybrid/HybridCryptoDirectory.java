@@ -19,39 +19,24 @@ import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 
 /**
- * A hybrid directory implementation that intelligently routes file operations to different
- * underlying directory implementations based on file extensions.
+ * Hybrid encrypted directory that routes file operations based on OpenSearch's
+ * {@code INDEX_STORE_HYBRID_NIO_EXTENSIONS} setting.
  *
- * <p>This directory combines the benefits of different I/O strategies:
+ * <p>Routing logic:
  * <ul>
- * <li><strong>Direct I/O</strong> for large, performance-critical files (via {@link CryptoDirectIODirectory})</li>
- * <li><strong>NIO</strong> for smaller files and metadata (via {@link CryptoNIOFSDirectory})</li>
+ * <li><strong>Direct I/O</strong> ({@link CryptoDirectIODirectory}): Files NOT in nioExtensions
+ *     (e.g., tim, doc, dvd, nvd, cfs) - large data files with block caching</li>
+ * <li><strong>NIO</strong> ({@link CryptoNIOFSDirectory}): Files in nioExtensions
+ *     (e.g., si, cfe, fnm, fdx, segments_N) - metadata and small files</li>
  * </ul>
  *
- * <p>File routing is determined by extension:
- * <ul>
- * <li><strong>Direct I/O extensions:</strong> kdd, cfs, doc, dvd, nvd, tim</li>
- * <li><strong>NIO extensions:</strong> all other extensions (segments files, .si files, etc.)</li>
- * </ul>
- *
- * <p>The routing strategy is designed to:
- * <ul>
- * <li>Use Direct I/O for large data files that benefit from bypassing OS cache</li>
- * <li>Use NIO for small metadata files where Direct I/O overhead isn't justified</li>
- * <li>Maintain compatibility with standard Lucene file operations</li>
- * <li>Provide transparent encryption for both file types</li>
- * </ul>
- *
- * <p>Both underlying directories share the same encryption keys and IV resolution,
- * ensuring consistent encryption across all file types.
+ * <p>Both directories share the same encryption keys and IV resolution.
  *
  * @opensearch.internal
  */
 public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
     private final CryptoDirectIODirectory cryptoDirectIODirectory;
-
-    // Only these extensions get special routing - everything else goes to NIOFS
-    private final Set<String> specialExtensions;
+    private final Set<String> nioExtensions;
 
     /**
      * Creates a new HybridCryptoDirectory that routes operations between NIO and Direct I/O.
@@ -70,14 +55,24 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         CryptoDirectIODirectory delegate,
         Provider provider,
         KeyResolver keyResolver,
-        EncryptionMetadataCache encryptionMetadataCache
+        EncryptionMetadataCache encryptionMetadataCache,
+        Set<String> nioExtensions
     )
         throws IOException {
         super(lockFactory, delegate.getDirectory(), provider, keyResolver, encryptionMetadataCache);
         this.cryptoDirectIODirectory = delegate;
-        // todo can be moved to buffer-io with caching
-        // "kdm", "tip", "tmd", "psm", "fdm", "kdi");
-        this.specialExtensions = Set.of("kdd", "cfs", "doc", "dvd", "nvd", "tim");
+        this.nioExtensions = nioExtensions;
+    }
+
+    /**
+     * Determines if a file should be routed to Direct I/O + caching directory
+     * based on its extension.
+     *
+     * @param extension the file extension
+     * @return true if the file should use Direct I/O, false for NIO
+     */
+    private boolean shouldUseDirectIO(String extension) {
+        return !extension.isEmpty() && !nioExtensions.contains(extension);
     }
 
     @Override
@@ -87,7 +82,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         ensureOpen();
         ensureCanRead(name);
 
-        if (specialExtensions.contains(extension)) {
+        if (shouldUseDirectIO(extension)) {
             return cryptoDirectIODirectory.openInput(name, context);
         }
 
@@ -101,7 +96,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         ensureOpen();
         ensureCanRead(name);
 
-        if (specialExtensions.contains(extension)) {
+        if (shouldUseDirectIO(extension)) {
             return cryptoDirectIODirectory.createOutput(name, context);
         }
 
@@ -110,12 +105,12 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
 
     @Override
     public void deleteFile(String name) throws IOException {
-        String ext = FileSwitchDirectory.getExtension(name);
+        String extension = FileSwitchDirectory.getExtension(name);
 
-        if (specialExtensions.contains(ext)) {
+        if (shouldUseDirectIO(extension)) {
             cryptoDirectIODirectory.deleteFile(name);
         } else {
-            super.deleteFile(name); // goes to CryptoNIOFSDirectory
+            super.deleteFile(name);
         }
     }
 

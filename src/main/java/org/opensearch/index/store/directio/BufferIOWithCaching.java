@@ -111,6 +111,11 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         private int totalFrames = 0;
         private boolean isClosed = false;
 
+        // Partial block tracking for final block caching
+        private long lastCachedBlockOffset = -1;
+        private byte[] partialBlockBuffer = new byte[CACHE_BLOCK_SIZE];
+        private int partialBlockLength = 0;
+
         EncryptedOutputStream(
             OutputStream os,
             Path path,
@@ -156,14 +161,20 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             if (length == 0)
                 return;
 
+            // LARGE WRITES: bypass buffering for writes >= BUFFER_SIZE
+            // Flush all buffered data first (including partial tail) to maintain stream ordering
             if (length >= BUFFER_SIZE) {
-                // leave large-write path as-is for now
-                flushBuffer(); // will now be block-aligned
+                // Force flush includes any partial tail < 8KB to ensure correct stream ordering
+                // before the large write is processed directly
+                if (bufferPosition > 0) {
+                    forceFlushBuffer();
+                }
                 processAndWrite(b, offset, length);
                 return;
             }
 
             // CHUNKED WRITES: if this would overflow the buffer, top-off to a block boundary, then flush
+            // This ensures we only flush complete 8KB cache blocks, keeping partial tails buffered
             if (bufferPosition + length > BUFFER_SIZE) {
                 int partial = bufferPosition & BLOCK_MASK;
                 if (partial != 0) {
@@ -246,7 +257,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             int blockOffset,
             int chunkLen
         ) {
-            // Cache only fully-aligned full blocks
+            // Cache fully-aligned full blocks immediately
             if (blockOffset == 0 && chunkLen == CACHE_BLOCK_SIZE) {
                 try {
                     final RefCountedMemorySegment refSegment = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
@@ -258,6 +269,10 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
 
                         BlockCacheKey cacheKey = new FileBlockCacheKey(path, blockAlignedOffset);
                         blockCache.put(cacheKey, refSegment);
+
+                        // Track this as last cached block
+                        lastCachedBlockOffset = blockAlignedOffset;
+                        partialBlockLength = 0; // Reset partial tracking
                     } else {
                         LOGGER.debug("Failed to acquire from pool within specified timeout path={} {} ms", path, 5);
                     }
@@ -267,6 +282,18 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                 } catch (IllegalStateException e) {
                     LOGGER.debug("Failed to acquire segment from pool; skipping cache.");
                 }
+            } else {
+                // Partial block - accumulate for potential final block caching
+                // Check if this is a new block or continuation of current partial block
+                if (blockAlignedOffset != lastCachedBlockOffset || partialBlockLength == 0) {
+                    // Starting a new partial block
+                    lastCachedBlockOffset = blockAlignedOffset;
+                    partialBlockLength = 0;
+                }
+
+                // Accumulate into partial buffer
+                MemorySegment.copy(sourceData, sourceOffset, MemorySegment.ofArray(partialBlockBuffer), blockOffset, chunkLen);
+                partialBlockLength = Math.max(partialBlockLength, blockOffset + chunkLen);
             }
         }
 
@@ -328,8 +355,8 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
 
                 super.close();
 
-                // After file is complete, load final block (footer) into cache for immediate reads
-                loadFinalBlocksIntoCache();
+                // Cache the final partial block if present (avoids disk I/O for immediate reads)
+                cacheFinalPartialBlock();
 
                 // signal the kernel to flush the file cacehe
                 // we don't call flush aggresevley to avoid cpu pressure.
@@ -353,17 +380,54 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                 throw exception;
         }
 
-        private void loadFinalBlocksIntoCache() {
+        private void cacheFinalPartialBlock() {
+            if (partialBlockLength == 0 || lastCachedBlockOffset < 0 || streamOffset <= 0) {
+                return;
+            }
+
+            // Verify this is truly the final block
+            long expectedFinalBlockOffset = (streamOffset - 1) & ~CACHE_BLOCK_MASK;
+            if (lastCachedBlockOffset != expectedFinalBlockOffset) {
+                LOGGER
+                    .warn(
+                        "Partial block offset mismatch: tracked={}, expected={}, streamOffset={}",
+                        lastCachedBlockOffset,
+                        expectedFinalBlockOffset,
+                        streamOffset
+                    );
+                return;
+            }
+
+            // Verify partial length matches file tail size
+            int expectedTailSize = (int) (streamOffset - lastCachedBlockOffset);
+            if (partialBlockLength != expectedTailSize) {
+                LOGGER
+                    .warn(
+                        "Partial block size mismatch: tracked={}, expected={}, streamOffset={}",
+                        partialBlockLength,
+                        expectedTailSize,
+                        streamOffset
+                    );
+                return;
+            }
+
+            // Safe to cache - this is definitely the file's final partial block
             try {
-                if (streamOffset <= 0)
-                    return;
+                RefCountedMemorySegment refSegment = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
+                if (refSegment != null) {
+                    MemorySegment pooled = refSegment.segment().asSlice(0, CACHE_BLOCK_SIZE);
+                    MemorySegment.copy(MemorySegment.ofArray(partialBlockBuffer), 0, pooled, 0, partialBlockLength);
 
-                long finalBlockOffset = (streamOffset - 1) & ~CACHE_BLOCK_MASK;
-                BlockCacheKey blockKey = new FileBlockCacheKey(path, finalBlockOffset);
-                blockCache.getOrLoad(blockKey);
-
-            } catch (IOException e) {
-                LOGGER.debug("Failed to load final block into cache for path={}: {}", path, e.toString());
+                    BlockCacheKey cacheKey = new FileBlockCacheKey(path, lastCachedBlockOffset);
+                    blockCache.put(cacheKey, refSegment);
+                } else {
+                    LOGGER.debug("Failed to acquire segment for final partial block caching path={}", path);
+                }
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                LOGGER.warn("Interrupted while caching final partial block for path={}", path);
+            } catch (IllegalStateException e) {
+                LOGGER.debug("Failed to acquire segment from pool for final partial block; skipping cache.");
             }
         }
 

@@ -11,6 +11,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Provider;
 import java.security.Security;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.function.Function;
 
 import org.apache.logging.log4j.LogManager;
@@ -241,7 +243,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         switch (type) {
             case HYBRIDFS -> {
                 LOGGER.debug("Using HYBRIDFS directory with Direct I/O and block caching");
-
+                final Set<String> nioExtensions = new HashSet<>(indexSettings.getValue(IndexModule.INDEX_STORE_HYBRID_NIO_EXTENSIONS));
                 CryptoDirectIODirectory cryptoDirectIODirectory = createCryptoDirectIODirectory(
                     location,
                     lockFactory,
@@ -249,10 +251,18 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                     keyResolver,
                     encryptionMetadataCache
                 );
-                return new HybridCryptoDirectory(lockFactory, cryptoDirectIODirectory, provider, keyResolver, encryptionMetadataCache);
+                return new HybridCryptoDirectory(
+                    lockFactory,
+                    cryptoDirectIODirectory,
+                    provider,
+                    keyResolver,
+                    encryptionMetadataCache,
+                    nioExtensions
+                );
             }
             case MMAPFS -> {
-                throw new AssertionError("MMAPFS not supported with index level encryption");
+                LOGGER.info("MMAPFS not supported natively for index-level-encryption; using directio direct-io with block caching");
+                return createCryptoDirectIODirectory(location, lockFactory, provider, keyResolver, encryptionMetadataCache);
             }
             case SIMPLEFS, NIOFS -> {
                 LOGGER.debug("Using NIOFS directory for encrypted storage");

@@ -62,7 +62,7 @@ import org.opensearch.index.store.read_ahead.impl.ReadaheadManagerImpl;
  * @opensearch.internal
  */
 @SuppressForbidden(reason = "uses custom DirectIO")
-public final class CryptoDirectIODirectory extends FSDirectory {
+public class CryptoDirectIODirectory extends FSDirectory {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIODirectory.class);
     private final AtomicLong nextTempFileCounter = new AtomicLong();
 
