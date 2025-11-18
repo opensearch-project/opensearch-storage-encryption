@@ -242,7 +242,8 @@ public class ShardMigrationIntegTests extends OpenSearchIntegTestCase {
 
         // Wait for cluster to stabilize
         ensureStableCluster(3);
-        ensureGreen("test-replica-recovery");
+        // Use longer timeout to allow encryption keys to be loaded after node restart
+        ensureGreen(TimeValue.timeValueSeconds(60), "test-replica-recovery");
 
         // Use assertBusy to retry data verification until encryption keys are properly registered after restart
         // This handles the race condition where the restarted node needs time to register resolvers
@@ -483,7 +484,8 @@ public class ShardMigrationIntegTests extends OpenSearchIntegTestCase {
 
         // Wait for cluster to recover
         ensureStableCluster(3);
-        ensureGreen("test-replica-sync");
+        // Use longer timeout to allow encryption keys to be loaded after node restart
+        ensureGreen(TimeValue.timeValueSeconds(60), "test-replica-sync");
 
         // Verify all documents (including those added during restart) are present
         SearchResponse response2 = client().prepareSearch("test-replica-sync").setSize(0).get();
