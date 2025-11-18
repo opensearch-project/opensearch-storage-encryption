@@ -110,7 +110,7 @@ public final class CryptoDirectIODirectory extends FSDirectory {
         this.dataKeyBytes = keyResolver.getDataKey().getEncoded();
         this.encryptionMetadataCache = encryptionMetadataCache;
 
-        startCacheStatsTelemetry(); // uncomment for local testing
+        // startCacheStatsTelemetry(); // uncomment for local testing
     }
 
     @Override
