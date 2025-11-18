@@ -68,7 +68,7 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
         // Initialize NodeLevelKeyCache with test settings
         Settings nodeSettings = Settings
             .builder()
-            .put("node.store.crypto.key_refresh_interval_secs", 300) // 5 minutes for tests
+            .put("node.store.crypto.key_refresh_interval", "5m") // 5 minutes for tests
             .build();
 
         // Create mock Client and ClusterService for testing
