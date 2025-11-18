@@ -127,7 +127,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         if (sharedPoolResources != null) {
             sharedPoolResources.close();
         }
-        NodeLevelKeyCache.reset();
+        NodeLevelKeyCache.shutdown();
     }
 
     @Override

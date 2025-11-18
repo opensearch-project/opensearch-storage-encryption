@@ -601,18 +601,17 @@ public class NodeLevelKeyCache implements ClusterStateListener {
     }
 
     /**
-     * Resets the singleton instance.
-     * This method is primarily for testing purposes.
+     * Shuts down background tasks without resetting the singleton instance.
+     * Used during plugin lifecycle cleanup to prevent thread leaks while
+     * preserving the cache state for potential node restarts in the same JVM
+     * (common in integration tests).
+     * 
+     * In production, when a node shuts down the entire JVM terminates, cleaning
+     * up all static state naturally. In integration tests, multiple "nodes" run
+     * in the same JVM, so we need to stop threads without destroying the singleton.
      */
-    public static synchronized void reset() {
+    public static synchronized void shutdown() {
         if (INSTANCE != null) {
-            // Unregister cluster state listener
-            if (INSTANCE.clusterService != null) {
-                INSTANCE.clusterService.removeListener(INSTANCE);
-            }
-
-            INSTANCE.clear();
-
             // Shutdown health check executor and cancel scheduled task
             if (INSTANCE.healthCheckTask != null) {
                 INSTANCE.healthCheckTask.cancel(true); // Interrupt the thread
@@ -629,7 +628,26 @@ public class NodeLevelKeyCache implements ClusterStateListener {
                     logger.warn("Interrupted while waiting for health check executor to terminate");
                 }
             }
+        }
+    }
 
+    /**
+     * Resets the singleton instance completely.
+     * This method is primarily for testing purposes where complete cleanup is needed.
+     */
+    public static synchronized void reset() {
+        if (INSTANCE != null) {
+            // Unregister cluster state listener
+            if (INSTANCE.clusterService != null) {
+                INSTANCE.clusterService.removeListener(INSTANCE);
+            }
+
+            INSTANCE.clear();
+
+            // Shutdown executor first
+            shutdown();
+
+            // Now null out the instance for complete reset
             INSTANCE = null;
         }
     }
