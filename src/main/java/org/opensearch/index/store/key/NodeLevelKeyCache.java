@@ -192,7 +192,6 @@ public class NodeLevelKeyCache implements ClusterStateListener {
         // Initialize and start health check executor (always running for proactive monitoring)
         this.healthCheckExecutor = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "encryption-key-health-check"));
         // Start proactive health monitoring (always running)
-        logger.info("Starting proactive KMS health monitoring (checking every {} seconds)", HEALTH_CHECK_INTERVAL_SECONDS);
         healthCheckTask = healthCheckExecutor
             .scheduleAtFixedRate(
                 this::checkKmsHealthAndRecover,
@@ -245,9 +244,8 @@ public class NodeLevelKeyCache implements ClusterStateListener {
                         FailureState state = failureTracker.remove(indexUuid);
                         if (state != null && state.blocksApplied && hasBlocks(indexUuid)) {
                             removeBlocks(indexUuid);
-                            logger.info("Removed blocks from index after successful key reload: {}", indexUuid);
+                            logger.debug("Removed blocks from index after successful key reload: {}", indexUuid);
                         }
-                        logger.info("Successfully reloaded key for index: {}", indexUuid);
                         return newKey;
 
                     } catch (Exception e) {
@@ -261,7 +259,6 @@ public class NodeLevelKeyCache implements ClusterStateListener {
                         if (!state.blocksApplied) {
                             applyBlocks(indexUuid);
                             state.blocksApplied = true;
-                            logger.warn("Applied read+write blocks on refresh failure: {}", indexUuid);
                         }
 
                         throw new KeyCacheException(
@@ -295,8 +292,6 @@ public class NodeLevelKeyCache implements ClusterStateListener {
 
             // Clear failure state on successful load
             failureTracker.remove(key.getIndexUuid());
-
-            logger.info("Successfully loaded key for index: {}", key.getIndexUuid());
             return loadedKey;
 
         } catch (Exception e) {
@@ -318,7 +313,6 @@ public class NodeLevelKeyCache implements ClusterStateListener {
 
             applyBlocks(indexUuid);
             state.blocksApplied = true;
-            logger.error("Applied read+write blocks on load failure: {}", indexUuid);
 
             throw new KeyCacheException("Failed to load key for index: " + indexUuid + ". Error: " + e.getMessage(), null, true);
         }
@@ -399,7 +393,6 @@ public class NodeLevelKeyCache implements ClusterStateListener {
 
             return readBlock || writeBlock;
         } catch (Exception e) {
-            logger.warn("Failed to check blocks for index UUID: {}", indexUuid, e);
             return false; // Assume no blocks on error
         }
     }
@@ -415,7 +408,7 @@ public class NodeLevelKeyCache implements ClusterStateListener {
             // Get index name from UUID via cluster state
             String indexName = getIndexNameFromUuid(indexUuid);
             if (indexName == null) {
-                logger.warn("Cannot apply blocks: index name not found for UUID: {}", indexUuid);
+                logger.debug("Cannot apply blocks: index name not found for UUID: {}", indexUuid);
                 return;
             }
 
@@ -424,8 +417,6 @@ public class NodeLevelKeyCache implements ClusterStateListener {
 
             UpdateSettingsRequest request = new UpdateSettingsRequest(settings, indexName);
             client.admin().indices().updateSettings(request).actionGet();
-
-            logger.info("Successfully applied read+write blocks to index: {}", indexName);
         } catch (Exception e) {
             logger.error("Failed to apply blocks to index UUID: {}, error: {}", indexUuid, e.getMessage(), e);
         }
@@ -452,7 +443,6 @@ public class NodeLevelKeyCache implements ClusterStateListener {
             UpdateSettingsRequest request = new UpdateSettingsRequest(settings, indexName);
             client.admin().indices().updateSettings(request).actionGet();
 
-            logger.info("Successfully removed read+write blocks from index: {}", indexName);
         } catch (Exception e) {
             logger.error("Failed to remove blocks from index UUID: {}, error: {}", indexUuid, e.getMessage(), e);
         }
@@ -492,7 +482,6 @@ public class NodeLevelKeyCache implements ClusterStateListener {
         Objects.requireNonNull(indexUuid, "indexUuid cannot be null");
         keyCache.invalidate(new ShardCacheKey(indexUuid, shardId));
         failureTracker.remove(indexUuid);
-        logger.debug("Evicted key and cleared failure state for index: {}", indexUuid);
     }
 
     /**
@@ -528,7 +517,7 @@ public class NodeLevelKeyCache implements ClusterStateListener {
 
             client.admin().cluster().reroute(request).actionGet();
 
-            logger.info("Triggered shard retry for {} recovered indices", recoveredCount);
+            logger.debug("Triggered shard retry for {} recovered indices", recoveredCount);
         } catch (Exception e) {
             logger.warn("Failed to trigger shard retry: {}", e.getMessage());
             // Non-fatal - shards will recover on next allocation round
@@ -556,8 +545,6 @@ public class NodeLevelKeyCache implements ClusterStateListener {
                 return;
             }
 
-            logger.info("Proactive KMS health check for {} indices with blocks", blockedIndices.size());
-
             int recoveredCount = 0;
 
             // Check each index individually (different keys!)
@@ -573,7 +560,6 @@ public class NodeLevelKeyCache implements ClusterStateListener {
                     if (resolver == null) {
                         // Index deleted or no shards on this node, clean up
                         failureTracker.remove(indexUuid);
-                        logger.info("Removed deleted index from failure tracker: {}", indexUuid);
                         continue;
                     }
 
@@ -583,7 +569,6 @@ public class NodeLevelKeyCache implements ClusterStateListener {
                     // Success for THIS index! Remove blocks
                     if (hasBlocks(indexUuid)) {
                         removeBlocks(indexUuid);
-                        logger.info("Removed blocks from recovered index: {}", indexUuid);
                     }
 
                     failureTracker.remove(indexUuid);
@@ -597,7 +582,7 @@ public class NodeLevelKeyCache implements ClusterStateListener {
 
             // After removing blocks, trigger shard retry to recover RED indices
             if (recoveredCount > 0) {
-                logger.info("Recovered {} indices, triggered shard retry", recoveredCount);
+                logger.debug("Recovered {} indices, triggered shard retry", recoveredCount);
                 triggerShardRetry(recoveredCount);
             }
 
@@ -616,7 +601,6 @@ public class NodeLevelKeyCache implements ClusterStateListener {
             // Unregister cluster state listener
             if (INSTANCE.clusterService != null) {
                 INSTANCE.clusterService.removeListener(INSTANCE);
-                logger.info("Unregistered NodeLevelKeyCache as ClusterStateListener");
             }
 
             INSTANCE.clear();
