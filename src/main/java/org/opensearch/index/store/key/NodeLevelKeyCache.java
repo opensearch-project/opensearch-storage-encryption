@@ -615,10 +615,19 @@ public class NodeLevelKeyCache implements ClusterStateListener {
 
             // Shutdown health check executor and cancel scheduled task
             if (INSTANCE.healthCheckTask != null) {
-                INSTANCE.healthCheckTask.cancel(false);
+                INSTANCE.healthCheckTask.cancel(true); // Interrupt the thread
             }
             if (INSTANCE.healthCheckExecutor != null) {
                 INSTANCE.healthCheckExecutor.shutdownNow();
+                try {
+                    // Wait for the executor to terminate to prevent thread leaks
+                    if (!INSTANCE.healthCheckExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                        logger.warn("Health check executor did not terminate in time");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    logger.warn("Interrupted while waiting for health check executor to terminate");
+                }
             }
 
             INSTANCE = null;
