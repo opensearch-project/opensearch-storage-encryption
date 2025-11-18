@@ -185,8 +185,16 @@ public class NodeLevelKeyCache implements ClusterStateListener {
         this.uuidToNameCache = new AtomicReference<>(Collections.emptyMap());
 
         // Initialize UUID -> name cache from current cluster state
-        if (clusterService.state() != null) {
-            rebuildUuidToNameCache(clusterService.state().metadata());
+        // During node startup, cluster state may not be initialized yet, so we handle that gracefully
+        try {
+            ClusterState state = clusterService.state();
+            if (state != null) {
+                rebuildUuidToNameCache(state.metadata());
+            }
+        } catch (AssertionError e) {
+            // Cluster state not initialized yet during plugin startup - this is expected
+            // The cache will be populated automatically via clusterChanged() callback when cluster state becomes available
+            logger.debug("Cluster state not yet initialized, UUID cache will be built on first cluster state change");
         }
 
         // Initialize and start health check executor (always running for proactive monitoring)
