@@ -26,6 +26,7 @@ import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.key.DefaultKeyResolver;
 import org.opensearch.index.store.key.KeyResolver;
+import org.opensearch.index.store.key.MasterKeyHealthMonitor;
 import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardCacheKey;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
@@ -75,7 +76,8 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
         Client mockClient = mock(Client.class);
         ClusterService mockClusterService = mock(ClusterService.class);
 
-        NodeLevelKeyCache.initialize(nodeSettings, mockClient, mockClusterService);
+        MasterKeyHealthMonitor.initialize(nodeSettings, mockClient, mockClusterService);
+        NodeLevelKeyCache.initialize(nodeSettings, MasterKeyHealthMonitor.getInstance());
 
         Provider cryptoProvider = Security.getProvider("SunJCE");
 
@@ -121,7 +123,8 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
 
     @Override
     public void tearDown() throws Exception {
-        // Reset the NodeLevelKeyCache singleton to prevent test pollution
+        // Reset singletons to prevent test pollution
+        MasterKeyHealthMonitor.reset();
         NodeLevelKeyCache.reset();
         // Clear the ShardKeyResolverRegistry cache
         ShardKeyResolverRegistry.clearCache();

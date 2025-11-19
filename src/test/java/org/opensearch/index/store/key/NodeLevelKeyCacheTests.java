@@ -8,8 +8,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -30,7 +28,6 @@ import org.junit.Before;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.opensearch.cluster.ClusterState;
-import org.opensearch.cluster.ClusterStateListener;
 import org.opensearch.cluster.metadata.Metadata;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.SuppressForbidden;
@@ -71,18 +68,17 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         testKey2 = new SecretKeySpec(new byte[32], "AES");
         testKey2.getEncoded()[0] = 1; // Make it different from testKey1
 
-        // Reset singleton before each test
+        // Reset singletons before each test
+        MasterKeyHealthMonitor.reset();
         NodeLevelKeyCache.reset();
 
         // Clear the ShardKeyResolverRegistry cache
         ShardKeyResolverRegistry.clearCache();
 
-        // Setup mock cluster service for ClusterStateListener
+        // Setup mock cluster service
         when(mockClusterService.state()).thenReturn(mockClusterState);
         when(mockClusterState.metadata()).thenReturn(mockMetadata);
         when(mockMetadata.indices()).thenReturn(java.util.Collections.emptyMap());
-        doNothing().when(mockClusterService).addListener(any(ClusterStateListener.class));
-        doNothing().when(mockClusterService).removeListener(any(ClusterStateListener.class));
 
         // Setup mock resolver
         when(mockResolver.loadKeyFromMasterKeyProvider()).thenReturn(testKey1);
@@ -91,6 +87,7 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
     @After
     public void tearDown() throws Exception {
         // Clean up after each test
+        MasterKeyHealthMonitor.reset();
         NodeLevelKeyCache.reset();
         ShardKeyResolverRegistry.clearCache();
         super.tearDown();
@@ -111,7 +108,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
     public void testInitialization() {
         Settings settings = Settings.builder().put("node.store.crypto.key_refresh_interval", "60s").build();
 
-        NodeLevelKeyCache.initialize(settings, mockClient, mockClusterService);
+        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
+        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
 
         assertNotNull(NodeLevelKeyCache.getInstance());
     }
@@ -122,7 +120,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
 
     public void testInitialKeyLoad() throws Exception {
         Settings settings = Settings.EMPTY;
-        NodeLevelKeyCache.initialize(settings, mockClient, mockClusterService);
+        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
+        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
         // Register the mock resolver before using the cache
@@ -139,7 +138,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
             .thenThrow(new RuntimeException("KMS unavailable"));
         
         Settings settings = Settings.EMPTY;
-        NodeLevelKeyCache.initialize(settings, mockClient, mockClusterService);
+        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
+        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
         
         // Register the mock resolver
@@ -161,7 +161,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
 
     public void testCacheHit() throws Exception {
         Settings settings = Settings.EMPTY;
-        NodeLevelKeyCache.initialize(settings, mockClient, mockClusterService);
+        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
+        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
         // Register the mock resolver
@@ -185,7 +186,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
             .thenReturn(testKey1)  // Initial load
             .thenReturn(testKey2); // Refresh
 
-        NodeLevelKeyCache.initialize(settings, mockClient, mockClusterService);
+        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
+        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
         // Register the mock resolver
@@ -217,7 +219,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
             .thenReturn(testKey1)  // Initial load
             .thenThrow(new RuntimeException("KMS refresh failed")); // Refresh fails
 
-        NodeLevelKeyCache.initialize(settings, mockClient, mockClusterService);
+        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
+        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
         // Register the mock resolver
@@ -258,7 +261,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
             .thenThrow(new RuntimeException("KMS refresh failed 2"))
             .thenThrow(new RuntimeException("KMS refresh failed 3"));
 
-        NodeLevelKeyCache.initialize(settings, mockClient, mockClusterService);
+        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
+        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
         // Register the mock resolver
@@ -292,7 +296,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
 
     public void testEviction() throws Exception {
         Settings settings = Settings.EMPTY;
-        NodeLevelKeyCache.initialize(settings, mockClient, mockClusterService);
+        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
+        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
         // Register the mock resolver
@@ -314,7 +319,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
 
     public void testSize() throws Exception {
         Settings settings = Settings.EMPTY;
-        NodeLevelKeyCache.initialize(settings, mockClient, mockClusterService);
+        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
+        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
         assertEquals(0, cache.size());
@@ -332,7 +338,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
 
     public void testClear() throws Exception {
         Settings settings = Settings.EMPTY;
-        NodeLevelKeyCache.initialize(settings, mockClient, mockClusterService);
+        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
+        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
         // Register resolvers for both indices
@@ -349,7 +356,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
 
     public void testReset() throws Exception {
         Settings settings = Settings.EMPTY;
-        NodeLevelKeyCache.initialize(settings, mockClient, mockClusterService);
+        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
+        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
 
         assertNotNull(NodeLevelKeyCache.getInstance());
 
@@ -375,7 +383,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         });
 
         Settings settings = Settings.EMPTY;
-        NodeLevelKeyCache.initialize(settings, mockClient, mockClusterService);
+        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
+        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
         // Register the mock resolver
@@ -407,7 +416,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
 
     public void testNullParameters() throws Exception {
         Settings settings = Settings.EMPTY;
-        NodeLevelKeyCache.initialize(settings, mockClient, mockClusterService);
+        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
+        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
         // Test null index UUID
@@ -444,27 +454,14 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
     public void testNullDependenciesInConstructor() {
         Settings settings = Settings.EMPTY;
 
-        // Test null client
+        // Test null healthMonitor
         Exception thrown = null;
         try {
-            NodeLevelKeyCache.initialize(settings, null, mockClusterService);
-            fail("Expected NullPointerException for null client");
+            NodeLevelKeyCache.initialize(settings, null);
+            fail("Expected NullPointerException for null healthMonitor");
         } catch (NullPointerException e) {
             thrown = e;
-            assertTrue(e.getMessage().contains("client cannot be null"));
-        }
-        assertNotNull(thrown);
-
-        NodeLevelKeyCache.reset();
-
-        // Test null clusterService
-        thrown = null;
-        try {
-            NodeLevelKeyCache.initialize(settings, mockClient, null);
-            fail("Expected NullPointerException for null clusterService");
-        } catch (NullPointerException e) {
-            thrown = e;
-            assertTrue(e.getMessage().contains("clusterService cannot be null"));
+            assertTrue(e.getMessage().contains("healthMonitor cannot be null"));
         }
         assertNotNull(thrown);
     }
@@ -472,7 +469,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
     public void testDefaultTTLValue() {
         // Test default TTL when not specified
         Settings settings = Settings.EMPTY;
-        NodeLevelKeyCache.initialize(settings, mockClient, mockClusterService);
+        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
+        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
 
         // Should initialize successfully with default value (3600 seconds)
         assertNotNull(NodeLevelKeyCache.getInstance());
@@ -485,7 +483,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
 
         // Initialize with TTL = -1 (never refresh)
         Settings settings = Settings.builder().put("node.store.crypto.key_refresh_interval", "-1").build();
-        NodeLevelKeyCache.initialize(settings, mockClient, mockClusterService);
+        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
+        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
         NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
 
         // Register the mock resolver

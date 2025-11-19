@@ -6,7 +6,9 @@ package org.opensearch.index.store.key;
 
 import java.io.IOException;
 import java.security.Provider;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
@@ -158,5 +160,29 @@ public class ShardKeyResolverRegistry {
             }
         }
         return null;  // No shards for this index on this node
+    }
+
+    /**
+     * Gets all unique index UUIDs that have encrypted shards on this node.
+     * This deduplicates the shard-level entries to return index-level UUIDs.
+     * 
+     * <p>This is the definitive list of encrypted indices on this node because:
+     * <ul>
+     *   <li>Only encrypted indices have resolvers</li>
+     *   <li>Only shards on this node get registered</li>
+     *   <li>The registry is the single source of truth</li>
+     * </ul>
+     * 
+     * <p>Useful for proactive health checks and monitoring operations that need to
+     * iterate over all encrypted indices present on this node.
+     * 
+     * @return a set of all unique index UUIDs with cached resolvers on this node
+     */
+    public static Set<String> getAllIndexUuids() {
+        Set<String> indexUuids = new HashSet<>();
+        for (ShardCacheKey key : resolverCache.keySet()) {
+            indexUuids.add(key.getIndexUuid());
+        }
+        return indexUuids;
     }
 }

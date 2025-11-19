@@ -1,0 +1,447 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.opensearch.index.store.key;
+
+import java.security.Key;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.opensearch.action.admin.cluster.reroute.ClusterRerouteRequest;
+import org.opensearch.action.admin.indices.settings.put.UpdateSettingsRequest;
+import org.opensearch.cluster.ClusterState;
+import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.common.settings.Settings;
+import org.opensearch.transport.client.Client;
+
+/**
+ * Health monitor for encryption keys across all encrypted indices on a node.
+ * Runs proactive background checks to detect KMS issues early and automatically
+ * recovers indices when keys become available again.
+ * 
+ * <p>Responsibilities:
+ * <ul>
+ *   <li>Proactive health checks: Validates ALL encrypted indices periodically</li>
+ *   <li>Failure tracking: Tracks which indices have key availability issues</li>
+ *   <li>Block management: Applies/removes read+write blocks for protection</li>
+ *   <li>Automatic recovery: Removes blocks and triggers shard retry when KMS restored</li>
+ * </ul>
+ * 
+ * @opensearch.internal
+ */
+public class MasterKeyHealthMonitor {
+
+    private static final Logger logger = LogManager.getLogger(MasterKeyHealthMonitor.class);
+
+    private static MasterKeyHealthMonitor INSTANCE;
+
+    private final Client client;
+    private final ClusterService clusterService;
+
+    // Track failures per index to implement write block protection
+    private final ConcurrentHashMap<String, FailureState> failureTracker;
+
+    // Health monitoring for automatic recovery when KMS is restored
+    private final ScheduledExecutorService healthCheckExecutor;
+    private volatile ScheduledFuture<?> healthCheckTask = null;
+    private static final long HEALTH_CHECK_DELAY = 30;
+    private static final long HEALTH_CHECK_INTERVAL_SECONDS = 3600;
+
+    /**
+     * Tracks failure state for an index and block status.
+     */
+    static class FailureState {
+        final AtomicLong lastFailureTimeMillis;
+        final AtomicReference<Exception> lastException;
+        volatile boolean blocksApplied = false;
+
+        FailureState(Exception exception) {
+            this.lastFailureTimeMillis = new AtomicLong(System.currentTimeMillis());
+            this.lastException = new AtomicReference<>(exception);
+        }
+
+        void recordFailure(Exception exception) {
+            lastFailureTimeMillis.set(System.currentTimeMillis());
+            lastException.set(exception);
+        }
+    }
+
+    /**
+     * Initializes the singleton instance with client and cluster service.
+     * This should be called once during plugin initialization.
+     * 
+     * @param settings the node settings
+     * @param client the client for cluster state updates (block operations)
+     * @param clusterService the cluster service for looking up index metadata
+     */
+    public static synchronized void initialize(Settings settings, Client client, ClusterService clusterService) {
+        if (INSTANCE == null) {
+            INSTANCE = new MasterKeyHealthMonitor(client, clusterService);
+            logger.info("Initialized MasterKeyHealthMonitor");
+        }
+    }
+
+    /**
+     * Gets the singleton instance.
+     * 
+     * @return the MasterKeyHealthMonitor instance
+     * @throws IllegalStateException if the monitor has not been initialized
+     */
+    public static MasterKeyHealthMonitor getInstance() {
+        if (INSTANCE == null) {
+            throw new IllegalStateException("MasterKeyHealthMonitor not initialized.");
+        }
+        return INSTANCE;
+    }
+
+    /**
+     * Private constructor.
+     * Only creates the monitor instance without starting background threads.
+     * Call {@link #start()} to begin health monitoring.
+     */
+    private MasterKeyHealthMonitor(Client client, ClusterService clusterService) {
+        this.client = Objects.requireNonNull(client, "client cannot be null");
+        this.clusterService = Objects.requireNonNull(clusterService, "clusterService cannot be null");
+        this.failureTracker = new ConcurrentHashMap<>();
+
+        // Initialize executor but don't start health check yet
+        this.healthCheckExecutor = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "encryption-key-health-check"));
+    }
+
+    /**
+     * Starts the proactive health monitoring background thread.
+     * This should be called after both MasterKeyHealthMonitor and NodeLevelKeyCache
+     * have been initialized to avoid race conditions.
+     * 
+     * This method is idempotent - calling it multiple times has no effect.
+     */
+    public static synchronized void start() {
+        if (INSTANCE == null) {
+            throw new IllegalStateException("MasterKeyHealthMonitor not initialized.");
+        }
+
+        if (INSTANCE.healthCheckTask == null) {
+            INSTANCE.healthCheckTask = INSTANCE.healthCheckExecutor
+                .scheduleAtFixedRate(
+                    INSTANCE::checkKmsHealthAndRecover,
+                    HEALTH_CHECK_DELAY,
+                    HEALTH_CHECK_INTERVAL_SECONDS,
+                    TimeUnit.SECONDS
+                );
+            logger.info("Started MasterKeyHealthMonitor health check thread");
+        }
+    }
+
+    /**
+     * Reports a key load/reload failure for an index.
+     * Applies blocks on first failure to protect data.
+     * 
+     * @param indexUuid the index UUID
+     * @param indexName the index name
+     * @param exception the failure exception
+     */
+    public void reportFailure(String indexUuid, String indexName, Exception exception) {
+        FailureState state = failureTracker.get(indexUuid);
+
+        if (state == null) {
+            // First failure
+            state = new FailureState(exception);
+            failureTracker.put(indexUuid, state);
+
+            // Apply blocks on first failure
+            applyBlocks(indexName);
+            state.blocksApplied = true;
+
+            logger.warn("Key unavailable for index {}: {}", indexName, exception.getMessage());
+        } else {
+            // Subsequent failure
+            state.recordFailure(exception);
+            logger.debug("Key still unavailable for index {}: {}", indexName, exception.getMessage());
+        }
+    }
+
+    /**
+     * Reports successful key load/reload for an index.
+     * Removes blocks if they were previously applied.
+     * 
+     * @param indexUuid the index UUID
+     * @param indexName the index name
+     */
+    public void reportSuccess(String indexUuid, String indexName) {
+        FailureState state = failureTracker.remove(indexUuid);
+
+        if (state != null && state.blocksApplied && hasBlocks(indexName)) {
+            removeBlocks(indexName);
+            logger.info("Index {} recovered: blocks removed", indexName);
+        }
+    }
+
+    /**
+     * Checks if read or write blocks are currently applied to the index.
+     * 
+     * @param indexName the index name
+     * @return true if either read or write blocks are applied, false otherwise
+     */
+    private boolean hasBlocks(String indexName) {
+        try {
+            if (indexName == null) {
+                return false;
+            }
+
+            ClusterState clusterState = clusterService.state();
+            IndexMetadata indexMetadata = clusterState.metadata().index(indexName);
+
+            if (clusterState == null || indexMetadata == null) {
+                return false;
+            }
+
+            Settings indexSettings = indexMetadata.getSettings();
+
+            // Check for read or write blocks
+            boolean readBlock = indexSettings.getAsBoolean("index.blocks.read", false);
+            boolean writeBlock = indexSettings.getAsBoolean("index.blocks.write", false);
+
+            return readBlock || writeBlock;
+        } catch (Exception e) {
+            return false; // Assume no blocks on error
+        }
+    }
+
+    /**
+     * Applies read and write blocks to the specified index to prevent all operations 
+     * when encryption key is unavailable.
+     * 
+     * @param indexName the index name
+     */
+    private void applyBlocks(String indexName) {
+        try {
+            if (indexName == null) {
+                logger.debug("Cannot apply blocks: index name is null");
+                return;
+            }
+
+            // Apply both read and write blocks
+            Settings settings = Settings.builder().put("index.blocks.read", true).put("index.blocks.write", true).build();
+
+            UpdateSettingsRequest request = new UpdateSettingsRequest(settings, indexName);
+            client.admin().indices().updateSettings(request).actionGet();
+
+            logger.info("Applied blocks to index {} due to key unavailability", indexName);
+        } catch (Exception e) {
+            logger.error("Failed to apply blocks to index {}: {}", indexName, e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Removes read and write blocks from the specified index when the encryption key 
+     * becomes available again. This restores full access after key recovery.
+     * 
+     * @param indexName the index name
+     */
+    private void removeBlocks(String indexName) {
+        try {
+            if (indexName == null) {
+                logger.warn("Cannot remove blocks: index name is null");
+                return;
+            }
+
+            // Remove both read and write blocks
+            Settings settings = Settings.builder().putNull("index.blocks.read").putNull("index.blocks.write").build();
+
+            UpdateSettingsRequest request = new UpdateSettingsRequest(settings, indexName);
+            client.admin().indices().updateSettings(request).actionGet();
+
+        } catch (Exception e) {
+            logger.error("Failed to remove blocks from index {}: {}", indexName, e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Triggers cluster reroute with retry_failed to recover shards that failed 
+     * due to unavailable encryption keys. This allows RED indices to automatically
+     * recover once keys become available again.
+     * 
+     * @param recoveredCount number of indices recovered
+     */
+    private void triggerShardRetry(int recoveredCount) {
+        try {
+            ClusterRerouteRequest request = new ClusterRerouteRequest();
+            request.setRetryFailed(true);
+
+            client.admin().cluster().reroute(request).actionGet();
+
+            logger.info("Triggered shard retry for {} recovered indices", recoveredCount);
+        } catch (Exception e) {
+            logger.warn("Failed to trigger shard retry: {}", e.getMessage());
+            // Non-fatal - shards will recover on next allocation round
+        }
+    }
+
+    /**
+     * Proactive health check that validates encryption keys for ALL encrypted indices on this node.
+     * This runs continuously every hour regardless of failure state (true proactive monitoring).
+     * 
+     * <p>For each encrypted index on this node:
+     * <ol>
+     *   <li>Attempts to load the encryption key</li>
+     *   <li>If successful and blocks were applied: removes blocks and clears failure state</li>
+     *   <li>If successful and no blocks: validates key is still accessible (early detection)</li>
+     *   <li>If failed: tracks failure and applies blocks on first failure</li>
+     * </ol>
+     * 
+     * <p>Benefits:
+     * <ul>
+     *   <li>Early detection: Identifies KMS issues before they cause shard failures</li>
+     *   <li>Automatic recovery: Removes blocks when KMS is restored</li>
+     *   <li>Comprehensive: Checks ALL encrypted indices, not just failed ones</li>
+     * </ul>
+     * 
+     * This runs on a single thread and checks all encrypted indices with shards on this node.
+     */
+    private void checkKmsHealthAndRecover() {
+        try {
+            // Get ALL encrypted indices on this node (not just failed ones)
+            Set<String> allIndexUuids = ShardKeyResolverRegistry.getAllIndexUuids();
+
+            if (allIndexUuids.isEmpty()) {
+                logger.debug("No encrypted indices on this node to check");
+                return;
+            }
+
+            int recoveredCount = 0;
+            int healthyCount = 0;
+            int failedCount = 0;
+
+            // Check each index individually (each has its own key!)
+            for (String indexUuid : allIndexUuids) {
+                try {
+                    // Get any resolver for THIS specific index (all shards share the same master key)
+                    KeyResolver resolver = ShardKeyResolverRegistry.getAnyResolverForIndex(indexUuid);
+                    if (resolver == null) {
+                        // Index deleted or no shards on this node, clean up
+                        failureTracker.remove(indexUuid);
+                        continue;
+                    }
+
+                    // Get index name from resolver
+                    String indexName = ((DefaultKeyResolver) resolver).getIndexName();
+                    if (indexName == null) {
+                        logger.warn("Cannot get index name for UUID: {}", indexUuid);
+                        continue;
+                    }
+
+                    // Try to load THIS index's specific key (validates KMS connectivity)
+                    Key key = ((DefaultKeyResolver) resolver).loadKeyFromMasterKeyProvider();
+
+                    // Success! Check if this index was previously blocked
+                    FailureState state = failureTracker.get(indexUuid);
+                    if (state != null && state.blocksApplied) {
+                        // Was blocked, now recovered
+                        if (hasBlocks(indexName)) {
+                            removeBlocks(indexName);
+                        }
+                        failureTracker.remove(indexUuid);
+                        recoveredCount++;
+                        logger.info("Index {} recovered: key is now accessible", indexName);
+                    } else {
+                        // Was healthy, still healthy (proactive validation)
+                        healthyCount++;
+                    }
+
+                } catch (Exception e) {
+                    // Key load failed for THIS index
+                    failedCount++;
+
+                    FailureState state = failureTracker.get(indexUuid);
+                    if (state == null) {
+                        // First failure detected by health check (early detection!)
+                        state = new FailureState(e);
+                        failureTracker.put(indexUuid, state);
+
+                        // Get index name for logging
+                        KeyResolver resolver = ShardKeyResolverRegistry.getAnyResolverForIndex(indexUuid);
+                        String indexName = resolver != null ? ((DefaultKeyResolver) resolver).getIndexName() : indexUuid;
+
+                        logger.warn("Health check detected key unavailability for index {}: {}", indexName, e.getMessage());
+
+                        // Apply blocks to protect data
+                        if (indexName != null && !indexName.equals(indexUuid)) {
+                            applyBlocks(indexName);
+                            state.blocksApplied = true;
+                        }
+                    } else {
+                        // Still failing, update failure time
+                        state.recordFailure(e);
+                        logger.debug("Index {} still unavailable: {}", indexUuid, e.getMessage());
+                    }
+                }
+            }
+
+            // Log summary of health check
+            logger
+                .debug(
+                    "Health check completed: {} healthy, {} recovered, {} failed out of {} total indices",
+                    healthyCount,
+                    recoveredCount,
+                    failedCount,
+                    allIndexUuids.size()
+                );
+
+            // After recovering indices, trigger shard retry to recover RED indices
+            if (recoveredCount > 0) {
+                triggerShardRetry(recoveredCount);
+            }
+
+        } catch (Exception e) {
+            logger.error("Error during proactive KMS health check", e);
+            // Keep monitoring thread running even on error
+        }
+    }
+
+    /**
+     * Shuts down background tasks without resetting the singleton instance.
+     * Used during plugin lifecycle cleanup to prevent thread leaks.
+     */
+    public static synchronized void shutdown() {
+        if (INSTANCE != null) {
+            // Shutdown health check executor and cancel scheduled task
+            if (INSTANCE.healthCheckTask != null) {
+                INSTANCE.healthCheckTask.cancel(true);
+            }
+            if (INSTANCE.healthCheckExecutor != null) {
+                INSTANCE.healthCheckExecutor.shutdownNow();
+                try {
+                    if (!INSTANCE.healthCheckExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                        logger.warn("Health check executor did not terminate in time");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    logger.warn("Interrupted while waiting for health check executor to terminate");
+                }
+            }
+        }
+    }
+
+    /**
+     * Resets the singleton instance completely.
+     * This method is primarily for testing purposes.
+     */
+    public static synchronized void reset() {
+        if (INSTANCE != null) {
+            INSTANCE.failureTracker.clear();
+            shutdown();
+            INSTANCE = null;
+        }
+    }
+}

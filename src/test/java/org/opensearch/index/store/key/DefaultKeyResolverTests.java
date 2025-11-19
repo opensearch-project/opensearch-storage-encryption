@@ -31,6 +31,7 @@ import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.common.crypto.DataKeyPair;
 import org.opensearch.common.crypto.MasterKeyProvider;
+import org.opensearch.common.settings.Settings;
 import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.transport.client.Client;
 
@@ -59,10 +60,12 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
         assertNotNull("SunJCE provider should be available", provider);
 
         // Initialize NodeLevelKeyCache with mock Client and ClusterService
+        MasterKeyHealthMonitor.reset();
         NodeLevelKeyCache.reset();
         Client mockClient = mock(Client.class);
         ClusterService mockClusterService = mock(ClusterService.class);
-        NodeLevelKeyCache.initialize(org.opensearch.common.settings.Settings.EMPTY, mockClient, mockClusterService);
+        MasterKeyHealthMonitor.initialize(Settings.EMPTY, mockClient, mockClusterService);
+        NodeLevelKeyCache.initialize(Settings.EMPTY, MasterKeyHealthMonitor.getInstance());
     }
 
     @After
@@ -70,6 +73,7 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
         if (directory != null) {
             directory.close();
         }
+        MasterKeyHealthMonitor.reset();
         NodeLevelKeyCache.reset();
         ShardKeyResolverRegistry.clearCache();
         super.tearDown();
