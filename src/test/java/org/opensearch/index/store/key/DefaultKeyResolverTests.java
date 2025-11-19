@@ -12,7 +12,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.security.Key;
@@ -351,9 +350,9 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
 
         try {
             new DefaultKeyResolver(TEST_INDEX_UUID, "test-index", directory, provider, mockKeyProvider, TEST_SHARD_ID);
-            fail("Expected IOException");
-        } catch (IOException e) {
-            assertTrue(e.getMessage().contains("Failed to initialize"));
+            fail("Expected KeyCacheException");
+        } catch (KeyCacheException e) {
+            assertTrue(e.getMessage().contains("KMS error for index"));
         }
     }
 }

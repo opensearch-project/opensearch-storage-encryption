@@ -36,4 +36,27 @@ public class KeyCacheException extends RuntimeException {
     public KeyCacheException(String message, Throwable cause) {
         this(message, cause, false);
     }
+
+    /**
+     * Extracts the root cause message from a nested exception chain.
+     * Traverses the exception chain to find the deepest cause and returns its message.
+     * Useful for presenting clean, actionable error messages to operators without
+     * the noise of intermediate exception wrappers.
+     * 
+     * @param t the throwable to extract the root cause from
+     * @return the message of the root cause, or the exception class name if no message exists
+     */
+    public static String extractRootCauseMessage(Throwable t) {
+        if (t == null) {
+            return "Unknown error";
+        }
+
+        Throwable root = t;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+
+        String message = root.getMessage();
+        return message != null ? message : root.getClass().getSimpleName();
+    }
 }

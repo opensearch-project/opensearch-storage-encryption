@@ -4,7 +4,6 @@
  */
 package org.opensearch.index.store.key;
 
-import java.io.IOException;
 import java.security.Provider;
 import java.util.HashSet;
 import java.util.Map;
@@ -66,7 +65,11 @@ public class ShardKeyResolverRegistry {
         return resolverCache.computeIfAbsent(key, k -> {
             try {
                 return new DefaultKeyResolver(indexUuid, indexName, indexDirectory, provider, keyProvider, shardId);
-            } catch (IOException e) {
+            } catch (KeyCacheException e) {
+                // KeyCacheException already has clean, actionable error message - just rethrow
+                throw e;
+            } catch (Exception e) {
+                // Unexpected error - wrap with context
                 throw new RuntimeException("Failed to create KeyResolver for shard: " + k, e);
             }
         });

@@ -66,7 +66,7 @@ public class DefaultKeyResolver implements KeyResolver {
         MasterKeyProvider keyProvider,
         int shardId
     )
-        throws IOException {
+        throws KeyCacheException {
         this.indexUuid = indexUuid;
         this.indexName = indexName;
         this.directory = directory;
@@ -88,18 +88,26 @@ public class DefaultKeyResolver implements KeyResolver {
      * Attempts to load the encrypted key from the directory.
      * If not present, it generates and persists new values.
      */
-    private void initialize(int shardId) throws IOException {
+    private void initialize(int shardId) throws KeyCacheException {
         try {
             dataKey = new SecretKeySpec(keyProvider.decryptKey(readByteArrayFile(KEY_FILE)), "AES");
         } catch (java.nio.file.NoSuchFileException e) {
+            // Key file doesn't exist, generate new one
             try {
                 initNewKey(shardId);
             } catch (Exception ex) {
-                throw new IOException("Failed to initialize key for index: " + indexUuid, ex);
+                recordMetricsError();
+                String rootCause = KeyCacheException.extractRootCauseMessage(ex);
+                throw new KeyCacheException(
+                    "KMS error for index '" + indexName + "' (UUID: " + indexUuid + "): " + rootCause,
+                    ex,
+                    true  // suppress stack trace
+                );
             }
         } catch (Exception e) {
-            CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, this.indexUuid);
-            throw new IOException("Failed to initialize key for index: " + indexUuid, e);
+            recordMetricsError();
+            String rootCause = KeyCacheException.extractRootCauseMessage(e);
+            throw new KeyCacheException("KMS error for index '" + indexName + "' (UUID: " + indexUuid + "): " + rootCause, e, true);
         }
     }
 
@@ -135,6 +143,19 @@ public class DefaultKeyResolver implements KeyResolver {
     }
 
     /**
+     * Records a metrics error if CryptoMetricsService is available.
+     * This is defensive to allow tests to run without metrics initialization.
+     */
+    private void recordMetricsError() {
+        try {
+            CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, this.indexUuid);
+        } catch (IllegalStateException e) {
+            // CryptoMetricsService not initialized - acceptable in test environments
+            LOGGER.debug("CryptoMetricsService not available: {}", e.getMessage());
+        }
+    }
+
+    /**
      * Loads key from Master Key provider by decrypting the stored encrypted key.
      * This method is called by the node-level cache.
      * Exceptions are allowed to bubble up - the cache will handle fallback to old value.
@@ -148,7 +169,7 @@ public class DefaultKeyResolver implements KeyResolver {
             byte[] directoryKey = HkdfKeyDerivation.deriveDirectoryKey(indexKey, shardId);
             return new SecretKeySpec(directoryKey, "AES");
         } catch (Exception e) {
-            CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, this.indexUuid);
+            recordMetricsError();
             throw e;
         }
 
