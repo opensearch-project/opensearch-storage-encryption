@@ -4,7 +4,9 @@
  */
 package org.opensearch.index.translog;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
@@ -20,8 +22,10 @@ import java.util.concurrent.ConcurrentMap;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.action.support.clustermanager.AcknowledgedResponse;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.common.action.ActionFuture;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.key.DefaultKeyResolver;
@@ -31,7 +35,9 @@ import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardCacheKey;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
 import org.opensearch.test.OpenSearchTestCase;
+import org.opensearch.transport.client.AdminClient;
 import org.opensearch.transport.client.Client;
+import org.opensearch.transport.client.IndicesAdminClient;
 
 /**
  * Verify that translog data encryption actually works.
@@ -75,6 +81,17 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
         // Create mock Client and ClusterService for testing
         Client mockClient = mock(Client.class);
         ClusterService mockClusterService = mock(ClusterService.class);
+
+        // Setup mock Client chain for block operations
+        AdminClient mockAdminClient = mock(AdminClient.class);
+        IndicesAdminClient mockIndicesAdminClient = mock(IndicesAdminClient.class);
+        @SuppressWarnings("unchecked")
+        ActionFuture<AcknowledgedResponse> mockFuture = (ActionFuture<AcknowledgedResponse>) mock(ActionFuture.class);
+
+        when(mockClient.admin()).thenReturn(mockAdminClient);
+        when(mockAdminClient.indices()).thenReturn(mockIndicesAdminClient);
+        when(mockIndicesAdminClient.updateSettings(any())).thenReturn(mockFuture);
+        when(mockFuture.actionGet()).thenReturn(mock(AcknowledgedResponse.class));
 
         MasterKeyHealthMonitor.initialize(nodeSettings, mockClient, mockClusterService);
         NodeLevelKeyCache.initialize(nodeSettings, MasterKeyHealthMonitor.getInstance());

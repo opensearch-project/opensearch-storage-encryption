@@ -8,6 +8,8 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -27,14 +29,18 @@ import org.junit.After;
 import org.junit.Before;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.opensearch.action.support.clustermanager.AcknowledgedResponse;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.Metadata;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.common.action.ActionFuture;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.CryptoDirectoryFactory;
 import org.opensearch.test.OpenSearchTestCase;
+import org.opensearch.transport.client.AdminClient;
 import org.opensearch.transport.client.Client;
+import org.opensearch.transport.client.IndicesAdminClient;
 
 public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
 
@@ -79,6 +85,17 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         when(mockClusterService.state()).thenReturn(mockClusterState);
         when(mockClusterState.metadata()).thenReturn(mockMetadata);
         when(mockMetadata.indices()).thenReturn(java.util.Collections.emptyMap());
+
+        // Setup mock Client chain for block operations
+        AdminClient mockAdminClient = mock(AdminClient.class);
+        IndicesAdminClient mockIndicesAdminClient = mock(IndicesAdminClient.class);
+        @SuppressWarnings("unchecked")
+        ActionFuture<AcknowledgedResponse> mockFuture = (ActionFuture<AcknowledgedResponse>) mock(ActionFuture.class);
+
+        when(mockClient.admin()).thenReturn(mockAdminClient);
+        when(mockAdminClient.indices()).thenReturn(mockIndicesAdminClient);
+        when(mockIndicesAdminClient.updateSettings(any())).thenReturn(mockFuture);
+        when(mockFuture.actionGet()).thenReturn(mock(AcknowledgedResponse.class));
 
         // Setup mock resolver
         when(mockResolver.loadKeyFromMasterKeyProvider()).thenReturn(testKey1);
@@ -259,7 +276,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
             .thenReturn(testKey1)  // Initial load
             .thenThrow(new RuntimeException("KMS refresh failed 1"))
             .thenThrow(new RuntimeException("KMS refresh failed 2"))
-            .thenThrow(new RuntimeException("KMS refresh failed 3"));
+            .thenThrow(new RuntimeException("KMS refresh failed 3"))
+            .thenThrow(new RuntimeException("KMS refresh failed 4")); // For post-expiry load
 
         MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
         NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
@@ -268,30 +286,37 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         // Register the mock resolver
         registerMockResolver(TEST_INDEX_UUID, TEST_SHARD_ID);
 
-        // Initial load
+        // Initial load at t=0
         Key initialKey = cache.get(TEST_INDEX_UUID, TEST_SHARD_ID, "test-index");
         assertEquals(testKey1, initialKey);
 
-        // Multiple accesses with failed refreshes
-        for (int i = 0; i < 2; i++) {
-            Thread.sleep(1200);
-            Key key = cache.get(TEST_INDEX_UUID, TEST_SHARD_ID, "test-index");
-            assertEquals(testKey1, key); // Should return original key before expiry
-        }
-
-        // After expiry, subsequent access should throw KeyCacheException
+        // Access at t=1.2s - triggers async refresh which fails
         Thread.sleep(1200);
+        Key key1 = cache.get(TEST_INDEX_UUID, TEST_SHARD_ID, "test-index");
+        assertEquals(testKey1, key1); // Still returns stale key
+
+        // Access at t=2.4s - triggers another async refresh which fails
+        Thread.sleep(1200);
+        Key key2 = cache.get(TEST_INDEX_UUID, TEST_SHARD_ID, "test-index");
+        assertEquals(testKey1, key2); // Still returns stale key
+
+        // Wait past expiry time (3s from initial load) + buffer for async operations
+        // At t=4s, the entry is expired and evicted
+        Thread.sleep(1800);
+
+        // Next access should trigger fresh load() which will fail
         Exception thrown = null;
         try {
             cache.get(TEST_INDEX_UUID, TEST_SHARD_ID, "test-index");
             fail("Expected KeyCacheException after cache expiry");
         } catch (KeyCacheException e) {
             thrown = e;
-            assertTrue(e.getMessage().contains("Index blocked due to key unavailability"));
+            assertTrue(e.getMessage().contains("Failed to load key for index"));
         }
         assertNotNull(thrown);
 
-        verify(mockResolver, org.mockito.Mockito.atLeast(3)).loadKeyFromMasterKeyProvider();
+        // Verify at least 4 load attempts (initial + 2 refreshes + post-expiry load)
+        verify(mockResolver, org.mockito.Mockito.atLeast(4)).loadKeyFromMasterKeyProvider();
     }
 
     public void testEviction() throws Exception {

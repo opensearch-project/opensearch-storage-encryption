@@ -27,13 +27,17 @@ import org.junit.After;
 import org.junit.Before;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.opensearch.action.support.clustermanager.AcknowledgedResponse;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.common.action.ActionFuture;
 import org.opensearch.common.crypto.DataKeyPair;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.test.OpenSearchTestCase;
+import org.opensearch.transport.client.AdminClient;
 import org.opensearch.transport.client.Client;
+import org.opensearch.transport.client.IndicesAdminClient;
 
 /**
  * Unit tests for {@link DefaultKeyResolver}
@@ -64,6 +68,18 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
         NodeLevelKeyCache.reset();
         Client mockClient = mock(Client.class);
         ClusterService mockClusterService = mock(ClusterService.class);
+
+        // Setup mock Client chain for block operations
+        AdminClient mockAdminClient = mock(AdminClient.class);
+        IndicesAdminClient mockIndicesAdminClient = mock(IndicesAdminClient.class);
+        @SuppressWarnings("unchecked")
+        ActionFuture<AcknowledgedResponse> mockFuture = (ActionFuture<AcknowledgedResponse>) mock(ActionFuture.class);
+
+        when(mockClient.admin()).thenReturn(mockAdminClient);
+        when(mockAdminClient.indices()).thenReturn(mockIndicesAdminClient);
+        when(mockIndicesAdminClient.updateSettings(any())).thenReturn(mockFuture);
+        when(mockFuture.actionGet()).thenReturn(mock(AcknowledgedResponse.class));
+
         MasterKeyHealthMonitor.initialize(Settings.EMPTY, mockClient, mockClusterService);
         NodeLevelKeyCache.initialize(Settings.EMPTY, MasterKeyHealthMonitor.getInstance());
     }
