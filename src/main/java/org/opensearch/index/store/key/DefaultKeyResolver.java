@@ -185,7 +185,11 @@ public class DefaultKeyResolver implements KeyResolver {
         try {
             return NodeLevelKeyCache.getInstance().get(indexUuid, shardId, indexName);
         } catch (Exception e) {
-            // Suppress stack trace to avoid log spam when keys are disabled or unavailable
+            // If it's already a KeyCacheException with clean message, just rethrow
+            if (e instanceof KeyCacheException) {
+                throw (KeyCacheException) e;
+            }
+            // Only wrap unexpected exceptions
             throw new KeyCacheException("Failed to get encryption key for index: " + indexName, e, true);
         }
     }

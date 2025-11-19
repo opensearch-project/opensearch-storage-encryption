@@ -166,6 +166,11 @@ public class NodeLevelKeyCache {
                         // Failure: Report to health monitor (will apply blocks)
                         healthMonitor.reportFailure(indexUuid, indexName, e);
 
+                        // If it's already a KeyCacheException with clean message, just rethrow
+                        if (e instanceof KeyCacheException) {
+                            throw e;
+                        }
+                        // Only wrap unexpected exceptions
                         throw new KeyCacheException(
                             "Failed to reload key for index: " + indexName + ". Error: " + e.getMessage(),
                             null,  // No cause - eliminates ~40 lines of AWS SDK stack trace
@@ -205,6 +210,11 @@ public class NodeLevelKeyCache {
             // Failure: Report to health monitor (will apply blocks)
             healthMonitor.reportFailure(indexUuid, indexName, e);
 
+            // If it's already a KeyCacheException with clean message, just rethrow
+            if (e instanceof KeyCacheException) {
+                throw e;
+            }
+            // Only wrap unexpected exceptions
             throw new KeyCacheException("Failed to load key for index: " + indexName + ". Error: " + e.getMessage(), null, true);
         }
     }
