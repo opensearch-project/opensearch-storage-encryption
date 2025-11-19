@@ -11,6 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -27,7 +28,7 @@ import org.opensearch.transport.client.Client;
 
 /**
  * Health monitor for encryption keys across all encrypted indices on a node.
- * Runs proactive background checks to detect KMS issues early and automatically
+ * Runs proactive background checks to detect MasterKey Provider issues early and automatically
  * recovers indices when keys become available again.
  * 
  * <p>Responsibilities:
@@ -35,7 +36,7 @@ import org.opensearch.transport.client.Client;
  *   <li>Proactive health checks: Validates ALL encrypted indices periodically</li>
  *   <li>Failure tracking: Tracks which indices have key availability issues</li>
  *   <li>Block management: Applies/removes read+write blocks for protection</li>
- *   <li>Automatic recovery: Removes blocks and triggers shard retry when KMS restored</li>
+ *   <li>Automatic recovery: Removes blocks and triggers shard retry when MasterKey Provider restored</li>
  * </ul>
  * 
  * @opensearch.internal
@@ -52,10 +53,12 @@ public class MasterKeyHealthMonitor {
     // Track failures per index to implement write block protection
     private final ConcurrentHashMap<String, FailureState> failureTracker;
 
-    // Health monitoring for automatic recovery when KMS is restored
+    // Health monitoring for automatic recovery when MasterKey Provider is restored
     private final ScheduledExecutorService healthCheckExecutor;
     private volatile ScheduledFuture<?> healthCheckTask = null;
-    private static final long HEALTH_CHECK_DELAY = 30;
+
+    // Random initial delay (0-300 seconds) to prevent thundering herd when cluster starts
+    private static final long HEALTH_CHECK_INITIAL_DELAY_MAX_SECONDS = 300;
     private static final long HEALTH_CHECK_INTERVAL_SECONDS = 3600;
 
     /**
@@ -125,6 +128,9 @@ public class MasterKeyHealthMonitor {
      * have been initialized to avoid race conditions.
      * 
      * This method is idempotent - calling it multiple times has no effect.
+     * 
+     * Uses random initial delay (0-300 seconds) to prevent thundering herd problem
+     * where all nodes in a cluster simultaneously hit MasterKey Provider after restart.
      */
     public static synchronized void start() {
         if (INSTANCE == null) {
@@ -132,14 +138,16 @@ public class MasterKeyHealthMonitor {
         }
 
         if (INSTANCE.healthCheckTask == null) {
+            // Add random jitter to prevent all nodes hitting MasterKey Provider simultaneously
+            long randomInitialDelay = ThreadLocalRandom.current().nextLong(HEALTH_CHECK_INITIAL_DELAY_MAX_SECONDS + 1);
+
             INSTANCE.healthCheckTask = INSTANCE.healthCheckExecutor
                 .scheduleAtFixedRate(
                     INSTANCE::checkKmsHealthAndRecover,
-                    HEALTH_CHECK_DELAY,
+                    randomInitialDelay,
                     HEALTH_CHECK_INTERVAL_SECONDS,
                     TimeUnit.SECONDS
                 );
-            logger.info("Started MasterKeyHealthMonitor health check thread");
         }
     }
 
@@ -163,11 +171,9 @@ public class MasterKeyHealthMonitor {
             applyBlocks(indexName);
             state.blocksApplied = true;
 
-            logger.warn("Key unavailable for index {}: {}", indexName, exception.getMessage());
         } else {
             // Subsequent failure
             state.recordFailure(exception);
-            logger.debug("Key still unavailable for index {}: {}", indexName, exception.getMessage());
         }
     }
 
@@ -183,7 +189,6 @@ public class MasterKeyHealthMonitor {
 
         if (state != null && state.blocksApplied && hasBlocks(indexName)) {
             removeBlocks(indexName);
-            logger.info("Index {} recovered: blocks removed", indexName);
         }
     }
 
@@ -227,7 +232,6 @@ public class MasterKeyHealthMonitor {
     private void applyBlocks(String indexName) {
         try {
             if (indexName == null) {
-                logger.debug("Cannot apply blocks: index name is null");
                 return;
             }
 
@@ -236,8 +240,6 @@ public class MasterKeyHealthMonitor {
 
             UpdateSettingsRequest request = new UpdateSettingsRequest(settings, indexName);
             client.admin().indices().updateSettings(request).actionGet();
-
-            logger.info("Applied blocks to index {} due to key unavailability", indexName);
         } catch (Exception e) {
             logger.error("Failed to apply blocks to index {}: {}", indexName, e.getMessage(), e);
         }
@@ -252,7 +254,6 @@ public class MasterKeyHealthMonitor {
     private void removeBlocks(String indexName) {
         try {
             if (indexName == null) {
-                logger.warn("Cannot remove blocks: index name is null");
                 return;
             }
 
@@ -281,7 +282,6 @@ public class MasterKeyHealthMonitor {
 
             client.admin().cluster().reroute(request).actionGet();
 
-            logger.info("Triggered shard retry for {} recovered indices", recoveredCount);
         } catch (Exception e) {
             logger.warn("Failed to trigger shard retry: {}", e.getMessage());
             // Non-fatal - shards will recover on next allocation round
@@ -302,8 +302,8 @@ public class MasterKeyHealthMonitor {
      * 
      * <p>Benefits:
      * <ul>
-     *   <li>Early detection: Identifies KMS issues before they cause shard failures</li>
-     *   <li>Automatic recovery: Removes blocks when KMS is restored</li>
+     *   <li>Early detection: Identifies MasterKey Provider issues before they cause shard failures</li>
+     *   <li>Automatic recovery: Removes blocks when MasterKey Provider is restored</li>
      *   <li>Comprehensive: Checks ALL encrypted indices, not just failed ones</li>
      * </ul>
      * 
@@ -315,7 +315,6 @@ public class MasterKeyHealthMonitor {
             Set<String> allIndexUuids = ShardKeyResolverRegistry.getAllIndexUuids();
 
             if (allIndexUuids.isEmpty()) {
-                logger.debug("No encrypted indices on this node to check");
                 return;
             }
 
@@ -337,11 +336,10 @@ public class MasterKeyHealthMonitor {
                     // Get index name from resolver
                     String indexName = ((DefaultKeyResolver) resolver).getIndexName();
                     if (indexName == null) {
-                        logger.warn("Cannot get index name for UUID: {}", indexUuid);
                         continue;
                     }
 
-                    // Try to load THIS index's specific key (validates KMS connectivity)
+                    // Try to load THIS index's specific key (validates MasterKey Provider connectivity)
                     Key key = ((DefaultKeyResolver) resolver).loadKeyFromMasterKeyProvider();
 
                     // Success! Check if this index was previously blocked
@@ -353,7 +351,6 @@ public class MasterKeyHealthMonitor {
                         }
                         failureTracker.remove(indexUuid);
                         recoveredCount++;
-                        logger.info("Index {} recovered: key is now accessible", indexName);
                     } else {
                         // Was healthy, still healthy (proactive validation)
                         healthyCount++;
@@ -373,8 +370,6 @@ public class MasterKeyHealthMonitor {
                         KeyResolver resolver = ShardKeyResolverRegistry.getAnyResolverForIndex(indexUuid);
                         String indexName = resolver != null ? ((DefaultKeyResolver) resolver).getIndexName() : indexUuid;
 
-                        logger.warn("Health check detected key unavailability for index {}: {}", indexName, e.getMessage());
-
                         // Apply blocks to protect data
                         if (indexName != null && !indexName.equals(indexUuid)) {
                             applyBlocks(indexName);
@@ -383,20 +378,9 @@ public class MasterKeyHealthMonitor {
                     } else {
                         // Still failing, update failure time
                         state.recordFailure(e);
-                        logger.debug("Index {} still unavailable: {}", indexUuid, e.getMessage());
                     }
                 }
             }
-
-            // Log summary of health check
-            logger
-                .debug(
-                    "Health check completed: {} healthy, {} recovered, {} failed out of {} total indices",
-                    healthyCount,
-                    recoveredCount,
-                    failedCount,
-                    allIndexUuids.size()
-                );
 
             // After recovering indices, trigger shard retry to recover RED indices
             if (recoveredCount > 0) {
@@ -404,7 +388,7 @@ public class MasterKeyHealthMonitor {
             }
 
         } catch (Exception e) {
-            logger.error("Error during proactive KMS health check", e);
+            logger.error("Error during Master Key Provider health check", e);
             // Keep monitoring thread running even on error
         }
     }
