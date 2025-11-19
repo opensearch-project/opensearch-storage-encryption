@@ -7,6 +7,8 @@ package org.opensearch.index.store.key;
 import java.io.IOException;
 import java.security.Key;
 import java.security.Provider;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.crypto.spec.SecretKeySpec;
 
@@ -96,7 +98,7 @@ public class DefaultKeyResolver implements KeyResolver {
             try {
                 initNewKey(shardId);
             } catch (Exception ex) {
-                recordMetricsError();
+                CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, getMetricKey(ex));
                 String rootCause = KeyCacheException.extractRootCauseMessage(ex);
                 throw new KeyCacheException(
                     "KMS error for index '" + indexName + "' (UUID: " + indexUuid + "): " + rootCause,
@@ -105,7 +107,7 @@ public class DefaultKeyResolver implements KeyResolver {
                 );
             }
         } catch (Exception e) {
-            recordMetricsError();
+            CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, getMetricKey(e));
             String rootCause = KeyCacheException.extractRootCauseMessage(e);
             throw new KeyCacheException("KMS error for index '" + indexName + "' (UUID: " + indexUuid + "): " + rootCause, e, true);
         }
@@ -143,20 +145,6 @@ public class DefaultKeyResolver implements KeyResolver {
     }
 
     /**
-     * Records a metrics error if CryptoMetricsService is available.
-     * This is defensive to allow tests to run without metrics initialization.
-     */
-    private void recordMetricsError() {
-        try {
-            CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, this.indexUuid);
-        } catch (IllegalStateException e) {
-            // CryptoMetricsService not initialized - acceptable in test environments
-            // TODO: initialize CryptoMetricsService for tests too
-            LOGGER.debug("CryptoMetricsService not available: {}", e.getMessage());
-        }
-    }
-
-    /**
      * Loads key from Master Key provider by decrypting the stored encrypted key.
      * This method is called by the node-level cache.
      * Exceptions are allowed to bubble up - the cache will handle fallback to old value.
@@ -170,7 +158,7 @@ public class DefaultKeyResolver implements KeyResolver {
             byte[] directoryKey = HkdfKeyDerivation.deriveDirectoryKey(indexKey, shardId);
             return new SecretKeySpec(directoryKey, "AES");
         } catch (Exception e) {
-            recordMetricsError();
+            CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, getMetricKey(e));
             throw e;
         }
 
@@ -193,6 +181,23 @@ public class DefaultKeyResolver implements KeyResolver {
             // Only wrap unexpected exceptions
             throw new KeyCacheException("Failed to get encryption key for index: " + indexName, e, true);
         }
+    }
+
+    private String getMetricKey(Exception e) {
+        String kmsKey = extractKmsKey(e);
+        return this.indexName + ":" + kmsKey;
+    }
+
+    private String extractKmsKey(Exception e) {
+        String message = e.getMessage();
+        if (message != null) {
+            Pattern pattern = Pattern.compile("arn:aws:kms:[^:]+:[^:]+:key/([^\\s]+)");
+            Matcher matcher = pattern.matcher(message);
+            if (matcher.find()) {
+                return matcher.group(1); // Just the key ID, not full ARN
+            }
+        }
+        return "unknown";
     }
 
 }

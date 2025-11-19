@@ -33,6 +33,8 @@ import org.opensearch.common.action.ActionFuture;
 import org.opensearch.common.crypto.DataKeyPair;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.index.store.metrics.CryptoMetricsService;
+import org.opensearch.telemetry.metrics.MetricsRegistry;
 import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.transport.client.AdminClient;
 import org.opensearch.transport.client.Client;
@@ -61,6 +63,9 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
         directory = new NIOFSDirectory(tempDir, FSLockFactory.getDefault());
         provider = Security.getProvider("SunJCE");
         assertNotNull("SunJCE provider should be available", provider);
+
+        // Initialize CryptoMetricsService
+        CryptoMetricsService.initialize(mock(MetricsRegistry.class));
 
         // Initialize NodeLevelKeyCache with mock Client and ClusterService
         MasterKeyHealthMonitor.reset();

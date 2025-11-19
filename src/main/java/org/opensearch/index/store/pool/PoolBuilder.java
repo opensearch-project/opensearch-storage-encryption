@@ -113,9 +113,11 @@ public final class PoolBuilder {
     private static class TelemetryThread implements Closeable {
         private final Thread thread;
         private final Pool<RefCountedMemorySegment> pool;
+        private final BlockCache<RefCountedMemorySegment> blockCache;
 
-        TelemetryThread(Pool<RefCountedMemorySegment> pool) {
+        TelemetryThread(Pool<RefCountedMemorySegment> pool, BlockCache<RefCountedMemorySegment> blockCache) {
             this.pool = pool;
+            this.blockCache = blockCache;
             this.thread = new Thread(this::run);
             this.thread.setDaemon(true);
             this.thread.setName("DirectIOBufferPoolStatsLogger");
@@ -126,21 +128,22 @@ public final class PoolBuilder {
             while (!Thread.currentThread().isInterrupted()) {
                 try {
                     Thread.sleep(Duration.ofMinutes(5));
-                    publishPoolStats();
+                    publishStats();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return;
                 } catch (Throwable t) {
-                    LOGGER.warn("Panic in buffer pool stats logger", t);
+                    LOGGER.warn("Panic in telemetry buffer stats logger", t);
                 }
             }
         }
 
-        private void publishPoolStats() {
+        private void publishStats() {
             try {
-                LOGGER.info("{}", pool.poolStats());
+                pool.recordStats();
+                blockCache.recordStats();
             } catch (Exception e) {
-                LOGGER.warn("Failed to log cache stats", e);
+                LOGGER.warn("Failed to log cache/pool stats", e);
             }
         }
 
@@ -193,7 +196,7 @@ public final class PoolBuilder {
         LOGGER.info("Creating shared block cache with blocks={}", maxCacheBlocks);
 
         // Start telemetry
-        TelemetryThread telemetry = new TelemetryThread(segmentPool);
+        TelemetryThread telemetry = new TelemetryThread(segmentPool, blockCache);
 
         return new PoolResources(segmentPool, blockCache, maxCacheBlocks, telemetry, removalExecutor);
     }
