@@ -57,12 +57,13 @@ public class ShardKeyResolverRegistry {
         Directory indexDirectory,
         Provider provider,
         MasterKeyProvider keyProvider,
-        int shardId
+        int shardId,
+        String indexName
     ) {
-        ShardCacheKey key = new ShardCacheKey(indexUuid, shardId);
+        ShardCacheKey key = new ShardCacheKey(indexUuid, shardId, indexName);
         return resolverCache.computeIfAbsent(key, k -> {
             try {
-                return new DefaultKeyResolver(indexUuid, indexDirectory, provider, keyProvider, shardId);
+                return new DefaultKeyResolver(indexUuid, indexName, indexDirectory, provider, keyProvider, shardId);
             } catch (IOException e) {
                 throw new RuntimeException("Failed to create KeyResolver for shard: " + k, e);
             }
@@ -74,10 +75,11 @@ public class ShardKeyResolverRegistry {
      *
      * @param indexUuid the unique identifier for the index
      * @param shardId   the shard ID
+     * @param indexName the index name
      * @return the KeyResolver instance for this shard, or null if none exists
      */
-    public static KeyResolver getResolver(String indexUuid, int shardId) {
-        return resolverCache.get(new ShardCacheKey(indexUuid, shardId));
+    public static KeyResolver getResolver(String indexUuid, int shardId, String indexName) {
+        return resolverCache.get(new ShardCacheKey(indexUuid, shardId, indexName));
     }
 
     /**
@@ -87,15 +89,16 @@ public class ShardKeyResolverRegistry {
      *
      * @param indexUuid the unique identifier for the index
      * @param shardId   the shard ID
+     * @param indexName the index name
      * @return the removed resolver, or null if no resolver was cached for this shard
      */
-    public static KeyResolver removeResolver(String indexUuid, int shardId) {
-        ShardCacheKey key = new ShardCacheKey(indexUuid, shardId);
+    public static KeyResolver removeResolver(String indexUuid, int shardId, String indexName) {
+        ShardCacheKey key = new ShardCacheKey(indexUuid, shardId, indexName);
         KeyResolver removed = resolverCache.remove(key);
         if (removed != null) {
             // Evict from node-level cache when shard is removed
             try {
-                NodeLevelKeyCache.getInstance().evict(indexUuid, shardId);
+                NodeLevelKeyCache.getInstance().evict(indexUuid, shardId, indexName);
             } catch (IllegalStateException e) {
                 logger.debug("Could not evict from NodeLevelKeyCache: {}", e.getMessage());
             }
@@ -130,10 +133,11 @@ public class ShardKeyResolverRegistry {
      *
      * @param indexUuid the unique identifier for the index
      * @param shardId   the shard ID
+     * @param indexName the index name
      * @return true if a resolver is cached for this shard, false otherwise
      */
-    public static boolean hasResolver(String indexUuid, int shardId) {
-        return resolverCache.containsKey(new ShardCacheKey(indexUuid, shardId));
+    public static boolean hasResolver(String indexUuid, int shardId, String indexName) {
+        return resolverCache.containsKey(new ShardCacheKey(indexUuid, shardId, indexName));
     }
 
     /**

@@ -38,6 +38,7 @@ public class DefaultKeyResolver implements KeyResolver {
     private static final Logger LOGGER = LogManager.getLogger(DefaultKeyResolver.class);
 
     private final String indexUuid;
+    private final String indexName;
     private final Directory directory;
     private final MasterKeyProvider keyProvider;
     private final int shardId;
@@ -50,19 +51,37 @@ public class DefaultKeyResolver implements KeyResolver {
      * Constructs a new {@link DefaultKeyResolver} and ensures the key is initialized.
      *
      * @param indexUuid   the unique identifier for the index
+     * @param indexName   the index name
      * @param directory   the Lucene directory to read/write metadata files
      * @param provider    the JCE provider used for cipher operations
      * @param keyProvider the master key provider used to encrypt/decrypt data keys
-     * @param shardId
+     * @param shardId     the shard ID
      * @throws IOException if an I/O error occurs while reading or writing key metadata
      */
-    public DefaultKeyResolver(String indexUuid, Directory directory, Provider provider, MasterKeyProvider keyProvider, int shardId)
+    public DefaultKeyResolver(
+        String indexUuid,
+        String indexName,
+        Directory directory,
+        Provider provider,
+        MasterKeyProvider keyProvider,
+        int shardId
+    )
         throws IOException {
         this.indexUuid = indexUuid;
+        this.indexName = indexName;
         this.directory = directory;
         this.keyProvider = keyProvider;
         this.shardId = shardId;
         initialize(shardId);
+    }
+
+    /**
+     * Gets the index name for this resolver.
+     * 
+     * @return the index name
+     */
+    public String getIndexName() {
+        return indexName;
     }
 
     /**
@@ -143,10 +162,10 @@ public class DefaultKeyResolver implements KeyResolver {
     @Override
     public Key getDataKey() {
         try {
-            return NodeLevelKeyCache.getInstance().get(indexUuid, shardId);
+            return NodeLevelKeyCache.getInstance().get(indexUuid, shardId, indexName);
         } catch (Exception e) {
             // Suppress stack trace to avoid log spam when keys are disabled or unavailable
-            throw new KeyCacheException("Failed to get encryption key for index: " + indexUuid, e, true);
+            throw new KeyCacheException("Failed to get encryption key for index: " + indexName, e, true);
         }
     }
 

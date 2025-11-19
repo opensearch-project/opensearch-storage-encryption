@@ -80,8 +80,9 @@ public class CryptoEngineFactory implements EngineFactory {
 
         // Use shared resolver registry to get the SAME resolver instance as CryptoDirectoryFactory
         String indexUuid = config.getIndexSettings().getIndex().getUUID();
+        String indexName = config.getIndexSettings().getIndex().getName();
         int shardId = config.getShardId().getId();
-        return ShardKeyResolverRegistry.getOrCreateResolver(indexUuid, indexKeyDirectory, provider, keyProvider, shardId);
+        return ShardKeyResolverRegistry.getOrCreateResolver(indexUuid, indexKeyDirectory, provider, keyProvider, shardId, indexName);
     }
 
     /**

@@ -36,8 +36,8 @@ public class EncryptionMetadataCacheRegistry {
      * @param shardId   the shard ID
      * @return the EncryptionMetadataCache instance for this shard
      */
-    public static EncryptionMetadataCache getOrCreateCache(String indexUuid, int shardId) {
-        ShardCacheKey key = new ShardCacheKey(indexUuid, shardId);
+    public static EncryptionMetadataCache getOrCreateCache(String indexUuid, int shardId, String indexName) {
+        ShardCacheKey key = new ShardCacheKey(indexUuid, shardId, indexName);
         return cacheRegistry.computeIfAbsent(key, k -> new EncryptionMetadataCache());
     }
 
@@ -49,8 +49,8 @@ public class EncryptionMetadataCacheRegistry {
      * @param shardId   the shard ID
      * @return the removed cache, or null if no cache was registered for this shard
      */
-    public static EncryptionMetadataCache removeCache(String indexUuid, int shardId) {
-        return cacheRegistry.remove(new ShardCacheKey(indexUuid, shardId));
+    public static EncryptionMetadataCache removeCache(String indexUuid, int shardId, String indexName) {
+        return cacheRegistry.remove(new ShardCacheKey(indexUuid, shardId, indexName));
     }
 
     /**
@@ -78,7 +78,7 @@ public class EncryptionMetadataCacheRegistry {
      * @param shardId   the shard ID
      * @return true if a cache is registered for this shard, false otherwise
      */
-    public static boolean hasCache(String indexUuid, int shardId) {
-        return cacheRegistry.containsKey(new ShardCacheKey(indexUuid, shardId));
+    public static boolean hasCache(String indexUuid, int shardId, String indexName) {
+        return cacheRegistry.containsKey(new ShardCacheKey(indexUuid, shardId, indexName));
     }
 }

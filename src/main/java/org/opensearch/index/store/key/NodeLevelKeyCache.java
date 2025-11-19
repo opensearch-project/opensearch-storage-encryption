@@ -5,10 +5,7 @@
 package org.opensearch.index.store.key;
 
 import java.security.Key;
-import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletionException;
@@ -24,11 +21,8 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.action.admin.cluster.reroute.ClusterRerouteRequest;
 import org.opensearch.action.admin.indices.settings.put.UpdateSettingsRequest;
-import org.opensearch.cluster.ClusterChangedEvent;
 import org.opensearch.cluster.ClusterState;
-import org.opensearch.cluster.ClusterStateListener;
 import org.opensearch.cluster.metadata.IndexMetadata;
-import org.opensearch.cluster.metadata.Metadata;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
@@ -58,7 +52,7 @@ import com.github.benmanes.caffeine.cache.LoadingCache;
  * 
  * @opensearch.internal
  */
-public class NodeLevelKeyCache implements ClusterStateListener {
+public class NodeLevelKeyCache {
 
     private static final Logger logger = LogManager.getLogger(NodeLevelKeyCache.class);
 
@@ -72,11 +66,6 @@ public class NodeLevelKeyCache implements ClusterStateListener {
 
     // Track failures per index to implement write block protection
     private final ConcurrentHashMap<String, FailureState> failureTracker;
-
-    // O(1) UUID to index name cache for efficient lookups
-    // Updated automatically via ClusterStateListener when metadata changes
-    // AtomicReference ensures race-free atomic swap during cache rebuilds
-    private final AtomicReference<Map<String, String>> uuidToNameCache;
 
     // Health monitoring for automatic recovery when KMS is restored
     private final ScheduledExecutorService healthCheckExecutor;
@@ -121,11 +110,6 @@ public class NodeLevelKeyCache implements ClusterStateListener {
             long keyExpiryDuration = expiryInterval.getSeconds();
 
             INSTANCE = new NodeLevelKeyCache(refreshDuration, keyExpiryDuration, client, clusterService);
-
-            // Register as cluster state listener to keep UUID->name cache synchronized
-            if (clusterService != null) {
-                clusterService.addListener(INSTANCE);
-            }
 
             if (refreshDuration < 0) {
                 logger.info("Initialized NodeLevelKeyCache with refresh disabled");
@@ -183,20 +167,6 @@ public class NodeLevelKeyCache implements ClusterStateListener {
         this.clusterService = Objects.requireNonNull(clusterService, "clusterService cannot be null");
 
         this.failureTracker = new ConcurrentHashMap<>();
-        this.uuidToNameCache = new AtomicReference<>(Collections.emptyMap());
-
-        // Initialize UUID -> name cache from current cluster state
-        // During node startup, cluster state may not be initialized yet, so we handle that gracefully
-        try {
-            ClusterState state = clusterService.state();
-            if (state != null) {
-                rebuildUuidToNameCache(state.metadata());
-            }
-        } catch (AssertionError e) {
-            // Cluster state not initialized yet during plugin startup - this is expected
-            // The cache will be populated automatically via clusterChanged() callback when cluster state becomes available
-            logger.debug("Cluster state not yet initialized, UUID cache will be built on first cluster state change");
-        }
 
         // Initialize and start health check executor (always running for proactive monitoring)
         this.healthCheckExecutor = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "encryption-key-health-check"));
@@ -240,20 +210,23 @@ public class NodeLevelKeyCache implements ClusterStateListener {
                 @Override
                 public Key reload(ShardCacheKey key, Key oldValue) throws Exception {
                     try {
-                        KeyResolver resolver = ShardKeyResolverRegistry.getResolver(key.getIndexUuid(), key.getShardId());
+                        KeyResolver resolver = ShardKeyResolverRegistry
+                            .getResolver(key.getIndexUuid(), key.getShardId(), key.getIndexName());
                         Key newKey = ((DefaultKeyResolver) resolver).loadKeyFromMasterKeyProvider();
 
                         // Success: Remove blocks if they were applied, then clear failure state
                         String indexUuid = key.getIndexUuid();
+                        String indexName = key.getIndexName();
                         FailureState state = failureTracker.remove(indexUuid);
-                        if (state != null && state.blocksApplied && hasBlocks(indexUuid)) {
-                            removeBlocks(indexUuid);
-                            logger.debug("Removed blocks from index after successful key reload: {}", indexUuid);
+                        if (state != null && state.blocksApplied && hasBlocks(indexName)) {
+                            removeBlocks(indexName);
+                            logger.debug("Removed blocks from index after successful key reload: {}", indexName);
                         }
                         return newKey;
 
                     } catch (Exception e) {
                         String indexUuid = key.getIndexUuid();
+                        String indexName = key.getIndexName();
 
                         // Get or create failure state
                         FailureState state = failureTracker.computeIfAbsent(indexUuid, k -> new FailureState(e));
@@ -261,12 +234,12 @@ public class NodeLevelKeyCache implements ClusterStateListener {
 
                         // Apply both blocks on FIRST failure
                         if (!state.blocksApplied) {
-                            applyBlocks(indexUuid);
+                            applyBlocks(indexName);
                             state.blocksApplied = true;
                         }
 
                         throw new KeyCacheException(
-                            "Failed to reload key for index: " + indexUuid + ". Error: " + e.getMessage(),
+                            "Failed to reload key for index: " + indexName + ". Error: " + e.getMessage(),
                             null,  // No cause - eliminates ~40 lines of AWS SDK stack trace
                             true
                         );
@@ -286,7 +259,7 @@ public class NodeLevelKeyCache implements ClusterStateListener {
      */
     private Key loadKey(ShardCacheKey key) throws Exception {
         // Get resolver from registry
-        KeyResolver resolver = ShardKeyResolverRegistry.getResolver(key.getIndexUuid(), key.getShardId());
+        KeyResolver resolver = ShardKeyResolverRegistry.getResolver(key.getIndexUuid(), key.getShardId(), key.getIndexName());
         if (resolver == null) {
             throw new IllegalStateException("No resolver registered for shard: " + key);
         }
@@ -300,11 +273,12 @@ public class NodeLevelKeyCache implements ClusterStateListener {
 
         } catch (Exception e) {
             String indexUuid = key.getIndexUuid();
+            String indexName = key.getIndexName();
 
             // Check if blocks already applied (fail fast)
             FailureState state = failureTracker.get(indexUuid);
             if (state != null && state.blocksApplied) {
-                throw new KeyCacheException("Index blocked due to key unavailability: " + indexUuid, null, true);
+                throw new KeyCacheException("Index blocked due to key unavailability: " + indexName, null, true);
             }
 
             // First load failure: create state and apply blocks
@@ -315,77 +289,29 @@ public class NodeLevelKeyCache implements ClusterStateListener {
                 state.recordFailure(e);
             }
 
-            applyBlocks(indexUuid);
+            applyBlocks(indexName);
             state.blocksApplied = true;
 
-            throw new KeyCacheException("Failed to load key for index: " + indexUuid + ". Error: " + e.getMessage(), null, true);
+            throw new KeyCacheException("Failed to load key for index: " + indexName + ". Error: " + e.getMessage(), null, true);
         }
-    }
-
-    /**
-     * Called when the cluster state changes.
-     * Rebuilds the UUID→name cache when metadata changes to keep it synchronized.
-     * 
-     * @param event the cluster change event
-     */
-    @Override
-    public void clusterChanged(ClusterChangedEvent event) {
-        if (event.metadataChanged()) {
-            rebuildUuidToNameCache(event.state().metadata());
-        }
-    }
-
-    /**
-     * Rebuilds the UUID→name cache from the current cluster metadata.
-     * Uses atomic swap to eliminate race conditions during cache updates.
-     * This provides O(1) lookups for index names by UUID.
-     * 
-     * @param metadata the cluster metadata
-     */
-    private void rebuildUuidToNameCache(Metadata metadata) {
-        try {
-            if (metadata == null) {
-                return;
-            }
-
-            // Build new immutable cache from current metadata
-            Map<String, String> newCache = new HashMap<>();
-            for (IndexMetadata indexMetadata : metadata.indices().values()) {
-                newCache.put(indexMetadata.getIndexUUID(), indexMetadata.getIndex().getName());
-            }
-
-            uuidToNameCache.set(Collections.unmodifiableMap(newCache));
-        } catch (Exception e) {
-            logger.error("Failed to rebuild UUID→name cache", e);
-        }
-    }
-
-    /**
-     * Gets the index name for a given UUID using the O(1) atomic cache.
-     * Returns null if UUID not found in cache (index doesn't exist or was deleted).
-     * 
-     * @param indexUuid the index UUID
-     * @return the index name, or null if not found
-     */
-    private String getIndexNameFromUuid(String indexUuid) {
-        return uuidToNameCache.get().get(indexUuid);
     }
 
     /**
      * Checks if read or write blocks are currently applied to the index.
-     * Uses O(1) cache lookup for index name, then O(1) metadata lookup.
      * 
-     * @param indexUuid the index UUID
+     * @param indexName the index name
      * @return true if either read or write blocks are applied, false otherwise
      */
-    private boolean hasBlocks(String indexUuid) {
+    private boolean hasBlocks(String indexName) {
         try {
-            // Get index name from O(1) cache
-            String indexName = getIndexNameFromUuid(indexUuid);
+            if (indexName == null) {
+                return false;
+            }
+
             ClusterState clusterState = clusterService.state();
             IndexMetadata indexMetadata = clusterState.metadata().index(indexName);
 
-            if (indexName == null || clusterState == null || indexMetadata == null) {
+            if (clusterState == null || indexMetadata == null) {
                 return false;
             }
 
@@ -405,14 +331,12 @@ public class NodeLevelKeyCache implements ClusterStateListener {
      * Applies read and write blocks to the specified index to prevent all operations 
      * when encryption key is unavailable.
      * 
-     * @param indexUuid the index UUID
+     * @param indexName the index name
      */
-    private void applyBlocks(String indexUuid) {
+    private void applyBlocks(String indexName) {
         try {
-            // Get index name from UUID via cluster state
-            String indexName = getIndexNameFromUuid(indexUuid);
             if (indexName == null) {
-                logger.debug("Cannot apply blocks: index name not found for UUID: {}", indexUuid);
+                logger.debug("Cannot apply blocks: index name is null");
                 return;
             }
 
@@ -422,7 +346,7 @@ public class NodeLevelKeyCache implements ClusterStateListener {
             UpdateSettingsRequest request = new UpdateSettingsRequest(settings, indexName);
             client.admin().indices().updateSettings(request).actionGet();
         } catch (Exception e) {
-            logger.error("Failed to apply blocks to index UUID: {}, error: {}", indexUuid, e.getMessage(), e);
+            logger.error("Failed to apply blocks to index {}: {}", indexName, e.getMessage(), e);
         }
     }
 
@@ -430,14 +354,12 @@ public class NodeLevelKeyCache implements ClusterStateListener {
      * Removes read and write blocks from the specified index when the encryption key 
      * becomes available again. This restores full access after key recovery.
      * 
-     * @param indexUuid the index UUID
+     * @param indexName the index name
      */
-    private void removeBlocks(String indexUuid) {
+    private void removeBlocks(String indexName) {
         try {
-            // Get index name from UUID via cluster state
-            String indexName = getIndexNameFromUuid(indexUuid);
             if (indexName == null) {
-                logger.warn("Cannot remove blocks: index name not found for UUID: {}", indexUuid);
+                logger.warn("Cannot remove blocks: index name is null");
                 return;
             }
 
@@ -448,7 +370,7 @@ public class NodeLevelKeyCache implements ClusterStateListener {
             client.admin().indices().updateSettings(request).actionGet();
 
         } catch (Exception e) {
-            logger.error("Failed to remove blocks from index UUID: {}, error: {}", indexUuid, e.getMessage(), e);
+            logger.error("Failed to remove blocks from index {}: {}", indexName, e.getMessage(), e);
         }
     }
 
@@ -457,14 +379,16 @@ public class NodeLevelKeyCache implements ClusterStateListener {
      * 
      * @param indexUuid the index UUID
      * @param shardId   the shard ID
+     * @param indexName the index name
      * @return the encryption key
      * @throws Exception if key loading fails
      */
-    public Key get(String indexUuid, int shardId) throws Exception {
+    public Key get(String indexUuid, int shardId, String indexName) throws Exception {
         Objects.requireNonNull(indexUuid, "indexUuid cannot be null");
+        Objects.requireNonNull(indexName, "indexName cannot be null");
 
         try {
-            return keyCache.get(new ShardCacheKey(indexUuid, shardId));
+            return keyCache.get(new ShardCacheKey(indexUuid, shardId, indexName));
         } catch (CompletionException e) {
             Throwable cause = e.getCause();
             if (cause instanceof Exception) {
@@ -481,10 +405,12 @@ public class NodeLevelKeyCache implements ClusterStateListener {
      * 
      * @param indexUuid the index UUID
      * @param shardId   the shard ID
+     * @param indexName the index name
      */
-    public void evict(String indexUuid, int shardId) {
+    public void evict(String indexUuid, int shardId, String indexName) {
         Objects.requireNonNull(indexUuid, "indexUuid cannot be null");
-        keyCache.invalidate(new ShardCacheKey(indexUuid, shardId));
+        Objects.requireNonNull(indexName, "indexName cannot be null");
+        keyCache.invalidate(new ShardCacheKey(indexUuid, shardId, indexName));
         failureTracker.remove(indexUuid);
     }
 
@@ -567,12 +493,19 @@ public class NodeLevelKeyCache implements ClusterStateListener {
                         continue;
                     }
 
+                    // Get index name from resolver
+                    String indexName = ((DefaultKeyResolver) resolver).getIndexName();
+                    if (indexName == null) {
+                        logger.warn("Cannot get index name for UUID: {}", indexUuid);
+                        continue;
+                    }
+
                     // Try to load THIS index's specific key
                     Key key = ((DefaultKeyResolver) resolver).loadKeyFromMasterKeyProvider();
 
                     // Success for THIS index! Remove blocks
-                    if (hasBlocks(indexUuid)) {
-                        removeBlocks(indexUuid);
+                    if (hasBlocks(indexName)) {
+                        removeBlocks(indexName);
                     }
 
                     failureTracker.remove(indexUuid);
@@ -633,11 +566,6 @@ public class NodeLevelKeyCache implements ClusterStateListener {
      */
     public static synchronized void reset() {
         if (INSTANCE != null) {
-            // Unregister cluster state listener
-            if (INSTANCE.clusterService != null) {
-                INSTANCE.clusterService.removeListener(INSTANCE);
-            }
-
             INSTANCE.clear();
 
             // Shutdown executor first

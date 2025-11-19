@@ -166,8 +166,8 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                     * */
                     int nShards = idxSettings.getNumberOfShards();
                     for (int i = 0; i < nShards; i++) {
-                        ShardKeyResolverRegistry.removeResolver(index.getUUID(), i);
-                        NodeLevelKeyCache.getInstance().evict(index.getUUID(), i);
+                        ShardKeyResolverRegistry.removeResolver(index.getUUID(), i, index.getName());
+                        NodeLevelKeyCache.getInstance().evict(index.getUUID(), i, index.getName());
                     }
                 }
             });

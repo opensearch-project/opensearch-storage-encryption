@@ -53,7 +53,7 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
         resolverCacheField.setAccessible(true);
         @SuppressWarnings("unchecked")
         ConcurrentMap<ShardCacheKey, KeyResolver> resolverCache = (ConcurrentMap<ShardCacheKey, KeyResolver>) resolverCacheField.get(null);
-        resolverCache.put(new ShardCacheKey(indexUuid, shardId), resolver);
+        resolverCache.put(new ShardCacheKey(indexUuid, shardId, "test-index"), resolver);
     }
 
     @Override
@@ -113,7 +113,7 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
         testIndexUuid = "test-index-uuid-" + System.currentTimeMillis();
         org.apache.lucene.store.Directory directory = new org.apache.lucene.store.NIOFSDirectory(tempDir);
         // keyResolver = new DefaultKeyResolver(directory, cryptoProvider, keyProvider);
-        keyResolver = new DefaultKeyResolver(testIndexUuid, directory, cryptoProvider, keyProvider, 0);
+        keyResolver = new DefaultKeyResolver(testIndexUuid, "test-index", directory, cryptoProvider, keyProvider, 0);
 
         // Register the resolver with ShardKeyResolverRegistry so cache can find it
         registerResolver(testIndexUuid, 0, keyResolver);
