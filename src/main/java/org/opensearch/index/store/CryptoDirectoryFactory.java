@@ -182,7 +182,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     public static final Setting<TimeValue> NODE_KEY_EXPIRY_INTERVAL_SETTING = Setting
         .timeSetting(
             "node.store.crypto.key_expiry_interval",
-            TimeValue.timeValueHours(3),  // default: 3 hours
+            TimeValue.timeValueHours(24),  // default: 24 hours
             TimeValue.timeValueSeconds(-1),  // minimum: -1 means never expire
             Property.NodeScope
         );

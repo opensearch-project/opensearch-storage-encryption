@@ -81,7 +81,8 @@ public class NodeLevelKeyCache implements ClusterStateListener {
     // Health monitoring for automatic recovery when KMS is restored
     private final ScheduledExecutorService healthCheckExecutor;
     private volatile ScheduledFuture<?> healthCheckTask = null;
-    private static final long HEALTH_CHECK_INTERVAL_SECONDS = 30;
+    private static final long HEALTH_CHECK_DELAY = 30;
+    private static final long HEALTH_CHECK_INTERVAL_SECONDS = 3600;
 
     /**
      * Tracks failure state for an index and block status.
@@ -201,12 +202,7 @@ public class NodeLevelKeyCache implements ClusterStateListener {
         this.healthCheckExecutor = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "encryption-key-health-check"));
         // Start proactive health monitoring (always running)
         healthCheckTask = healthCheckExecutor
-            .scheduleAtFixedRate(
-                this::checkKmsHealthAndRecover,
-                HEALTH_CHECK_INTERVAL_SECONDS,
-                HEALTH_CHECK_INTERVAL_SECONDS,
-                TimeUnit.SECONDS
-            );
+            .scheduleAtFixedRate(this::checkKmsHealthAndRecover, HEALTH_CHECK_DELAY, HEALTH_CHECK_INTERVAL_SECONDS, TimeUnit.SECONDS);
 
         // Suppress Caffeine's internal logging to reduce log spam during key reload failures
         // This prevents duplicate exception logging from Caffeine's BoundedLocalCache
