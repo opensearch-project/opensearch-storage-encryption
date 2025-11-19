@@ -437,6 +437,10 @@ public class ConcurrencyIntegTests extends OpenSearchIntegTestCase {
             equalTo((long) (numDocs + additionalDocs))
         );
 
+        // Explicit flush to release any BigArrays held by translog/recovery operations
+        // This prevents "arrays have not been released" errors in test framework
+        flush("test-translog");
+
         logger.info("Translog encryption recovery test completed successfully");
     }
 
