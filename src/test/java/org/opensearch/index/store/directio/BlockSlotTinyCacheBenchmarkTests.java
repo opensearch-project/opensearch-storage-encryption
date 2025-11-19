@@ -9,8 +9,15 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.opensearch.index.store.block.RefCountedMemorySegment;
@@ -27,6 +34,7 @@ import org.opensearch.index.store.block_cache.FileBlockCacheKey;
  *
  * Run with: ./gradlew test --tests BlockSlotTinyCacheBenchmarkTests
  */
+@SuppressWarnings("preview")
 public class BlockSlotTinyCacheBenchmarkTests {
 
     private static final int WARMUP_ITERATIONS = 5;
@@ -40,6 +48,7 @@ public class BlockSlotTinyCacheBenchmarkTests {
      */
     static class MockBlockCache implements BlockCache<RefCountedMemorySegment> {
         private final ConcurrentHashMap<Long, BlockCacheValue<RefCountedMemorySegment>> cache = new ConcurrentHashMap<>();
+        @SuppressWarnings("preview")
         private final Arena arena = Arena.ofShared();
         private final AtomicInteger generation = new AtomicInteger(0);
 
@@ -276,7 +285,7 @@ public class BlockSlotTinyCacheBenchmarkTests {
                     OffsetGenerator generator = new OffsetGenerator(scenario.pattern, scenario.uniqueBlocks, threadSeed);
                     for (int i = 0; i < opsPerThread; i++) {
                         long offset = generator.nextOffset();
-                        BlockCacheValue<RefCountedMemorySegment> val = cache.acquireRefCountedValue(offset);
+                        BlockCacheValue<RefCountedMemorySegment> val = cache.acquireRefCountedValue(offset).value();
                         val.unpin();
                     }
                 } catch (Exception e) {

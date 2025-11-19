@@ -10,368 +10,301 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Set;
 import java.util.concurrent.BlockingDeque;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
-import org.opensearch.index.store.block_cache.BlockCacheKey;
-import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.read_ahead.Worker;
 
 /**
- * Asynchronous readahead worker implementation with intelligent cache-aware block prefetching.
- * 
- * <p>This class provides sophisticated block prefetching capabilities designed to optimize sequential I/O performance
- * through proactive data loading. Key features include:
- * 
- * <ul>
- * <li><strong>Cache-aware scheduling:</strong> Analyzes existing cache coverage to avoid redundant I/O operations</li>
- * <li><strong>Gap consolidation:</strong> Merges nearby uncached regions to reduce I/O fragmentation and improve efficiency</li>
- * <li><strong>Deduplication:</strong> Prevents multiple in-flight requests for overlapping block ranges</li>
- * <li><strong>Multi-threaded processing:</strong> Utilizes configurable thread pool for concurrent block loading operations</li>
- * <li><strong>Bounded queue:</strong> Implements backpressure through capacity-limited request queue</li>
- * <li><strong>Path-based cancellation:</strong> Supports selective cancellation of pending requests by file path</li>
- * </ul>
- * 
- * <p>Thread safety is ensured through concurrent data structures and proper synchronization. The worker
- * maintains tracking of in-flight requests to prevent overlapping operations on the same block ranges.
- * 
- * @opensearch.internal
+ * Minimal, Linux-style asynchronous readahead worker with bounded concurrency.
+ *
+ * <p>This worker queues contiguous block ranges for background prefetch,
+ * avoiding overlap and redundant requests using an in-flight set.
+ * The cache layer handles skip logic and merging.
+ *
+ * <p>All operations are backpressured via a bounded queue. Tasks are processed
+ * by at most {@code maxRunners} concurrent draining threads to prevent thread storms.
  */
-public class QueuingWorker implements Worker {
+public final class QueuingWorker implements Worker {
 
     private static final Logger LOGGER = LogManager.getLogger(QueuingWorker.class);
 
-    private static final class ReadAheadTask {
+    /** Represents a queued readahead request. */
+    private static final class Task {
         final Path path;
-        final long offset;
-        final long blockCount;
+        final long offset;     // byte offset
+        final long blockCount; // number of blocks
         final long enqueuedNanos;
         long startNanos;
         long doneNanos;
 
-        ReadAheadTask(Path path, long offset, long blockCount) {
+        Task(Path path, long offset, long blockCount) {
             this.path = path;
             this.offset = offset;
             this.blockCount = blockCount;
             this.enqueuedNanos = System.nanoTime();
         }
 
-        @Override
-        public boolean equals(Object obj) {
-            if (!(obj instanceof ReadAheadTask))
-                return false;
-            ReadAheadTask other = (ReadAheadTask) obj;
-            return path.equals(other.path) && offset == other.offset && blockCount == other.blockCount;
+        long startBlock() {
+            return offset >>> CACHE_BLOCK_SIZE_POWER;
+        }
+
+        long endBlock() {
+            return startBlock() + blockCount;
         }
 
         @Override
         public int hashCode() {
-            return path.hashCode() * 31 + Long.hashCode(offset) * 13 + Long.hashCode(blockCount);
+            return path.hashCode() * 31 + Long.hashCode(offset) + Long.hashCode(blockCount);
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (!(o instanceof Task t))
+                return false;
+            return path.equals(t.path) && offset == t.offset && blockCount == t.blockCount;
         }
     }
 
-    private final BlockingDeque<ReadAheadTask> queue;
-    private final int queueCapacity;
+    private final BlockingDeque<Task> queue;
+    private final int capacity;
     private final ExecutorService executor;
-    private final Set<ReadAheadTask> inFlight;
-
+    private final Set<Task> inFlight;
     private final BlockCache<RefCountedMemorySegment> blockCache;
+
+    private static final int LARGE_WINDOW_THRESHOLD = 512;
+    private static final int DUP_WARN_THRESHOLD = 10;
+    private static final int MAX_BULK_SIZE = 128; // Maximum blocks per I/O operation
+
+    private final AtomicInteger duplicateCounter = new AtomicInteger();
+    private final AtomicInteger activeRunners = new AtomicInteger(0);
+    private final int maxRunners;
     private volatile boolean closed = false;
 
-    private static final AtomicInteger WORKER_ID = new AtomicInteger();
-
-    private static final class CacheGap {
-        final long blockIndex;
-        final long blockCount;
-
-        CacheGap(long blockIndex, long blockCount) {
-            this.blockIndex = blockIndex;
-            this.blockCount = blockCount;
-        }
-    }
-
     /**
-     * Creates a new asynchronous readahead worker with the specified configuration.
-     * 
-     * <p>The worker starts the specified number of background threads immediately, which will begin
-     * processing readahead requests as soon as they are scheduled. All threads are marked as daemon
-     * threads and will not prevent JVM shutdown.
-     * 
-     * @param queueCapacity the maximum number of readahead tasks that can be queued before backpressure is applied
-     * @param threads the number of worker threads to create for processing readahead requests
-     * @param blockCache the block cache implementation used for storing and retrieving cached blocks
+     * Creates a readahead worker with a bounded queue and limited parallel drainers.
+     *
+     * @param capacity   maximum queue size
+     * @param maxRunners maximum concurrent drain threads
+     * @param executor   shared executor service for running worker threads
+     * @param blockCache block cache for loading blocks
      */
-    public QueuingWorker(int queueCapacity, int threads, BlockCache<RefCountedMemorySegment> blockCache) {
-        this.queue = new LinkedBlockingDeque<>(queueCapacity);
-        this.queueCapacity = queueCapacity;
-        this.inFlight = ConcurrentHashMap.newKeySet();
+    public QueuingWorker(int capacity, int maxRunners, ExecutorService executor, BlockCache<RefCountedMemorySegment> blockCache) {
+        this.queue = new LinkedBlockingDeque<>(capacity);
+        this.capacity = capacity;
+        this.executor = executor;
         this.blockCache = blockCache;
-
-        this.executor = Executors.newFixedThreadPool(threads, r -> {
-            Thread t = new Thread(r, "readahead-worker-" + WORKER_ID.incrementAndGet());
-            t.setDaemon(true);
-            return t;
-        });
-
-        for (int i = 0; i < threads; i++) {
-            executor.submit(this::processLoop);
-        }
+        this.inFlight = ConcurrentHashMap.newKeySet();
+        this.maxRunners = Math.max(1, maxRunners);
+        LOGGER.info("Readahead worker initialized capacity={} maxRunners={}", capacity, maxRunners);
     }
 
     @Override
     public boolean schedule(Path path, long offset, long blockCount) {
         if (closed) {
-            if (LOGGER.isDebugEnabled()) {
-                LOGGER.debug("Schedule on closed worker path={} off={}", path, offset);
-            }
+            LOGGER.debug("Attempted schedule on closed worker path={} off={} blocks={}", path, offset, blockCount);
             return false;
         }
 
-        // Cache-aware scheduling: find uncached regions
-        List<CacheGap> uncachedGaps = findUncachedRanges(path, offset, blockCount);
-
-        if (uncachedGaps.isEmpty()) {
-            if (LOGGER.isDebugEnabled()) {
-                LOGGER.debug("All blocks cached, skipping: path={} off={} blocks={}", path, offset, blockCount);
+        // Split large requests into chunks to avoid blocking executor threads.
+        if (blockCount > MAX_BULK_SIZE) {
+            boolean allAccepted = true;
+            for (long i = 0; i < blockCount; i += MAX_BULK_SIZE) {
+                long chunkSize = Math.min(MAX_BULK_SIZE, blockCount - i);
+                long chunkOffset = offset + (i << CACHE_BLOCK_SIZE_POWER);
+                if (!scheduleChunk(path, chunkOffset, chunkSize)) {
+                    allAccepted = false;
+                }
             }
+            return allAccepted;
+        }
+
+        return scheduleChunk(path, offset, blockCount);
+    }
+
+    /**
+     * Internal method to schedule a single chunk (not exceeding MAX_BULK_SIZE).
+     */
+    private boolean scheduleChunk(Path path, long offset, long blockCount) {
+        final long blockStart = offset >>> CACHE_BLOCK_SIZE_POWER;
+        final long blockEnd = blockStart + blockCount;
+
+        if (blockCount <= 1) {
+            LOGGER.trace("Tiny readahead request path={} off={} blocks={}", path, offset, blockCount);
+        } else if (blockCount > LARGE_WINDOW_THRESHOLD) {
+            LOGGER.warn("Large readahead request path={} off={} blocks={} (possible runaway window)", path, offset, blockCount);
+        }
+
+        // Overlap detection
+        for (Task t : inFlight) {
+            if (!t.path.equals(path))
+                continue;
+            if (Math.max(blockStart, t.startBlock()) < Math.min(blockEnd, t.endBlock())) {
+                int dup = duplicateCounter.incrementAndGet();
+                if (dup == DUP_WARN_THRESHOLD) {
+                    LOGGER
+                        .warn(
+                            "Frequent duplicate readahead detected ({} overlaps so far). "
+                                + "Scheduling may be too aggressive or window too small.",
+                            dup
+                        );
+                }
+                return true; // skip duplicate
+            }
+        }
+
+        final Task task = new Task(path, offset, blockCount);
+        if (!inFlight.add(task)) {
+            LOGGER.trace("Task already in flight path={} off={} blocks={}", path, offset, blockCount);
             return true;
         }
 
-        // Consolidate gaps using initialWindow (4) as merge threshold
-        List<CacheGap> consolidatedGaps = consolidateGaps(uncachedGaps, 4);
-
-        if (LOGGER.isDebugEnabled()) {
-            LOGGER
-                .debug(
-                    "Cache gaps: path={} orig={} consolidated={} totalBlocks={}",
-                    path,
-                    uncachedGaps.size(),
-                    consolidatedGaps.size(),
-                    blockCount
-                );
-        }
-
-        // Schedule consolidated gaps
-        boolean allAccepted = true;
-        for (CacheGap gap : consolidatedGaps) {
-            boolean accepted = scheduleGap(path, gap);
-            allAccepted &= accepted;
-        }
-
-        return allAccepted;
-    }
-
-    /**
-     * Check if the given block range overlaps with any in-flight task.
-     * Uses exact overlap detection without padding for correctness.
-     */
-    private boolean hasOverlappingInFlight(Path path, long blockIndex, long blockCount) {
-        long end = blockIndex + blockCount;
-
-        for (ReadAheadTask task : inFlight) {
-            if (!task.path.equals(path)) {
-                continue;
-            }
-
-            long taskStart = task.offset >>> CACHE_BLOCK_SIZE_POWER;
-            long taskEnd = taskStart + task.blockCount;
-
-            // Standard interval overlap: [a,b) and [c,d) overlap if max(a,c) < min(b,d)
-            if (Math.max(blockIndex, taskStart) < Math.min(end, taskEnd)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Schedule a single cache gap for loading.
-     */
-    private boolean scheduleGap(Path path, CacheGap gap) {
-        // Check for overlapping in-flight tasks first
-        if (hasOverlappingInFlight(path, gap.blockIndex, gap.blockCount)) {
-            return true; // Treat as accepted (avoid duplicate work)
-        }
-
-        final long offset = gap.blockIndex << CACHE_BLOCK_SIZE_POWER;
-        final ReadAheadTask task = new ReadAheadTask(path, offset, gap.blockCount);
-        if (!inFlight.add(task)) {
-            return true; // Already queued (exact match)
-        }
-
         final boolean accepted = queue.offerLast(task);
-
         if (!accepted) {
             inFlight.remove(task);
             LOGGER
                 .warn(
-                    "Queue full, dropping gap path={} blockIdx={} blocks={} qsz={}/{}",
+                    "Readahead queue full, dropping task path={} off={} blocks={} qsz={}/{}",
                     path,
-                    gap.blockIndex,
-                    gap.blockCount,
+                    offset,
+                    blockCount,
                     queue.size(),
-                    queueCapacity
+                    capacity
                 );
             return false;
         }
 
+        // Start drainer if below concurrency cap
+        if (activeRunners.get() < maxRunners && activeRunners.incrementAndGet() <= maxRunners) {
+            executor.submit(this::drainLoop);
+        } else {
+            // if we raced over cap, undo increment
+            activeRunners.decrementAndGet();
+        }
+
         if (LOGGER.isDebugEnabled()) {
-            long length = gap.blockCount << CACHE_BLOCK_SIZE_POWER;
             LOGGER
                 .debug(
-                    "RA_ENQ_GAP path={} blockIdx={} off={} len={} blocks={} qsz={}/{} tns={}",
+                    "RA_ENQ path={} blocks=[{}-{}) off={} len={}B blocks={} qsz={}/{} inflight={}",
                     path,
-                    gap.blockIndex,
+                    blockStart,
+                    blockEnd,
                     offset,
-                    length,
-                    gap.blockCount,
+                    blockCount << CACHE_BLOCK_SIZE_POWER,
+                    blockCount,
                     queue.size(),
-                    queueCapacity,
-                    task.enqueuedNanos
+                    capacity,
+                    inFlight.size()
                 );
         }
         return true;
     }
 
-    /**
-     * Analyze cache coverage for a range and return uncached contiguous regions.
-     */
-    private List<CacheGap> findUncachedRanges(Path path, long startOffset, long blockCount) {
-        List<CacheGap> gaps = new ArrayList<>();
-        long startBlockIndex = startOffset >>> CACHE_BLOCK_SIZE_POWER;
-        long currentGapStartIndex = -1;
-
-        for (long i = 0; i < blockCount; i++) {
-            long blockIndex = startBlockIndex + i;
-            long blockOffset = blockIndex << CACHE_BLOCK_SIZE_POWER;
-            BlockCacheKey key = new FileBlockCacheKey(path, blockOffset);
-
-            if (blockCache.get(key) != null) {
-                if (currentGapStartIndex == -1) {
-                    // Start of new gap
-                    currentGapStartIndex = blockIndex;
+    /** Drains tasks from the queue in batches. */
+    private void drainLoop() {
+        try {
+            while (!closed) {
+                final Task task = queue.pollFirst(100, TimeUnit.MILLISECONDS);
+                if (task == null)
+                    break; // queue empty
+                processOne(task);
+            }
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        } finally {
+            activeRunners.decrementAndGet();
+            if (!closed && !queue.isEmpty() && activeRunners.get() < maxRunners) {
+                if (activeRunners.incrementAndGet() <= maxRunners) {
+                    executor.submit(this::drainLoop);
                 }
-                // Gap continues (no action needed)
-            } else if (currentGapStartIndex != -1) {
-                // End of gap - record it
-                long gapBlocks = blockIndex - currentGapStartIndex;
-                gaps.add(new CacheGap(currentGapStartIndex, gapBlocks));
-                currentGapStartIndex = -1;
             }
         }
-
-        // Handle final gap
-        if (currentGapStartIndex != -1) {
-            long gapBlocks = (startBlockIndex + blockCount) - currentGapStartIndex;
-            gaps.add(new CacheGap(currentGapStartIndex, gapBlocks));
-        }
-
-        return gaps;
     }
 
-    /**
-     * Consolidate nearby uncached regions using initialWindow as merge threshold.
-     * If gap between regions <= initialWindow blocks, merge them.
-     */
-    private List<CacheGap> consolidateGaps(List<CacheGap> rawGaps, int mergeThreshold) {
-        if (rawGaps.isEmpty()) {
-            return rawGaps;
-        }
-
-        List<CacheGap> consolidated = new ArrayList<>();
-        CacheGap current = rawGaps.get(0);
-
-        for (int i = 1; i < rawGaps.size(); i++) {
-            CacheGap next = rawGaps.get(i);
-
-            // Compute where the current gap ends (in block indices)
-            long currentEnd = current.blockIndex + current.blockCount;
-
-            // Gap between current and next (in blocks)
-            long gapBetweenBlocks = next.blockIndex - currentEnd;
-
-            if (gapBetweenBlocks <= mergeThreshold) {
-                // Merge: small gap, extend current to cover next
-                long nextEnd = next.blockIndex + next.blockCount;
-                long mergedBlockCount = nextEnd - current.blockIndex;
-
-                current = new CacheGap(current.blockIndex, mergedBlockCount);
-            } else {
-                // Split: large gap, keep current and move on
-                consolidated.add(current);
-                current = next;
-            }
-        }
-
-        consolidated.add(current);
-        return consolidated;
-    }
-
-    private void processLoop() {
-        if (LOGGER.isTraceEnabled()) {
-            LOGGER.trace("Starting readahead worker thread: {}", Thread.currentThread().getName());
-        }
-
-        while (!closed) {
-            try {
-                ReadAheadTask task = queue.takeFirst();
-
-                task.startNanos = System.nanoTime();
-
-                // bulk load the block.
-                blockCache.loadBulk(task.path, task.offset, task.blockCount);
-                task.doneNanos = System.nanoTime();
-
-                inFlight.remove(task);
-
-                long blockStart = task.offset >>> CACHE_BLOCK_SIZE_POWER;
-                long blockEnd = blockStart + task.blockCount - 1;
+    /** Processes a single readahead task. */
+    private void processOne(Task task) {
+        try {
+            task.startNanos = System.nanoTime();
+            final long queueDelayNs = task.startNanos - task.enqueuedNanos;
+            if (queueDelayNs > TimeUnit.MILLISECONDS.toNanos(50)) {
                 LOGGER
                     .debug(
-                        "RA_IO_DONE_BULK path={} blockRange=[{}-{}] off={} len={} blocks={} io_ms={} qsz={}/{}",
+                        "High queue wait path={} wait_ms={} qsz={}/{} inflight={}",
                         task.path,
-                        blockStart,
-                        blockEnd,
-                        task.offset,
-                        task.blockCount << CACHE_BLOCK_SIZE_POWER,
-                        task.blockCount,
-                        (task.doneNanos - task.startNanos) / 1_000_000L,
+                        queueDelayNs / 1_000_000,
                         queue.size(),
-                        queueCapacity
+                        capacity,
+                        inFlight.size()
                     );
-
-            } catch (InterruptedException ie) {
-                if (!closed) {
-                    LOGGER.warn("Readahead worker thread interrupted: {}", Thread.currentThread().getName());
-                }
-                Thread.currentThread().interrupt();
-                return;
-            } catch (NoSuchFileException e) {
-                LOGGER.debug("File not found during readahead", e);
-            } catch (IOException | UncheckedIOException e) {
-                LOGGER.warn("Failed to prefetch", e);
             }
-        }
 
-        LOGGER.info("Readahead worker thread exiting: {}", Thread.currentThread().getName());
+            blockCache.loadBulk(task.path, task.offset, task.blockCount);
+
+            task.doneNanos = System.nanoTime();
+            inFlight.remove(task);
+
+            final long ioMs = (task.doneNanos - task.startNanos) / 1_000_000;
+            final long startBlock = task.startBlock();
+            final long endBlock = task.endBlock();
+
+            if (ioMs > 500) {
+                LOGGER
+                    .warn(
+                        "Slow readahead I/O path={} blocks=[{}-{}) count={} took={}ms qsz={}/{} inflight={}",
+                        task.path,
+                        startBlock,
+                        endBlock,
+                        task.blockCount,
+                        ioMs,
+                        queue.size(),
+                        capacity,
+                        inFlight.size()
+                    );
+            }
+
+            LOGGER
+                .debug(
+                    "RA_IO_DONE path={} blocks=[{}-{}) count={} off={} len={}B io_ms={} qsz={}/{} inflight={}",
+                    task.path,
+                    startBlock,
+                    endBlock,
+                    task.blockCount,
+                    task.offset,
+                    task.blockCount << CACHE_BLOCK_SIZE_POWER,
+                    ioMs,
+                    queue.size(),
+                    capacity,
+                    inFlight.size()
+                );
+
+        } catch (NoSuchFileException e) {
+            inFlight.remove(task);
+            LOGGER.debug("File not found during readahead path={}", task.path);
+        } catch (IOException | UncheckedIOException e) {
+            inFlight.remove(task);
+            LOGGER.warn("Readahead failed path={} msg={}", task.path, e.getMessage(), e);
+        } catch (RuntimeException e) {
+            inFlight.remove(task);
+            throw e;
+        }
     }
 
     @Override
     public void cancel(Path path) {
-        queue.removeIf(task -> task.path.equals(path));
-        inFlight.removeIf(task -> task.path.equals(path));
+        boolean qRemoved = queue.removeIf(t -> t.path.equals(path));
+        boolean fRemoved = inFlight.removeIf(t -> t.path.equals(path));
+        if (qRemoved || fRemoved) {
+            LOGGER.debug("Cancelled readahead path={} removedQueued={} removedInFlight={}", path, qRemoved, fRemoved);
+        }
     }
 
     @Override
@@ -381,19 +314,10 @@ public class QueuingWorker implements Worker {
 
     @Override
     public void close() {
+        if (closed)
+            return;
         closed = true;
-        executor.shutdownNow();
         queue.clear();
         inFlight.clear();
-
-        // Wait for executor to terminate
-        try {
-            if (!executor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
-                LOGGER.warn("Readahead worker executor did not terminate within 5 seconds");
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            LOGGER.warn("Interrupted while waiting for readahead worker executor to terminate");
-        }
     }
 }

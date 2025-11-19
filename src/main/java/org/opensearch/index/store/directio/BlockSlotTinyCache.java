@@ -72,6 +72,28 @@ import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 
 public class BlockSlotTinyCache {
 
+    /**
+     * Result of a cache lookup operation, containing both the value and hit/miss information.
+     * This allows the read-ahead manager to track cache effectiveness.
+     */
+    public static final class LookupResult {
+        private final BlockCacheValue<RefCountedMemorySegment> value;
+        private final boolean cacheHit;
+
+        LookupResult(BlockCacheValue<RefCountedMemorySegment> value, boolean cacheHit) {
+            this.value = value;
+            this.cacheHit = cacheHit;
+        }
+
+        public BlockCacheValue<RefCountedMemorySegment> value() {
+            return value;
+        }
+
+        public boolean wasCacheHit() {
+            return cacheHit;
+        }
+    }
+
     // 32 slots provides good hit rate while keeping memory footprint tiny (~8KB with padding).
     // fits easily into cpu LI cache.
     private static final int SLOT_COUNT = 32;
@@ -147,9 +169,9 @@ public class BlockSlotTinyCache {
     }
 
     /**
-     * Returns an already-pinned block. Caller "must" unpin() when done.
+     * Returns an already-pinned block with hit/miss information. Caller "must" unpin() when done.
      */
-    public BlockCacheValue<RefCountedMemorySegment> acquireRefCountedValue(long blockOff) throws IOException {
+    public LookupResult acquireRefCountedValue(long blockOff) throws IOException {
 
         final long blockIdx = blockOff >>> CACHE_BLOCK_SIZE_POWER;
 
@@ -158,7 +180,7 @@ public class BlockSlotTinyCache {
             BlockCacheValue<RefCountedMemorySegment> v = last.val;
             // Generation check ensures the pooled segment wasn't recycled and reused.
             if (v != null && v.value().getGeneration() == last.generation && v.tryPin()) {
-                return v;
+                return new LookupResult(v, true); // Thread-local MRU hit
             }
         }
 
@@ -180,7 +202,7 @@ public class BlockSlotTinyCache {
                     last.blockIdx = blockIdx;
                     last.val = v;
                     last.generation = currentGen;
-                    return v;
+                    return new LookupResult(v, true); // Slot cache hit
                 }
             }
         }
@@ -189,6 +211,7 @@ public class BlockSlotTinyCache {
         // This path is slower but unavoidable for true cache misses or highly contended blocks.
         final int maxAttempts = 10;
         BlockCacheValue<RefCountedMemorySegment> val = null;
+        boolean wasInCache = false;
 
         // KEY REUSE OPTIMIZATION:
         // FileBlockCacheKey is small but not free to allocate. Since we're hashing by slot,
@@ -210,6 +233,9 @@ public class BlockSlotTinyCache {
             if (val == null) {
                 // Not in cache at all - load from disk (decrypt, decompress if needed)
                 val = cache.getOrLoad(key);
+                wasInCache = false; // Had to load from disk
+            } else {
+                wasInCache = true; // Found in main cache
             }
 
             if (val != null && val.tryPin()) {
@@ -224,7 +250,7 @@ public class BlockSlotTinyCache {
                 last.val = val;
                 last.generation = gen;
 
-                return val;
+                return new LookupResult(val, wasInCache);
             }
 
             // todo: we can also use thread-spin-wait
