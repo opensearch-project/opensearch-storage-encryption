@@ -167,8 +167,13 @@ public final class PoolBuilder {
         reservedPoolSizeInBytes = (reservedPoolSizeInBytes / CACHE_BLOCK_SIZE) * CACHE_BLOCK_SIZE;
         long maxBlocks = reservedPoolSizeInBytes / CACHE_BLOCK_SIZE;
 
-        double cacheToPoolRatio = PoolSizeCalculator.NODE_CACHE_TO_POOL_RATIO_SETTING.get(settings);
-        double warmupPercentage = PoolSizeCalculator.NODE_WARMUP_PERCENTAGE_SETTING.get(settings);
+        // Calculate off-heap memory for tiered cache ratio and warmup
+        long maxHeap = Runtime.getRuntime().maxMemory();
+        long totalPhysical = org.opensearch.monitor.os.OsProbe.getInstance().getTotalPhysicalMemorySize();
+        long offHeap = Math.max(0, totalPhysical - maxHeap);
+
+        double cacheToPoolRatio = PoolSizeCalculator.calculateCacheToPoolRatio(offHeap, settings);
+        double warmupPercentage = PoolSizeCalculator.calculateWarmupPercentage(offHeap, settings);
 
         Pool<RefCountedMemorySegment> segmentPool = new MemorySegmentPool(reservedPoolSizeInBytes, CACHE_BLOCK_SIZE);
         LOGGER

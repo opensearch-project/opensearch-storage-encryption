@@ -32,20 +32,80 @@ public final class PoolSizeCalculator {
     /**
      * Ratio of cache size to pool size.
      * cache_size = pool_size * ratio
-     * Default 0.75 means cache is 75% of pool size (enables constant recycling with 25% buffer).
+     * This setting can be overridden, but if not set, automatic tiering based on off-heap size applies.
      */
     public static final Setting<Double> NODE_CACHE_TO_POOL_RATIO_SETTING = Setting
         .doubleSetting("node.store.crypto.cache_to_pool_ratio", 0.75, 0.1, 1.0, Property.NodeScope);
 
+    /** Threshold for small instance: 10 GB off-heap memory */
+    private static final long SMALL_INSTANCE_THRESHOLD_GB = 10;
+    private static final long MEDIUM_INSTANCE_THRESHOLD_GB = 32;
+
     /**
      * Percentage of cache blocks to warmup at initialization.
-     * Default is 0.2 (20% of blocks pre-allocated).
      */
     public static final Setting<Double> NODE_WARMUP_PERCENTAGE_SETTING = Setting
-        .doubleSetting("node.store.crypto.warmup_percentage", 0.2, 0.0, 1.0, Property.NodeScope);
+        .doubleSetting("node.store.crypto.warmup_percentage", 0.05, 0.0, 1.0, Property.NodeScope);
 
     private static final long MB_TO_BYTES = 1024L * 1024L;
     private static final long GB_TO_BYTES = 1024L * 1024L * 1024L;
+
+    /**
+     * Calculates the cache-to-pool ratio based on off-heap memory size.
+     *
+     * @param offHeapBytes the available off-heap memory in bytes
+     * @param settings the node settings for configuration
+     * @return the calculated cache-to-pool ratio
+     */
+    public static double calculateCacheToPoolRatio(long offHeapBytes, Settings settings) {
+        if (settings.hasValue(NODE_CACHE_TO_POOL_RATIO_SETTING.getKey())) {
+            return NODE_CACHE_TO_POOL_RATIO_SETTING.get(settings);
+        }
+
+        // Apply tiered ratio based on off-heap size
+        long offHeapGB = offHeapBytes / GB_TO_BYTES;
+        if (offHeapGB < SMALL_INSTANCE_THRESHOLD_GB) {
+            double lowCacheToPoolRatio = 0.5;
+            LOGGER
+                .info(
+                    "Instance with low offheap (off-heap={} GB < {} GB), using reduced {} cache-to-pool ratio",
+                    offHeapGB,
+                    SMALL_INSTANCE_THRESHOLD_GB
+                );
+            return lowCacheToPoolRatio;
+        }
+
+        // Default ratio for large instances - query from setting default
+        return NODE_CACHE_TO_POOL_RATIO_SETTING.get(settings);
+    }
+
+    /**
+     * Calculates the warmup percentage based on off-heap memory size.
+     *
+     * @param offHeapBytes the available off-heap memory in bytes
+     * @param settings the node settings for configuration
+     * @return the calculated warmup percentage
+     */
+    public static double calculateWarmupPercentage(long offHeapBytes, Settings settings) {
+        // Check if user has explicitly set the warmup percentage
+        if (settings.hasValue(NODE_WARMUP_PERCENTAGE_SETTING.getKey())) {
+            return NODE_WARMUP_PERCENTAGE_SETTING.get(settings);
+        }
+
+        long offHeapGB = offHeapBytes / GB_TO_BYTES;
+        if (offHeapGB < MEDIUM_INSTANCE_THRESHOLD_GB) {
+            LOGGER
+                .info(
+                    "Instance with low offheap (off-heap={} GB < {} GB), disabling warmup (0%) to reduce initial memory pressure",
+                    offHeapGB,
+                    MEDIUM_INSTANCE_THRESHOLD_GB
+                );
+            return 0.0;
+        }
+
+        // Default warmup for large instances - query from setting default
+        return NODE_WARMUP_PERCENTAGE_SETTING.get(settings);
+    }
 
     /**
      * Calculates the pool size based on off-heap memory.
