@@ -297,19 +297,65 @@ public class MasterKeyHealthMonitor {
      * due to unavailable encryption keys. This allows RED indices to automatically
      * recover once keys become available again.
      * 
+     * Uses virtual threads for non-blocking execution with exponential backoff retry.
+     * 
      * @param recoveredCount number of indices recovered
      */
     private void triggerShardRetry(int recoveredCount) {
-        try {
-            ClusterRerouteRequest request = new ClusterRerouteRequest();
-            request.setRetryFailed(true);
+        // Use virtual thread - lightweight, no thread pool needed
+        Thread.startVirtualThread(() -> {
+            retryWithBackoff(() -> {
+                ClusterRerouteRequest request = new ClusterRerouteRequest();
+                request.setRetryFailed(true);
+                client.admin().cluster().reroute(request).actionGet();
+                logger.info("Successfully triggered shard retry for {} recovered indices", recoveredCount);
+                return true;
+            },
+                3,  // max attempts
+                1000,  // initial delay ms
+                "shard retry"
+            );
+        });
+    }
 
-            client.admin().cluster().reroute(request).actionGet();
+    /**
+     * Retries an operation with exponential backoff.
+     * 
+     * @param operation the operation to retry
+     * @param maxAttempts maximum number of retry attempts
+     * @param initialDelayMs initial delay in milliseconds
+     * @param operationName name for logging
+     * @return true if operation succeeded, false otherwise
+     */
+    private boolean retryWithBackoff(
+        java.util.function.Supplier<Boolean> operation,
+        int maxAttempts,
+        long initialDelayMs,
+        String operationName
+    ) {
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                return operation.get();
+            } catch (Exception e) {
+                if (attempt == maxAttempts) {
+                    logger.warn("Failed {} after {} attempts: {}", operationName, maxAttempts, e.getMessage());
+                    return false;
+                }
 
-        } catch (Exception e) {
-            logger.warn("Failed to trigger shard retry: {}", e.getMessage());
-            // Non-fatal - shards will recover on next allocation round
+                // Exponential backoff: 1s, 2s, 4s, ...
+                long delay = initialDelayMs * (1L << (attempt - 1));
+                logger.debug("Retry attempt {} for {} failed, retrying after {}ms: {}", attempt, operationName, delay, e.getMessage());
+
+                try {
+                    Thread.sleep(delay);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    logger.warn("Interrupted during {} retry backoff", operationName);
+                    return false;
+                }
+            }
         }
+        return false;
     }
 
     /**
