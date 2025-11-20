@@ -366,19 +366,16 @@ public class MasterKeyHealthMonitor {
                     // Try to load THIS index's specific key (validates MasterKey Provider connectivity)
                     Key key = ((DefaultKeyResolver) resolver).loadKeyFromMasterKeyProvider();
 
-                    // Success! Check if this index was previously blocked
-                    FailureState state = failureTracker.get(indexUuid);
-                    if (state != null && state.blocksApplied) {
-                        // Was blocked, now recovered
-                        if (hasBlocks(indexName)) {
-                            removeBlocks(indexName);
-                        }
-                        failureTracker.remove(indexUuid);
+                    // Success! Remove blocks if they exist
+                    if (hasBlocks(indexName)) {
+                        removeBlocks(indexName);
                         recoveredCount++;
                     } else {
-                        // Was healthy, still healthy (proactive validation)
                         healthyCount++;
                     }
+
+                    // Clean up failure tracker if index was being tracked
+                    failureTracker.remove(indexUuid);
 
                 } catch (Exception e) {
                     // Key load failed for THIS index
