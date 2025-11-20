@@ -151,6 +151,7 @@ public class DefaultKeyResolver implements KeyResolver {
             CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, this.indexUuid);
         } catch (IllegalStateException e) {
             // CryptoMetricsService not initialized - acceptable in test environments
+            // TODO: initialize CryptoMetricsService for tests too
             LOGGER.debug("CryptoMetricsService not available: {}", e.getMessage());
         }
     }

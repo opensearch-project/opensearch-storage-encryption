@@ -61,6 +61,9 @@ public class MasterKeyHealthMonitor {
     private static final long HEALTH_CHECK_INITIAL_DELAY_MAX_SECONDS = 300;
     private static final long HEALTH_CHECK_INTERVAL_SECONDS = 3600;
 
+    // Grace period between write and read block (allows in-flight reads to complete)
+    private static final long BLOCK_GRACE_PERIOD_SECONDS = 10;
+
     /**
      * Tracks failure state for an index and block status.
      */
@@ -224,8 +227,9 @@ public class MasterKeyHealthMonitor {
     }
 
     /**
-     * Applies read and write blocks to the specified index to prevent all operations 
-     * when encryption key is unavailable.
+     * Applies read and write blocks sequentially to allow graceful degradation.
+     * First applies write block to prevent new data, waits for a grace period to allow
+     * in-flight reads to complete using cached keys, then applies read block for full protection.
      * 
      * @param indexName the index name
      */
@@ -235,11 +239,25 @@ public class MasterKeyHealthMonitor {
                 return;
             }
 
-            // Apply both read and write blocks
-            Settings settings = Settings.builder().put("index.blocks.read", true).put("index.blocks.write", true).build();
+            // Apply write block first: prevents new writes that would need encryption keys
+            Settings writeBlockSettings = Settings.builder().put("index.blocks.write", true).build();
+            UpdateSettingsRequest writeBlockRequest = new UpdateSettingsRequest(writeBlockSettings, indexName);
+            client.admin().indices().updateSettings(writeBlockRequest).actionGet();
+            logger.info("Applied write block to index {}", indexName);
 
-            UpdateSettingsRequest request = new UpdateSettingsRequest(settings, indexName);
-            client.admin().indices().updateSettings(request).actionGet();
+            // Grace period: allow in-flight reads to complete
+            try {
+                Thread.sleep(BLOCK_GRACE_PERIOD_SECONDS * 1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+
+            // Apply read block for full protection
+            Settings readBlockSettings = Settings.builder().put("index.blocks.read", true).build();
+            UpdateSettingsRequest readBlockRequest = new UpdateSettingsRequest(readBlockSettings, indexName);
+            client.admin().indices().updateSettings(readBlockRequest).actionGet();
+            logger.info("Applied read block to index {} after grace period", indexName);
+
         } catch (Exception e) {
             logger.error("Failed to apply blocks to index {}: {}", indexName, e.getMessage(), e);
         }
