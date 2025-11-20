@@ -254,7 +254,6 @@ public class MasterKeyHealthMonitor {
                     Settings readBlockSettings = Settings.builder().put("index.blocks.read", true).build();
                     UpdateSettingsRequest readBlockRequest = new UpdateSettingsRequest(readBlockSettings, indexName);
                     client.admin().indices().updateSettings(readBlockRequest);
-                    logger.info("Applied read block to index {} after grace period", indexName);
                 } catch (Exception e) {
                     logger.error("Failed to apply read block to index {}: {}", indexName, e.getMessage());
                 }
@@ -344,13 +343,11 @@ public class MasterKeyHealthMonitor {
 
                 // Exponential backoff: 1s, 2s, 4s, ...
                 long delay = initialDelayMs * (1L << (attempt - 1));
-                logger.debug("Retry attempt {} for {} failed, retrying after {}ms: {}", attempt, operationName, delay, e.getMessage());
 
                 try {
                     Thread.sleep(delay);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
-                    logger.warn("Interrupted during {} retry backoff", operationName);
                     return false;
                 }
             }
