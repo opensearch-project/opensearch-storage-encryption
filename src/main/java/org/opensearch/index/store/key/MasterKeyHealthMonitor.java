@@ -228,8 +228,10 @@ public class MasterKeyHealthMonitor {
 
     /**
      * Applies read and write blocks sequentially to allow graceful degradation.
-     * First applies write block to prevent new data, waits for a grace period to allow
-     * in-flight reads to complete using cached keys, then applies read block for full protection.
+     * First applies write block to prevent new data, schedules read block after a grace period
+     * to allow in-flight reads to complete using cached keys.
+     * 
+     * Operations are async to avoid blocking the health check thread.
      * 
      * @param indexName the index name
      */
@@ -239,33 +241,35 @@ public class MasterKeyHealthMonitor {
                 return;
             }
 
-            // Apply write block first: prevents new writes that would need encryption keys
+            // Apply write block first - prevents new writes that would need encryption keys
+            // Async: don't wait for cluster state update
             Settings writeBlockSettings = Settings.builder().put("index.blocks.write", true).build();
             UpdateSettingsRequest writeBlockRequest = new UpdateSettingsRequest(writeBlockSettings, indexName);
-            client.admin().indices().updateSettings(writeBlockRequest).actionGet();
+            client.admin().indices().updateSettings(writeBlockRequest);
             logger.info("Applied write block to index {}", indexName);
 
-            // Grace period: allow in-flight reads to complete
-            try {
-                Thread.sleep(BLOCK_GRACE_PERIOD_SECONDS * 1000);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-
-            // Apply read block for full protection
-            Settings readBlockSettings = Settings.builder().put("index.blocks.read", true).build();
-            UpdateSettingsRequest readBlockRequest = new UpdateSettingsRequest(readBlockSettings, indexName);
-            client.admin().indices().updateSettings(readBlockRequest).actionGet();
-            logger.info("Applied read block to index {} after grace period", indexName);
+            // Step 2: Schedule read block after grace period on existing executor
+            healthCheckExecutor.schedule(() -> {
+                try {
+                    Settings readBlockSettings = Settings.builder().put("index.blocks.read", true).build();
+                    UpdateSettingsRequest readBlockRequest = new UpdateSettingsRequest(readBlockSettings, indexName);
+                    client.admin().indices().updateSettings(readBlockRequest);
+                    logger.info("Applied read block to index {} after grace period", indexName);
+                } catch (Exception e) {
+                    logger.error("Failed to apply read block to index {}: {}", indexName, e.getMessage());
+                }
+            }, BLOCK_GRACE_PERIOD_SECONDS, TimeUnit.SECONDS);
 
         } catch (Exception e) {
-            logger.error("Failed to apply blocks to index {}: {}", indexName, e.getMessage(), e);
+            logger.error("Failed to apply write block to index {}: {}", indexName, e.getMessage(), e);
         }
     }
 
     /**
      * Removes read and write blocks from the specified index when the encryption key 
      * becomes available again. This restores full access after key recovery.
+     * 
+     * Operations are async to avoid blocking the health check thread.
      * 
      * @param indexName the index name
      */
@@ -276,10 +280,12 @@ public class MasterKeyHealthMonitor {
             }
 
             // Remove both read and write blocks
+            // Async: don't wait for cluster state update
             Settings settings = Settings.builder().putNull("index.blocks.read").putNull("index.blocks.write").build();
-
             UpdateSettingsRequest request = new UpdateSettingsRequest(settings, indexName);
-            client.admin().indices().updateSettings(request).actionGet();
+            client.admin().indices().updateSettings(request);
+
+            logger.info("Removed blocks from index {}", indexName);
 
         } catch (Exception e) {
             logger.error("Failed to remove blocks from index {}: {}", indexName, e.getMessage(), e);
