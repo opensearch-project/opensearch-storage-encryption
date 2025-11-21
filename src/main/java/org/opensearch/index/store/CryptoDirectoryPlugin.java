@@ -14,9 +14,13 @@ import java.util.Optional;
 import java.util.function.Supplier;
 
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
+import org.opensearch.cluster.node.DiscoveryNodes;
 import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.common.settings.ClusterSettings;
+import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.common.settings.SettingsFilter;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
@@ -32,12 +36,17 @@ import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
 import org.opensearch.index.store.pool.PoolSizeCalculator;
+import org.opensearch.index.store.rest.RestRegisterCryptoAction;
+import org.opensearch.index.store.rest.RestUnregisterCryptoAction;
 import org.opensearch.indices.cluster.IndicesClusterStateService.AllocatedIndices.IndexRemovalReason;
+import org.opensearch.plugins.ActionPlugin;
 import org.opensearch.plugins.EnginePlugin;
 import org.opensearch.plugins.IndexStorePlugin;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.plugins.TelemetryAwarePlugin;
 import org.opensearch.repositories.RepositoriesService;
+import org.opensearch.rest.RestController;
+import org.opensearch.rest.RestHandler;
 import org.opensearch.script.ScriptService;
 import org.opensearch.telemetry.metrics.MetricsRegistry;
 import org.opensearch.telemetry.tracing.Tracer;
@@ -48,7 +57,7 @@ import org.opensearch.watcher.ResourceWatcherService;
 /**
  * A plugin that enables index level encryption and decryption.
  */
-public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, EnginePlugin, TelemetryAwarePlugin {
+public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, EnginePlugin, TelemetryAwarePlugin, ActionPlugin {
     private NodeEnvironment nodeEnvironment;
 
     /**
@@ -139,6 +148,19 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         // the shared pool is initilized only when atleast one index
         // level enc enabled index is created.
         CryptoDirectoryFactory.closeSharedPool();
+    }
+
+    @Override
+    public List<RestHandler> getRestHandlers(
+        Settings settings,
+        RestController restController,
+        ClusterSettings clusterSettings,
+        IndexScopedSettings indexScopedSettings,
+        SettingsFilter settingsFilter,
+        IndexNameExpressionResolver indexNameExpressionResolver,
+        Supplier<DiscoveryNodes> nodesInCluster
+    ) {
+        return Arrays.asList(new RestRegisterCryptoAction(), new RestUnregisterCryptoAction());
     }
 
     @Override
