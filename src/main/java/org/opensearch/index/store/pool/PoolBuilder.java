@@ -4,8 +4,6 @@
  */
 package org.opensearch.index.store.pool;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
-
 import java.io.Closeable;
 import java.time.Duration;
 
@@ -15,6 +13,7 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheBuilder;
+import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
 
 /**
  * Builder for creating shared pool and cache resources with proper lifecycle management.
@@ -170,6 +169,9 @@ public final class PoolBuilder {
         // Calculate off-heap memory for tiered cache ratio and warmup
         long maxHeap = Runtime.getRuntime().maxMemory();
         long totalPhysical = org.opensearch.monitor.os.OsProbe.getInstance().getTotalPhysicalMemorySize();
+        if (totalPhysical <= 0) {
+            throw new IllegalStateException("Failed to calculate instance's physical memory, bailing out...: " + totalPhysical);
+        }
         long offHeap = Math.max(0, totalPhysical - maxHeap);
 
         double cacheToPoolRatio = PoolSizeCalculator.calculateCacheToPoolRatio(offHeap, settings);
