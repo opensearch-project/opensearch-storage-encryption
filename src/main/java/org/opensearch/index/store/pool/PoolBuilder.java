@@ -8,6 +8,9 @@ import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SI
 
 import java.io.Closeable;
 import java.time.Duration;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -35,7 +38,8 @@ public final class PoolBuilder {
     /**
      * Container for shared pool resources with lifecycle management.
      * This class holds references to the shared memory segment pool, block cache,
-     * telemetry thread, and cache removal executor, providing proper cleanup when closed.
+     * telemetry thread, cache removal executor, and read-ahead executor service,
+     * providing proper cleanup when closed.
      */
     public static class PoolResources implements Closeable {
         private final Pool<RefCountedMemorySegment> segmentPool;
@@ -43,19 +47,22 @@ public final class PoolBuilder {
         private final long maxCacheBlocks;
         private final TelemetryThread telemetry;
         private final java.util.concurrent.ThreadPoolExecutor removalExecutor;
+        private final ExecutorService readAheadExecutor;
 
         PoolResources(
             Pool<RefCountedMemorySegment> segmentPool,
             BlockCache<RefCountedMemorySegment> blockCache,
             long maxCacheBlocks,
             TelemetryThread telemetry,
-            java.util.concurrent.ThreadPoolExecutor removalExecutor
+            java.util.concurrent.ThreadPoolExecutor removalExecutor,
+            ExecutorService readAheadExecutor
         ) {
             this.segmentPool = segmentPool;
             this.blockCache = blockCache;
             this.maxCacheBlocks = maxCacheBlocks;
             this.telemetry = telemetry;
             this.removalExecutor = removalExecutor;
+            this.readAheadExecutor = readAheadExecutor;
         }
 
         /**
@@ -86,7 +93,17 @@ public final class PoolBuilder {
         }
 
         /**
-         * Closes the shared pool resources, stops the telemetry thread, and shuts down the removal executor.
+         * Returns the shared read-ahead executor service.
+         * This executor is shared across all per-shard workers for thread reuse while maintaining queue isolation.
+         *
+         * @return the read-ahead executor service
+         */
+        public ExecutorService getReadAheadExecutor() {
+            return readAheadExecutor;
+        }
+
+        /**
+         * Closes the shared pool resources, stops the telemetry thread, and shuts down executors.
          */
         @Override
         public void close() {
@@ -102,6 +119,17 @@ public final class PoolBuilder {
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     removalExecutor.shutdownNow();
+                }
+            }
+            if (readAheadExecutor != null) {
+                readAheadExecutor.shutdown();
+                try {
+                    if (!readAheadExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        readAheadExecutor.shutdownNow();
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    readAheadExecutor.shutdownNow();
                 }
             }
         }
@@ -203,9 +231,20 @@ public final class PoolBuilder {
         java.util.concurrent.ThreadPoolExecutor removalExecutor = cacheWithExecutor.getExecutor();
         LOGGER.info("Creating shared block cache with blocks={}", maxCacheBlocks);
 
+        // Create shared read-ahead executor service
+        // Each per-shard worker will have its own queue but share these threads
+        int threads = Math.max(8, Runtime.getRuntime().availableProcessors() / 4);
+        AtomicInteger threadId = new AtomicInteger();
+        ExecutorService readAheadExecutor = Executors.newFixedThreadPool(threads, r -> {
+            Thread t = new Thread(r, "readahead-worker-" + threadId.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        });
+        LOGGER.info("Creating shared read-ahead executor with threads={}", threads);
+
         // Start telemetry
         TelemetryThread telemetry = new TelemetryThread(segmentPool, blockCache);
 
-        return new PoolResources(segmentPool, blockCache, maxCacheBlocks, telemetry, removalExecutor);
+        return new PoolResources(segmentPool, blockCache, maxCacheBlocks, telemetry, removalExecutor, readAheadExecutor);
     }
 }

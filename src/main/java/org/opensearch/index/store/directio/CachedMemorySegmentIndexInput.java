@@ -181,7 +181,9 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         }
 
         // BlockSlotTinyCache returns already-pinned values
-        BlockCacheValue<RefCountedMemorySegment> cacheValue = blockSlotTinyCache.acquireRefCountedValue(blockOffset);
+        BlockSlotTinyCache.LookupResult result = blockSlotTinyCache.acquireRefCountedValue(blockOffset);
+        BlockCacheValue<RefCountedMemorySegment> cacheValue = result.value();
+        boolean wasCacheHit = result.wasCacheHit();
 
         if (cacheValue == null) {
             throw new IOException("Failed to acquire cache value for block at offset " + blockOffset);
@@ -197,10 +199,9 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         currentBlockOffset = blockOffset;
         currentBlock = cacheValue;
 
-        // Notify readahead manager (if needed)
-        // if (readaheadManager != null && readaheadContext != null) {
-        // readaheadManager.onCacheMiss(readaheadContext, blockOffset);
-        // }
+        if (readaheadContext != null) {
+            readaheadContext.onAccess(blockOffset, wasCacheHit);
+        }
 
         lastOffsetInBlock = offsetInBlock;
         return pinnedBlock.segment();

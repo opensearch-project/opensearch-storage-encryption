@@ -362,9 +362,10 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             resources.getMaxCacheBlocks()
         );
 
-        // Create read-ahead worker for asynchronous prefetching
-        int threads = Math.max(4, Runtime.getRuntime().availableProcessors() / 4);
-        Worker readaheadWorker = new QueuingWorker(READ_AHEAD_QUEUE_SIZE, threads, directoryCache);
+        // Create per-shard worker with isolated queue but shared executor threads
+        // Limit concurrent drainers per shard to prevent overwhelming the shared pool
+        int maxRunners = Math.max(2, Runtime.getRuntime().availableProcessors() / 8);
+        Worker readaheadWorker = new QueuingWorker(READ_AHEAD_QUEUE_SIZE, maxRunners, poolResources.getReadAheadExecutor(), directoryCache);
 
         return new CryptoDirectIODirectory(
             location,
