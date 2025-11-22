@@ -31,7 +31,6 @@ import org.opensearch.index.store.key.MasterKeyHealthMonitor;
 import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
-import org.opensearch.index.store.pool.PoolBuilder;
 import org.opensearch.index.store.pool.PoolSizeCalculator;
 import org.opensearch.indices.cluster.IndicesClusterStateService.AllocatedIndices.IndexRemovalReason;
 import org.opensearch.plugins.EnginePlugin;
@@ -50,7 +49,6 @@ import org.opensearch.watcher.ResourceWatcherService;
  * A plugin that enables index level encryption and decryption.
  */
 public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, EnginePlugin, TelemetryAwarePlugin {
-    private PoolBuilder.PoolResources sharedPoolResources;
     private NodeEnvironment nodeEnvironment;
 
     /**
@@ -116,7 +114,6 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         MetricsRegistry metricsRegistry
     ) {
         this.nodeEnvironment = nodeEnvironment;
-        sharedPoolResources = CryptoDirectoryFactory.initializeSharedPool(environment.settings());
 
         // Initialize health monitor first (creates monitor)
         MasterKeyHealthMonitor.initialize(environment.settings(), client, clusterService);
@@ -127,6 +124,9 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         // Start health monitoring now that everything is initialized
         MasterKeyHealthMonitor.start();
 
+        // Pool resources are lazily initialized on first cryptofs shard creation
+        // This prevents allocation on dedicated master nodes which never create shards
+        CryptoDirectoryFactory.setNodeSettings(environment.settings());
         CryptoMetricsService.initialize(metricsRegistry);
 
         return Collections.emptyList();
@@ -134,10 +134,11 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
 
     @Override
     public void close() {
-        if (sharedPoolResources != null) {
-            sharedPoolResources.close();
-        }
         MasterKeyHealthMonitor.shutdown();
+        // Close shared pool resources if they were initialized
+        // the shared pool is initilized only when atleast one index
+        // level enc enabled index is created.
+        CryptoDirectoryFactory.closeSharedPool();
     }
 
     @Override
@@ -148,7 +149,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         if ("cryptofs".equals(storeType)) {
             indexModule.addIndexEventListener(new IndexEventListener() {
                 /*
-                 * Cache invalidation for closed shards is now handled automatically
+                 * Cache invalidation for closed shards is handled automatically
                  * by CryptoDirectIODirectory.close() when the directory is closed.
                  */
                 @Override

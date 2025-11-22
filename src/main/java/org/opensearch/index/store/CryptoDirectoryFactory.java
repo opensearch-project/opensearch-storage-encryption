@@ -71,9 +71,15 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
 
     /**
      * Shared pool resources including pool, cache, and telemetry.
-     * Initialized once per node and shared across all CryptoDirectIODirectory instances.
+     * Lazily initialized on first cryptofs shard creation and shared across all CryptoDirectIODirectory instances.
+     * This prevents resource allocation on dedicated master nodes which never create shards.
      */
     private static volatile PoolBuilder.PoolResources poolResources;
+
+    /**
+     * Node settings used for lazy pool initialization.
+     */
+    private static volatile Settings nodeSettings;
 
     /**
      * Lock for thread-safe initialization of shared resources.
@@ -330,27 +336,30 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         * - removalListener: Calls decRef() (releases cache's reference)
         */
 
+        // Ensure pool resources are initialized before creating directory
+        PoolBuilder.PoolResources resources = ensurePoolInitialized();
+
         // Create a per-directory loader that uses this directory's keyIvResolver for decryption
         BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(
-            poolResources.getSegmentPool(),
+            resources.getSegmentPool(),
             keyResolver,
             encryptionMetadataCache
         );
 
         // Cache architecture: One shared Caffeine cache storage, multiple wrapper instances
-        // - sharedBlockCache: Created once in initializeSharedPool(), holds the actual cache storage
+        // - sharedBlockCache: Created once in ensurePoolInitialized(), holds the actual cache storage
         // - directoryCache: Per-directory wrapper that shares the underlying cache but uses its own loader
         // This design allows:
         // * Shared cache capacity across all directories
         // * Per-directory decryption via directory-specific loaders with unique keyIvResolvers
         // * Unified eviction policy managed by the shared cache
         CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> sharedCaffeineCache =
-            (CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment>) poolResources.getBlockCache();
+            (CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment>) resources.getBlockCache();
 
         BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
             sharedCaffeineCache.getCache(),
             loader,
-            poolResources.getMaxCacheBlocks()
+            resources.getMaxCacheBlocks()
         );
 
         // Create read-ahead worker for asynchronous prefetching
@@ -362,7 +371,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             lockFactory,
             provider,
             keyResolver,
-            poolResources.getSegmentPool(),
+            resources.getSegmentPool(),
             directoryCache,
             loader,
             readaheadWorker,
@@ -371,25 +380,48 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     }
 
     /**
-     * Initialize the shared MemorySegmentPool and BlockCache once per node.
-     * This method is called from CryptoDirectoryPlugin.createComponents().
+     * Set node settings for lazy pool initialization.
+     * Called from CryptoDirectoryPlugin.createComponents() during node startup.
+     *
+     * @param settings the node settings for configuration
+     */
+    public static void setNodeSettings(Settings settings) {
+        nodeSettings = settings;
+    }
+
+    /**
+     * Lazily initialize the shared MemorySegmentPool and BlockCache on first cryptofs shard creation.
+     * This prevents resource allocation on dedicated master nodes which never create shards.
      *
      * Thread Safety:
      * - Uses double-checked locking for initialization -- safe.
      *
-     * @param settings the node settings for configuration
-     * @return a handle that can be closed to stop telemetry
+     * @return the initialized pool resources
      */
     @SuppressWarnings("DoubleCheckedLocking")
-    public static PoolBuilder.PoolResources initializeSharedPool(Settings settings) {
+    private static PoolBuilder.PoolResources ensurePoolInitialized() {
         if (poolResources == null) {
             synchronized (initLock) {
                 if (poolResources == null) {
-                    poolResources = PoolBuilder.build(settings);
+                    if (nodeSettings == null) {
+                        throw new IllegalStateException("Node settings must be set before initializing pool resources");
+                    }
+                    LOGGER.info("Lazily initializing shared pool resources on first cryptofs shard creation");
+                    poolResources = PoolBuilder.build(nodeSettings);
                 }
             }
         }
         return poolResources;
+    }
+
+    /**
+     * Close the shared pool resources if they were initialized.
+     * Called from CryptoDirectoryPlugin.close() during node shutdown.
+     */
+    public static void closeSharedPool() {
+        if (poolResources != null) {
+            poolResources.close();
+        }
     }
 
     /**
