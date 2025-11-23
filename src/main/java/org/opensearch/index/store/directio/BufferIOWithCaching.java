@@ -353,16 +353,29 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
 
                 encryptionMetadataCache.putFooter(normalizedPath, footer);
 
+                // close() only flushes to the OS (kernel page cache). It does NOT guarantee
+                // * durability on disk (no fsync here). Lucene will provide the durability boundary by calling
+                // * Directory.sync(files), which issues fsync/force(true) on the files that are part of the
+                // * commit. After sync() returns, the data is crash-safe.
                 super.close();
 
                 // Cache the final partial block if present (avoids disk I/O for immediate reads)
                 cacheFinalPartialBlock();
 
                 // signal the kernel to flush the file cacehe
-                // we don't call flush aggresevley to avoid cpu pressure.
+                // but we don't call flush aggresevley in small files
+                // since most of the page cache would be still dirty as lucene might
+                // have not yet fsycned them yet via Directory.sync and DONTNEED is ineffective.
                 if (streamOffset > 32L * 1024 * 1024) {
                     String absolutePath = path.toAbsolutePath().toString();
-                    // Drop cache BEFORE deletion while file handle is still valid
+                    // **** This doesn't effect durability ***
+                    // - DONTNEED is a cache "hint" only. It never discards DIRTY pages. For dirty pages,
+                    // the kernel first schedules/writebacks the data and drops the pages only after
+                    // the write completes. Clean pages may be dropped immediately.
+                    // - Therefore, using DONTNEED does not jeopardize durability: a later fsync
+                    // (via Lucene's Directory.sync(files)) will still ensure persistence. If any
+                    // writeback is outstanding, fsync/force(true) will wait for it to finish before
+                    // returning, preserving the durability contract.
                     Thread.startVirtualThread(() -> PanamaNativeAccess.dropFileCache(absolutePath));
                 }
 
