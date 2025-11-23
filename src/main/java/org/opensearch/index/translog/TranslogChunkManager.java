@@ -34,6 +34,7 @@ import org.opensearch.index.store.key.KeyResolver;
  * @opensearch.internal
  */
 @SuppressForbidden(reason = "Channel operations required for chunk-based encryption")
+@SuppressWarnings("preview")
 public class TranslogChunkManager {
 
     // GCM chunk constants
@@ -186,13 +187,12 @@ public class TranslogChunkManager {
             delegate.read(testBuffer, diskPosition);
             return true;
 
-        } catch (NonReadableChannelException e) {
+        } catch (NonReadableChannelException | IOException e) {
             // Channel is write-only
             return false;
-        } catch (IOException e) {
-            // Other read errors - assume can't read
-            return false;
         }
+        // Other read errors - assume can't read
+
     }
 
     /**
@@ -240,7 +240,7 @@ public class TranslogChunkManager {
         } catch (NonReadableChannelException e) {
             // Channel is write-only
             return new byte[0];
-        } catch (Exception e) {
+        } catch (IOException | AesGcmCipherFactory.JavaCryptoException e) {
             throw new IOException("Failed to decrypt chunk " + chunkIndex, e);
         }
     }
@@ -268,7 +268,7 @@ public class TranslogChunkManager {
             ByteBuffer buffer = ByteBuffer.wrap(encryptedWithTag);
             delegate.write(buffer, diskPosition);
 
-        } catch (Exception e) {
+        } catch (IOException | AesGcmCipherFactory.JavaCryptoException e) {
             throw new IOException("Failed to encrypt chunk " + chunkIndex + " in file " + filePath, e);
         }
     }

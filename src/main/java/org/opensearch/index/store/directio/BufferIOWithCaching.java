@@ -338,6 +338,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         }
 
         @Override
+        @SuppressWarnings("ConvertToTryWithResources")
         public void close() throws IOException {
             IOException exception = null;
 

@@ -30,6 +30,7 @@ import org.opensearch.index.store.key.KeyResolver;
  * @opensearch.internal
  */
 @SuppressForbidden(reason = "temporary bypass")
+@SuppressWarnings("preview")
 public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput {
 
     private static final int CHUNK_SIZE = 8_192;
@@ -196,6 +197,7 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
         }
 
         @Override
+        @SuppressWarnings("ConvertToTryWithResources")
         public void close() throws IOException {
             IOException exception = null;
 

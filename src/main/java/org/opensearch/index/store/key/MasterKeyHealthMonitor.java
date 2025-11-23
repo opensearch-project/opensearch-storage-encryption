@@ -208,9 +208,12 @@ public class MasterKeyHealthMonitor {
             }
 
             ClusterState clusterState = clusterService.state();
-            IndexMetadata indexMetadata = clusterState.metadata().index(indexName);
+            if (clusterState == null) {
+                return false;
+            }
 
-            if (clusterState == null || indexMetadata == null) {
+            IndexMetadata indexMetadata = clusterState.metadata().index(indexName);
+            if (indexMetadata == null) {
                 return false;
             }
 

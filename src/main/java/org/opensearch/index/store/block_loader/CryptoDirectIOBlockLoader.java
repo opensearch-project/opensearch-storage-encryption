@@ -49,6 +49,7 @@ import org.opensearch.index.store.pool.Pool;
  *
  * @opensearch.internal
  */
+@SuppressWarnings("preview")
 public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySegment> {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOBlockLoader.class);
 
