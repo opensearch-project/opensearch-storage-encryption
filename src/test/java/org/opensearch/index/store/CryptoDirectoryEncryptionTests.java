@@ -4,6 +4,10 @@
  */
 package org.opensearch.index.store;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
@@ -13,6 +17,8 @@ import java.security.Provider;
 import java.security.Security;
 import java.time.Duration;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -22,7 +28,10 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.NIOFSDirectory;
 import org.apache.lucene.store.SimpleFSLockFactory;
+import org.opensearch.action.support.clustermanager.AcknowledgedResponse;
+import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.common.action.ActionFuture;
 import org.opensearch.common.crypto.DataKeyPair;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
@@ -36,6 +45,7 @@ import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.directio.CryptoDirectIODirectory;
 import org.opensearch.index.store.key.DefaultKeyResolver;
 import org.opensearch.index.store.key.KeyResolver;
+import org.opensearch.index.store.key.MasterKeyHealthMonitor;
 import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardCacheKey;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
@@ -45,6 +55,9 @@ import org.opensearch.index.store.pool.Pool;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.index.store.read_ahead.impl.QueuingWorker;
 import org.opensearch.test.OpenSearchTestCase;
+import org.opensearch.transport.client.AdminClient;
+import org.opensearch.transport.client.Client;
+import org.opensearch.transport.client.IndicesAdminClient;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -71,19 +84,18 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
     // DirectIO-specific components
     private Pool<RefCountedMemorySegment> memorySegmentPool;
     private CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCache;
-    private BlockLoader<RefCountedMemorySegment> blockLoader;
     private Worker readAheadWorker;
 
     /**
      * Helper method to register the resolver in the ShardKeyResolverRegistry
      */
     @SuppressForbidden(reason = "Test needs to register resolver in ShardKeyResolverRegistry")
-    private void registerResolver(String indexUuid, int shardId, KeyResolver resolver) throws Exception {
+    private void registerResolver(String indexUuid, int shardId, String indexName, KeyResolver resolver) throws Exception {
         Field resolverCacheField = ShardKeyResolverRegistry.class.getDeclaredField("resolverCache");
         resolverCacheField.setAccessible(true);
         @SuppressWarnings("unchecked")
         ConcurrentMap<ShardCacheKey, KeyResolver> resolverCache = (ConcurrentMap<ShardCacheKey, KeyResolver>) resolverCacheField.get(null);
-        resolverCache.put(new ShardCacheKey(indexUuid, shardId), resolver);
+        resolverCache.put(new ShardCacheKey(indexUuid, shardId, indexName), resolver);
     }
 
     @Override
@@ -101,7 +113,26 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
             .put("node.store.crypto.key_refresh_interval_secs", 300) // 5 minutes for tests
             .build();
 
-        NodeLevelKeyCache.initialize(nodeSettings);
+        // Create mock Client and ClusterService for testing
+        Client mockClient = mock(Client.class);
+        ClusterService mockClusterService = mock(ClusterService.class);
+
+        // Setup mock Client chain for block operations
+        AdminClient mockAdminClient = mock(AdminClient.class);
+        IndicesAdminClient mockIndicesAdminClient = mock(IndicesAdminClient.class);
+        @SuppressWarnings("unchecked")
+        ActionFuture<AcknowledgedResponse> mockFuture = mock(ActionFuture.class);
+
+        when(mockClient.admin()).thenReturn(mockAdminClient);
+        when(mockAdminClient.indices()).thenReturn(mockIndicesAdminClient);
+        when(mockIndicesAdminClient.updateSettings(any())).thenReturn(mockFuture);
+        when(mockFuture.actionGet()).thenReturn(mock(AcknowledgedResponse.class));
+
+        // Initialize MasterKeyHealthMonitor with mock client/clusterService for tests
+        MasterKeyHealthMonitor.initialize(nodeSettings, mockClient, mockClusterService);
+
+        // Initialize NodeLevelKeyCache with the health monitor
+        NodeLevelKeyCache.initialize(nodeSettings, MasterKeyHealthMonitor.getInstance());
 
         cryptoProvider = Security.getProvider("SunJCE");
 
@@ -194,30 +225,12 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         Directory baseDirectoryA = new NIOFSDirectory(dirA);
         Directory baseDirectoryB = new NIOFSDirectory(dirB);
 
-        keyResolverA = new DefaultKeyResolver(testIndexUuidA, baseDirectoryA, cryptoProvider, keyProviderA, TEST_SHARD_ID);
-        keyResolverB = new DefaultKeyResolver(testIndexUuidB, baseDirectoryB, cryptoProvider, keyProviderB, TEST_SHARD_ID);
-
-        // Initialize block loader after keyResolverA is created
-        blockLoader = new CryptoDirectIOBlockLoader(memorySegmentPool, keyResolverA, encryptionMetadataCache);
-
-        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
-            .newBuilder()
-            .maximumSize(1000)
-            .expireAfterAccess(Duration.ofMinutes(5))
-            .recordStats()
-            .build();
-
-        blockCache = new CaffeineBlockCache<>(caffeineCache, blockLoader, 1000);
-
-        readAheadWorker = new QueuingWorker(
-            100, // queue capacity
-            4,   // thread count
-            blockCache
-        );
+        keyResolverA = new DefaultKeyResolver(testIndexUuidA, "test-index-a", baseDirectoryA, cryptoProvider, keyProviderA, TEST_SHARD_ID);
+        keyResolverB = new DefaultKeyResolver(testIndexUuidB, "test-index-b", baseDirectoryB, cryptoProvider, keyProviderB, TEST_SHARD_ID);
 
         // Register the resolvers with ShardKeyResolverRegistry
-        registerResolver(testIndexUuidA, TEST_SHARD_ID, keyResolverA);
-        registerResolver(testIndexUuidB, TEST_SHARD_ID, keyResolverB);
+        registerResolver(testIndexUuidA, TEST_SHARD_ID, "test-index-a", keyResolverA);
+        registerResolver(testIndexUuidB, TEST_SHARD_ID, "test-index-b", keyResolverB);
     }
 
     @Override
@@ -430,6 +443,35 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
 
         Path dirA = tempDir.resolve("index-a");
 
+        // Create per-directory blockLoader with keyResolverA
+        BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
+            memorySegmentPool,
+            keyResolverA,
+            encryptionMetadataCache
+        );
+
+        // Create per-directory cache and worker
+        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
+            .newBuilder()
+            .maximumSize(1000)
+            .expireAfterAccess(Duration.ofMinutes(5))
+            .recordStats()
+            .build();
+
+        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
+            caffeineCache,
+            blockLoaderA,
+            1000
+        );
+
+        ExecutorService executorA = Executors.newFixedThreadPool(4);
+        Worker readAheadWorkerA = new QueuingWorker(
+            100, // queue capacity
+            4,   // thread count
+            executorA,
+            blockCacheA
+        );
+
         // Write and verify encryption with DirectIO (keep directory open for footer cache)
         try (
             Directory cryptoDirA = new CryptoDirectIODirectory(
@@ -438,9 +480,9 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 cryptoProvider,
                 keyResolverA,
                 memorySegmentPool,
-                blockCache,
-                blockLoader,
-                readAheadWorker,
+                blockCacheA,
+                blockLoaderA,
+                readAheadWorkerA,
                 encryptionMetadataCache
             )
         ) {
@@ -481,6 +523,35 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
 
         Path dirA = tempDir.resolve("index-a");
 
+        // Create per-directory blockLoader with keyResolverA
+        BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
+            memorySegmentPool,
+            keyResolverA,
+            encryptionMetadataCache
+        );
+
+        // Create per-directory cache and worker
+        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
+            .newBuilder()
+            .maximumSize(1000)
+            .expireAfterAccess(Duration.ofMinutes(5))
+            .recordStats()
+            .build();
+
+        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
+            caffeineCache,
+            blockLoaderA,
+            1000
+        );
+
+        ExecutorService executorA = Executors.newFixedThreadPool(4);
+        Worker readAheadWorkerA = new QueuingWorker(
+            100, // queue capacity
+            4,   // thread count
+            executorA,
+            blockCacheA
+        );
+
         // Write and read with same directory instance
         try (
             Directory cryptoDirA = new CryptoDirectIODirectory(
@@ -489,9 +560,9 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 cryptoProvider,
                 keyResolverA,
                 memorySegmentPool,
-                blockCache,
-                blockLoader,
-                readAheadWorker,
+                blockCacheA,
+                blockLoaderA,
+                readAheadWorkerA,
                 encryptionMetadataCache
             )
         ) {
@@ -531,6 +602,35 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
 
         Path dirA = tempDir.resolve("index-a");
 
+        // Create per-directory blockLoader with keyResolverA
+        BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
+            memorySegmentPool,
+            keyResolverA,
+            encryptionMetadataCache
+        );
+
+        // Create per-directory cache and worker
+        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
+            .newBuilder()
+            .maximumSize(1000)
+            .expireAfterAccess(Duration.ofMinutes(5))
+            .recordStats()
+            .build();
+
+        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
+            caffeineCache,
+            blockLoaderA,
+            1000
+        );
+
+        ExecutorService executorA = Executors.newFixedThreadPool(4);
+        Worker readAheadWorkerA = new QueuingWorker(
+            100, // queue capacity
+            4,   // thread count
+            executorA,
+            blockCacheA
+        );
+
         // Write and read with same directory instance
         try (
             Directory cryptoDirA = new CryptoDirectIODirectory(
@@ -539,9 +639,9 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 cryptoProvider,
                 keyResolverA,
                 memorySegmentPool,
-                blockCache,
-                blockLoader,
-                readAheadWorker,
+                blockCacheA,
+                blockLoaderA,
+                readAheadWorkerA,
                 encryptionMetadataCache
             )
         ) {
@@ -582,6 +682,35 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
 
         Path dirA = tempDir.resolve("index-a");
 
+        // Create per-directory blockLoader with keyResolverA
+        BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
+            memorySegmentPool,
+            keyResolverA,
+            encryptionMetadataCache
+        );
+
+        // Create per-directory cache and worker
+        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
+            .newBuilder()
+            .maximumSize(1000)
+            .expireAfterAccess(Duration.ofMinutes(5))
+            .recordStats()
+            .build();
+
+        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
+            caffeineCache,
+            blockLoaderA,
+            1000
+        );
+
+        ExecutorService executorA = Executors.newFixedThreadPool(4);
+        Worker readAheadWorkerA = new QueuingWorker(
+            100, // queue capacity
+            4,   // thread count
+            executorA,
+            blockCacheA
+        );
+
         // Write and read data to populate cache
         try (
             Directory cryptoDirA = new CryptoDirectIODirectory(
@@ -590,9 +719,9 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 cryptoProvider,
                 keyResolverA,
                 memorySegmentPool,
-                blockCache,
-                blockLoader,
-                readAheadWorker,
+                blockCacheA,
+                blockLoaderA,
+                readAheadWorkerA,
                 encryptionMetadataCache
             )
         ) {
