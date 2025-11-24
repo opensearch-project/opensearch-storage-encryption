@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.security.Provider;
 import java.security.Security;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 
@@ -223,6 +224,9 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      */
     @Override
     public Directory newDirectory(IndexSettings indexSettings, ShardPath path) throws IOException {
+        // Validate that S3 vector indices are not using cryptofs
+        validateNotS3VectorIndex(indexSettings);
+
         final Path location = path.resolveIndex();
         final LockFactory lockFactory = indexSettings.getValue(org.opensearch.index.store.FsDirectoryFactory.INDEX_LOCK_FACTOR_SETTING);
         Files.createDirectories(location);
@@ -433,4 +437,59 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     public static BlockCache<?> getSharedBlockCache() {
         return poolResources != null ? poolResources.getBlockCache() : null;
     }
+
+    /**
+     * Validates that the index is not an S3 vector index.
+     * S3 vector indices are not compatible with cryptofs encryption.
+     *
+     * @param indexSettings the index settings to validate
+     * @throws IllegalArgumentException if the index uses S3 vector engine
+     */
+    private void validateNotS3VectorIndex(IndexSettings indexSettings) {
+        // Check if mapping metadata is available
+        if (indexSettings.getIndexMetadata() == null || indexSettings.getIndexMetadata().mapping() == null) {
+            // No mappings to validate
+            return;
+        }
+
+        Map<String, Object> mapping = indexSettings.getIndexMetadata().mapping().getSourceAsMap();
+        if (mapping == null || mapping.isEmpty()) {
+            // No mappings to validate
+            return;
+        }
+
+        validateMappingRecursive(mapping);
+    }
+
+    /**
+     * Recursively validates mapping structure to detect s3vector engine.
+     *
+     * @param map the mapping structure to validate
+     * @throws IllegalArgumentException if s3vector engine is found
+     */
+    @SuppressWarnings("unchecked")
+    private void validateMappingRecursive(Map<String, Object> map) {
+        for (Map.Entry<String, Object> entry : map.entrySet()) {
+            Object value = entry.getValue();
+
+            if (value instanceof Map) {
+                Map<String, Object> child = (Map<String, Object>) value;
+
+                // https://docs.aws.amazon.com/opensearch-service/latest/developerguide/s3-vector-opensearch-integration-engine.html#s3-vector-opensearch-integration-engine-creating-indexes
+                if ("method".equals(entry.getKey())) {
+                    Object engine = child.get("engine");
+                    if ("s3vector".equals(engine)) {
+                        throw new IllegalArgumentException(
+                            "S3 vector indices (engine=s3vector) are not compatible with cryptofs store type. "
+                                + "Please use a different store type for S3 vector indices."
+                        );
+                    }
+                }
+
+                // Recursively check nested structures
+                validateMappingRecursive(child);
+            }
+        }
+    }
+
 }
