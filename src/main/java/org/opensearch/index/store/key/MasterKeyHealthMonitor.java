@@ -4,7 +4,6 @@
  */
 package org.opensearch.index.store.key;
 
-import java.security.Key;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -389,8 +388,6 @@ public class MasterKeyHealthMonitor {
             }
 
             int recoveredCount = 0;
-            int healthyCount = 0;
-            int failedCount = 0;
 
             // Check each index individually (each has its own key!)
             for (String indexUuid : allIndexUuids) {
@@ -410,14 +407,12 @@ public class MasterKeyHealthMonitor {
                     }
 
                     // Try to load THIS index's specific key (validates MasterKey Provider connectivity)
-                    Key key = ((DefaultKeyResolver) resolver).loadKeyFromMasterKeyProvider();
+                    ((DefaultKeyResolver) resolver).loadKeyFromMasterKeyProvider();
 
                     // Success! Remove blocks if they exist
                     if (hasBlocks(indexName)) {
                         removeBlocks(indexName);
                         recoveredCount++;
-                    } else {
-                        healthyCount++;
                     }
 
                     // Clean up failure tracker if index was being tracked
@@ -425,8 +420,6 @@ public class MasterKeyHealthMonitor {
 
                 } catch (Exception e) {
                     // Key load failed for THIS index
-                    failedCount++;
-
                     FailureState state = failureTracker.get(indexUuid);
                     if (state == null) {
                         // First failure detected by health check (early detection!)

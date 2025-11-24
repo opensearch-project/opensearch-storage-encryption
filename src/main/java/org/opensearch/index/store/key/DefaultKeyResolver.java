@@ -12,8 +12,6 @@ import java.util.regex.Pattern;
 
 import javax.crypto.spec.SecretKeySpec;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
@@ -37,15 +35,12 @@ import org.opensearch.index.store.metrics.ErrorType;
  * @opensearch.internal
  */
 public class DefaultKeyResolver implements KeyResolver {
-    private static final Logger LOGGER = LogManager.getLogger(DefaultKeyResolver.class);
 
     private final String indexUuid;
     private final String indexName;
     private final Directory directory;
     private final MasterKeyProvider keyProvider;
     private final int shardId;
-
-    private Key dataKey;
 
     private static final String KEY_FILE = "keyfile";
 
@@ -92,7 +87,7 @@ public class DefaultKeyResolver implements KeyResolver {
      */
     private void initialize(int shardId) throws KeyCacheException {
         try {
-            dataKey = new SecretKeySpec(keyProvider.decryptKey(readByteArrayFile(KEY_FILE)), "AES");
+            keyProvider.decryptKey(readByteArrayFile(KEY_FILE));
         } catch (java.nio.file.NoSuchFileException e) {
             // Key file doesn't exist, generate new one
             try {
@@ -115,10 +110,6 @@ public class DefaultKeyResolver implements KeyResolver {
 
     private void initNewKey(int shardId) throws IOException {
         DataKeyPair pair = keyProvider.generateDataPair();
-        byte[] masterKey = pair.getRawKey();
-        byte[] indexKey = HkdfKeyDerivation.deriveIndexKey(masterKey, indexUuid);
-        byte[] directoryKey = HkdfKeyDerivation.deriveDirectoryKey(indexKey, shardId);
-        dataKey = new SecretKeySpec(directoryKey, "AES");
         writeByteArrayFile(KEY_FILE, pair.getEncryptedKey());
     }
 
