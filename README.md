@@ -64,11 +64,11 @@ A high-performance OpenSearch plugin that provides transparent, on-the-fly encry
                                                                │
                                                                │ Key Operations
                                                                ▼
-                                                        ┌─────────────┐
-                                                        │   AWS KMS   │
-                                                        │  🔑 Master  │
-                                                        │    Keys     │
-                                                        └─────────────┘
+                                                        ┌─────────────────────────┐
+                                                        │   Master Key Provider   │
+                                                        │        🔑 Master        │
+                                                        │           Keys          │
+                                                        └─────────────────────────┘
 
 Legend:  🔐 Encryption Point    🔒 Encrypted Storage    🔑 Key Management
 ```
