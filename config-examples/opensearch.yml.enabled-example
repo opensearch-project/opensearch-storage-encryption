@@ -1,0 +1,15 @@
+# OpenSearch Crypto Directory Plugin Configuration Example
+# This configuration ENABLES the plugin for encryption operations
+
+# =============================================================================
+# ENABLE PLUGIN (Required for encryption to work)
+# =============================================================================
+# The plugin is DISABLED by default for security.
+# You must explicitly enable it to use encryption.
+plugins.crypto_directory.enabled: true
+
+# =============================================================================
+# Example: Enable encryption globally
+# =============================================================================
+# When enabled, you can create indices with store.type: cryptofs
+# Each encrypted index will use the encryption settings specified at index creation time

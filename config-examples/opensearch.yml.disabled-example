@@ -1,0 +1,25 @@
+# OpenSearch Crypto Directory Plugin Configuration Example
+# This configuration keeps the plugin DISABLED (default state)
+
+# =============================================================================
+# PLUGIN DISABLED (Default)
+# =============================================================================
+# The plugin is disabled by default for security reasons.
+# When disabled, no encryption/decryption operations will be performed.
+# You can explicitly set this to false or omit it entirely (same effect).
+
+# Option 1: Explicitly disable (same as default)
+plugins.crypto_directory.enabled: false
+
+# Option 2: Omit the setting entirely (plugin remains disabled by default)
+# (no setting needed - this is the default behavior)
+
+# =============================================================================
+# Effect of Disabled State
+# =============================================================================
+# When the plugin is disabled:
+# - The plugin is installed but inactive
+# - No directory factories are registered
+# - Cannot create indices with store.type: cryptofs
+# - No encryption/decryption operations occur
+# - Lower resource usage and overhead
