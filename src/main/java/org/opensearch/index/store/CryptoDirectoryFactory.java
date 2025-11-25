@@ -94,6 +94,11 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     }
 
     /**
+     * Store type identifier for encrypted filesystem directories.
+     */
+    public static final String STORE_TYPE = "cryptofs";
+
+    /**
      * Base setting prefix for crypto-related index settings.
      */
     public static final String CRYPTO_SETTING = "index.store.crypto";
