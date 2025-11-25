@@ -1,6 +1,6 @@
 # OpenSearch Storage Encryption Plugin
 
-A high-performance OpenSearch plugin that provides transparent, on-the-fly encryption and decryption of index data at rest. This plugin implements encryption at the Lucene Directory level, offering a seamless integration that requires no changes to application code.
+A high-performance OpenSearch plugin that provides transparent, on-the-fly encryption and decryption of index data at rest. This plugin implements encryption at the Lucene Directory level, offering a seamless integration that requires no changes to application code. Currently only supporting AWS KMS as master key provider but will allow other key providers as well in future versions.
 
 ## Features
 
@@ -162,7 +162,7 @@ Add AWS credentials to the keystore:
 bin/opensearch-keystore create
 echo "your-access-key" | bin/opensearch-keystore add -x kms.access_key
 echo "your-secret-key" | bin/opensearch-keystore add -x kms.secret_key
-echo "your-session-token" | bin/opensearch-keystore add -x kms.session_token  # Optional
+echo "your-session-token" | bin/opensearch-keystore add -x kms.session_token
 ```
 
 ## Usage
@@ -174,7 +174,8 @@ PUT /encrypted-index
 {
   "settings": {
     "index.store.type": "cryptofs",
-    "index.store.crypto.kms.type": "aws-kms"
+    "index.store.crypto.kms.type": "aws-kms",
+    "index.store.crypto.kms.key_arn": "arn:aws:kms:us-east-1:970547373503:key/5afa7ffc-9986-439c-a95b-f8c61c0f1488"
   }
 }
 ```
@@ -188,7 +189,8 @@ PUT /_index_template/encrypted_template
   "template": {
     "settings": {
       "index.store.type": "cryptofs",
-      "index.store.crypto.kms.type": "aws-kms"
+      "index.store.crypto.kms.type": "aws-kms",
+      "index.store.crypto.kms.key_arn": "arn:aws:kms:us-east-1:970547373503:key/5afa7ffc-9986-439c-a95b-f8c61c0f1488"
     }
   }
 }
@@ -233,13 +235,13 @@ Configure these when creating an index. Setting `index.store.type` to `"cryptofs
 
 Configure in `opensearch.yml`:
 
-| Setting | Description | Default | Type | Range |
-|---------|-------------|---------|------|-------|
-| `node.store.crypto.pool_size_percentage` | Memory pool size as percentage of off-heap memory | `0.3` (30%) | Double | `0.0` - `1.0` |
-| `node.store.crypto.cache_to_pool_ratio` | Cache size as ratio of pool size (cache = pool × ratio) | `0.75` | Double | `0.1` - `1.0` |
-| `node.store.crypto.warmup_percentage` | Percentage of cache blocks to warmup at initialization | `0.05` (5%) | Double | `0.0` - `1.0` |
-| `node.store.crypto.key_refresh_interval` | Interval for refreshing data keys from KMS | `1h` | TimeValue | `-1` (never) or positive duration |
-| `node.store.crypto.key_expiry_interval` | Expiration time for keys after refresh failures | `24h` | TimeValue | `-1` (never) or positive duration |
+| Setting | Description | Type | Range |
+|---------|-------------|------|-------|
+| `node.store.crypto.pool_size_percentage` | Memory pool size as percentage of off-heap memory| Double | `0.0` - `1.0` |
+| `node.store.crypto.cache_to_pool_ratio` | Cache size as ratio of pool size (cache = pool × ratio) | Double | `0.1` - `1.0` |
+| `node.store.crypto.warmup_percentage` | Percentage of cache blocks to warmup at initialization | Double | `0.0` - `1.0` |
+| `node.store.crypto.key_refresh_interval` | Interval for refreshing data keys from KMS | TimeValue | `-1` (never) or positive duration |
+| `node.store.crypto.key_expiry_interval` | Expiration time for keys after refresh failures | TimeValue | `-1` (never) or positive duration |
 
 **Time Value Format:**
 - Supported units: `s` (seconds), `m` (minutes), `h` (hours), `d` (days)
@@ -249,9 +251,6 @@ Configure in `opensearch.yml`:
 **Memory Configuration Notes:**
 - Pool size is calculated as: `(Total Physical Memory - Max Heap) × pool_size_percentage`
 - Cache size is calculated as: `Pool Size × cache_to_pool_ratio`
-- Automatic tiering applies for small instances (< 10GB off-heap):
-  - `cache_to_pool_ratio` defaults to `0.5` for small instances
-  - `warmup_percentage` defaults to `0.0` for instances < 32GB off-heap
 - Minimum pool size: 256 MB
 
 **Example Configuration:**
@@ -294,13 +293,14 @@ Run the test suites:
 ./gradlew allTests
 ```
 
+## Limitations
+
+- Currently only AWS KMS and linux are supported.
+- Cluster metadata is not encrypted
+
 ## Contributing
 
-We welcome contributions! Please see our [Developer Guide](DEVELOPER_GUIDE.md) for detailed information on:
-- Setting up your development environment
-- Building and testing
-- Code style guidelines
-- Submitting pull requests
+We welcome contributions! Please see our [Developer Guide](DEVELOPER_GUIDE.md) for detailed information on contributing.
 
 ## Documentation
 

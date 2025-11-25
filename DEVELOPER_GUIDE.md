@@ -212,87 +212,8 @@ The `CryptoDirectoryFactory.newFSDirectory()` method selects the appropriate enc
 - **MMAPFS** → `CryptoDirectIODirectory` (MMAP not natively supported)
 - **NIOFS/SIMPLEFS** → `CryptoNIOFSDirectory`
 
-### Encryption Flow
-
-**Write Path:**
-1. Lucene writes data through the Directory interface
-2. `CryptoDirectory` intercepts the write operation
-3. Data is encrypted block-by-block using the shard's data key
-4. Encrypted blocks are written to disk
-5. Encryption metadata (IV, key version) stored in file footer
-
-**Read Path:**
-1. Lucene requests data through the Directory interface
-2. Check block cache for decrypted data
-3. If cache miss:
-   - Load encrypted block from disk
-   - Read encryption metadata from file footer
-   - Decrypt block using shard's data key
-   - Store decrypted block in cache
-4. Return decrypted data to Lucene
-
-### Key Management Hierarchy
-
-```
-Master Key Provider
-    ↓ (encrypt/decrypt data key)
-NodeLevelKeyCache (encrypted data keys)
-    ↓ (decrypt & HKDF derivation)
-ShardKeyResolverRegistry (per-shard data keys)
-    ↓ (used by)
-CryptoDirectory implementations
-```
-
-### Memory Architecture
-
-**Shared Resources (Node-Level):**
-- `MemorySegmentPool`: Off-heap memory pool for encryption operations
-- `BlockCache`: Caffeine cache for decrypted blocks
-- `ReadAheadExecutor`: Thread pool for async prefetching
-
-**Per-Directory Resources:**
-- `BlockLoader`: Directory-specific decryption logic
-- `ReadAheadWorker`: Per-shard queue with shared executor threads
-- `KeyResolver`: Shard-specific key resolution
-
 
 ## Testing
-
-### Test Categories
-
-The plugin includes comprehensive test coverage across multiple test types:
-
-#### 1. Unit Tests (`./gradlew test`)
-
-Located in `src/test/java/`, these test individual components:
-
-- **Cipher Tests** (`cipher/`): Encryption/decryption operations
-- **Block Cache Tests** (`block_cache/`): Cache behavior and eviction
-- **Key Management Tests** (`key/`): Key derivation and caching
-- **Memory Pool Tests** (`pool/`): Memory allocation and pooling
-- **Read-Ahead Tests** (`read_ahead/`): Prefetching logic
-
-#### 2. Integration Tests (`./gradlew internalClusterTest`)
-
-Located in `src/internalClusterTest/java/`, these test cluster-level behavior:
-
-- **CryptoDirectoryIntegTestCases**: Basic CRUD operations with encryption
-- **ShardMigrationIntegTests**: Shard relocation and recovery
-- **SnapshotRestoreIntegTests**: Snapshot/restore with encrypted indices
-- **ConcurrencyIntegTests**: Multi-threaded access patterns
-- **IndexTemplateIntegTests**: Template-based index creation
-- **CacheInvalidationIntegTests**: Cache invalidation on index deletion
-
-#### 3. YAML REST Tests (`./gradlew yamlRestTest`)
-
-Located in `src/yamlRestTest/resources/rest-api-spec/test/`:
-
-- `10_basic.yml`: Basic plugin functionality
-- `20_encrypted_index_crud.yml`: Index CRUD operations
-- `30_bulk_operations.yml`: Bulk indexing and searching
-- `40_snapshot_restore.yml`: Snapshot/restore workflows
-- `50_translog_operations.yml`: Translog encryption
-- `60_cache_stress_tests.yml`: Cache stress testing
 
 ### Running Specific Tests
 
@@ -320,35 +241,6 @@ Generate test coverage report:
 # Report location: build/reports/jacoco/test/html/index.html
 ```
 
-### Writing Tests
-
-When contributing tests:
-
-1. **Unit Tests**: Mock external dependencies (KMS, file system)
-2. **Integration Tests**: Use `MockCryptoPlugin` for deterministic behavior
-3. **YAML Tests**: Focus on REST API behavior and user workflows
-
-Example test setup:
-
-```java
-@OpenSearchIntegTestCase.ClusterScope(scope = Scope.TEST, numDataNodes = 2)
-public class MyIntegrationTest extends OpenSearchIntegTestCase {
-    
-    @Override
-    protected Collection<Class<? extends Plugin>> nodePlugins() {
-        return Arrays.asList(
-            CryptoDirectoryPlugin.class,
-            MockCryptoKeyProviderPlugin.class
-        );
-    }
-    
-    @Test
-    public void testEncryptedIndexCreation() {
-        // Test implementation
-    }
-}
-```
-
 ## Code Style
 
 This project uses the OpenSearch code style with Spotless for formatting.
@@ -372,8 +264,6 @@ This project uses the OpenSearch code style with Spotless for formatting.
 
 ## Contributing
 
-### Contribution Workflow
-
 1. **Fork** the repository
 2. **Create** a feature branch (`git checkout -b feature/my-feature`)
 3. **Make** your changes
@@ -386,22 +276,124 @@ This project uses the OpenSearch code style with Spotless for formatting.
 6. **Push** to your fork
 7. **Submit** a pull request
 
-### PR Guidelines
-
-- Include test coverage for new features
-- Update documentation (README, JavaDoc)
-- Follow existing code patterns
-- Keep PRs focused and reasonably sized
-- Reference any related issues
-
-### Code Review Process
-
-- At least one approval required
-- All tests must pass
-- Code style checks must pass
-- No merge conflicts
 
 ## Performance Considerations
+
+OpenSearch Benchmark results on http_logs workload on c5.12xLarge instance:
+
+**Workload**:
+
+```
+opensearch-benchmark execute-test \
+  --kill-running-processes \
+  --pipeline=benchmark-only \
+  --workload=http_logs \
+  --target-hosts=http://localhost:9200 \
+  --exclude-tasks="\
+term,\
+range,\
+default,\
+status-200s-in-range,\
+status-400s-in-range,\
+hourly_agg,\
+hourly_agg_with_filter,\
+hourly_agg_with_filter_and_metrics,\
+multi_term_agg,\
+scroll,\
+desc_sort_size,\
+asc_sort_size,\
+desc_sort_timestamp,\
+asc_sort_timestamp,\
+desc_sort_with_after_timestamp,\
+asc_sort_with_after_timestamp,\
+force-merge,\
+refresh-after-force-merge,\
+wait-until-merges-finish,\
+force-merge-1-seg,\
+refresh-after-force-merge-1-seg,\
+wait-until-merges-1-seg-finish,\
+desc-sort-timestamp-after-force-merge-1-seg,\
+asc-sort-timestamp-after-force-merge-1-seg,\
+desc-sort-with-after-timestamp-after-force-merge-1-seg,\
+asc-sort-with-after-timestamp-after-force-merge-1-seg" \
+--workload-params '{
+     "number_of_shards": "1",
+     "number_of_replicas": "0",
+     "index_settings": {
+        "index.store.type": "cryptofs",
+        "index.store.crypto.kms.key_arn":"arn:aws:kms:us-east-1:1234567890:key/abcdefgh-1234-123a-a123b-abcdefghijklm",
+        "index.store.crypto.key_provider": "aws-kms"
+        }
+    }'
+```
+**Results:**
+
+```
+|                                                         Metric |         Task |     Value |   Unit |
+|---------------------------------------------------------------:|-------------:|----------:|-------:|
+|                     Cumulative indexing time of primary shards |              |   89.5535 |    min |
+|             Min cumulative indexing time across primary shards |              |         0 |    min |
+|          Median cumulative indexing time across primary shards |              |  0.786783 |    min |
+|             Max cumulative indexing time across primary shards |              |   13.4496 |    min |
+|            Cumulative indexing throttle time of primary shards |              |         0 |    min |
+|    Min cumulative indexing throttle time across primary shards |              |         0 |    min |
+| Median cumulative indexing throttle time across primary shards |              |         0 |    min |
+|    Max cumulative indexing throttle time across primary shards |              |         0 |    min |
+|                        Cumulative merge time of primary shards |              |   40.4497 |    min |
+|                       Cumulative merge count of primary shards |              |       216 |        |
+|                Min cumulative merge time across primary shards |              |         0 |    min |
+|             Median cumulative merge time across primary shards |              |  0.101675 |    min |
+|                Max cumulative merge time across primary shards |              |   8.78198 |    min |
+|               Cumulative merge throttle time of primary shards |              |   27.8899 |    min |
+|       Min cumulative merge throttle time across primary shards |              |         0 |    min |
+|    Median cumulative merge throttle time across primary shards |              | 0.0510583 |    min |
+|       Max cumulative merge throttle time across primary shards |              |   6.46397 |    min |
+|                      Cumulative refresh time of primary shards |              |   3.69217 |    min |
+|                     Cumulative refresh count of primary shards |              |       419 |        |
+|              Min cumulative refresh time across primary shards |              |         0 |    min |
+|           Median cumulative refresh time across primary shards |              |  0.050225 |    min |
+|              Max cumulative refresh time across primary shards |              |  0.597767 |    min |
+|                        Cumulative flush time of primary shards |              |   9.14458 |    min |
+|                       Cumulative flush count of primary shards |              |       110 |        |
+|                Min cumulative flush time across primary shards |              |         0 |    min |
+|             Median cumulative flush time across primary shards |              |    0.0075 |    min |
+|                Max cumulative flush time across primary shards |              |   1.68112 |    min |
+|                                        Total Young Gen GC time |              |    10.557 |      s |
+|                                       Total Young Gen GC count |              |       780 |        |
+|                                          Total Old Gen GC time |              |         0 |      s |
+|                                         Total Old Gen GC count |              |         0 |        |
+|                                                     Store size |              |   20.3044 |     GB |
+|                                                  Translog size |              |  0.855037 |     GB |
+|                                         Heap used for segments |              |         0 |     MB |
+|                                       Heap used for doc values |              |         0 |     MB |
+|                                            Heap used for terms |              |         0 |     MB |
+|                                            Heap used for norms |              |         0 |     MB |
+|                                           Heap used for points |              |         0 |     MB |
+|                                    Heap used for stored fields |              |         0 |     MB |
+|                                                  Segment count |              |       358 |        |
+|                                                 Min Throughput | index-append |    337229 | docs/s |
+|                                                Mean Throughput | index-append |    373391 | docs/s |
+|                                              Median Throughput | index-append |    362997 | docs/s |
+|                                                 Max Throughput | index-append |    445108 | docs/s |
+|                                        50th percentile latency | index-append |   62.4251 |     ms |
+|                                        90th percentile latency | index-append |   295.983 |     ms |
+|                                        99th percentile latency | index-append |   608.552 |     ms |
+|                                      99.9th percentile latency | index-append |   979.953 |     ms |
+|                                     99.99th percentile latency | index-append |   1150.74 |     ms |
+|                                       100th percentile latency | index-append |   1410.53 |     ms |
+|                                   50th percentile service time | index-append |   62.4251 |     ms |
+|                                   90th percentile service time | index-append |   295.983 |     ms |
+|                                   99th percentile service time | index-append |   608.552 |     ms |
+|                                 99.9th percentile service time | index-append |   979.953 |     ms |
+|                                99.99th percentile service time | index-append |   1150.74 |     ms |
+|                                  100th percentile service time | index-append |   1410.53 |     ms |
+|                                                     error rate | index-append |         0 |      % |
+
+
+---------------------------------
+[INFO] SUCCESS (took 769 seconds)
+---------------------------------
+```
 
 ### Profiling
 
