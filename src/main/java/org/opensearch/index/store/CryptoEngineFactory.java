@@ -7,6 +7,7 @@ package org.opensearch.index.store;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.security.Provider;
+import java.security.Security;
 
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
@@ -67,7 +68,7 @@ public class CryptoEngineFactory implements EngineFactory {
         Path indexDirectory = translogPath.getParent().getParent(); // Go up two levels: translog -> shard -> index
 
         // Get the same settings that CryptoDirectoryFactory uses
-        Provider provider = config.getIndexSettings().getValue(CryptoDirectoryFactory.INDEX_CRYPTO_PROVIDER_SETTING);
+        Provider provider = Security.getProvider(CryptoDirectoryFactory.DEFAULT_CRYPTO_PROVIDER);
         MasterKeyProvider keyProvider = getKeyProvider(config);
 
         // Create directory for index-level keys (same as CryptoDirectoryFactory)
