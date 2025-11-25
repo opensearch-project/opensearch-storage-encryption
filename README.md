@@ -4,22 +4,13 @@ A high-performance OpenSearch plugin that provides transparent, on-the-fly encry
 
 ## Features
 
-- **On-the-Fly Encryption/Decryption**: Transparent encryption at the Lucene Directory level with minimal performance overhead
-- **Multiple Directory Implementations**:
-  - **NIO FS**: Standard filesystem-based encryption
-  - **Direct I/O with io_uring**: Linux-optimized high-performance I/O using io_uring
-  - **Hybrid Directory**: Combines encrypted and unencrypted storage for flexibility
-- **High-Performance Block Caching**: Caffeine-based block cache for optimized read operations
-- **Native Cipher Support**: OpenSSL integration via JNI for hardware-accelerated encryption
-- **Multiple Encryption Algorithms**: Support for AES-CTR and AES-GCM
-- **Advanced Key Management**:
-  - HKDF-based key derivation
-  - Node-level and shard-level key caching
-  - Master key health monitoring
-- **Translog Encryption**: Complete protection including transaction logs
-- **Read-Ahead Optimization**: Intelligent prefetching for improved sequential read performance
-- **Memory Segment Pooling**: Efficient memory management for encryption operations
-- **Comprehensive Metrics**: Built-in monitoring and metrics service
+The plugin provides transparent on-the-fly encryption and decryption at the Lucene Directory level with minimal performance overhead. It offers multiple directory implementations including standard NIO FS for filesystem-based encryption, Direct I/O with io_uring for Linux-optimized high-performance I/O, and Hybrid Directory that combines encrypted and unencrypted storage for flexibility.
+
+Performance is optimized through multiple mechanisms: a Caffeine-based block cache for rapid read operations, intelligent read-ahead prefetching for sequential access patterns, and efficient memory segment pooling for encryption operations. Native cipher support via OpenSSL JNI integration enables hardware-accelerated encryption.
+
+Security features include support for both AES-CTR and AES-GCM encryption algorithms, along with advanced key management capabilities. The key management system uses HKDF-based key derivation, implements node-level and shard-level key caching, and continuously monitors master key health. Complete data protection extends to transaction logs through translog encryption.
+
+Built-in monitoring and comprehensive metrics provide visibility into plugin operations and performance characteristics.
 
 ## Architecture
 
@@ -81,40 +72,22 @@ Legend:  🔐 Encryption Point    🔒 Encrypted Storage    🔑 Key Management
 ### Key Components
 
 #### CryptoDirectory Layer
-The plugin implements custom Lucene Directory implementations that intercept all file I/O operations:
-
-- **CryptoNIOFSDirectory**: Standard NIO-based encrypted filesystem operations
-- **CryptoDirectIODirectory**: Linux-optimized Direct I/O with io_uring support for high-throughput scenarios
-- **HybridCryptoDirectory**: Flexible directory that can selectively encrypt files based on patterns
+The plugin implements custom Lucene Directory implementations that intercept all file I/O operations. `CryptoNIOFSDirectory` provides standard NIO-based encrypted filesystem operations, while `CryptoDirectIODirectory` offers Linux-optimized Direct I/O with io_uring support for high-throughput scenarios. `HybridCryptoDirectory` provides flexibility by selectively encrypting files based on patterns.
 
 #### Block Cache
-High-performance caching layer using Caffeine library:
-- Configurable cache size and eviction policies
-- Block-level granularity for optimal memory usage
-- Thread-safe concurrent access
-- LRU eviction strategy
+A high-performance caching layer built on the Caffeine library provides optimized read operations. The cache features configurable size and eviction policies with block-level granularity for optimal memory usage. Thread-safe concurrent access is supported through an LRU eviction strategy.
 
 #### Key Management
-Multi-tier key resolution and caching:
-- **NodeLevelKeyCache**: Cluster-wide key cache for shared keys
-- **ShardKeyResolverRegistry**: Per-shard key resolution
-- **DefaultKeyResolver**: HKDF-based key derivation from master keys
-- **MasterKeyHealthMonitor**: Continuous monitoring of key availability
+The plugin implements a multi-tier key resolution and caching architecture. `NodeLevelKeyCache` maintains a cluster-wide cache for shared keys, while `ShardKeyResolverRegistry` handles per-shard key resolution. `DefaultKeyResolver` performs HKDF-based key derivation from master keys, and `MasterKeyHealthMonitor` continuously monitors master key availability.
 
 #### Encryption Engine
-- **AesCipherFactory**: AES-CTR mode encryption
-- **AesGcmCipherFactory**: AES-GCM mode with authentication
-- **OpenSslNativeCipher**: Hardware-accelerated native encryption via OpenSSL
+The encryption engine supports multiple cipher implementations. `AesCipherFactory` provides AES-CTR mode encryption, while `AesGcmCipherFactory` offers AES-GCM mode with authentication. `OpenSslNativeCipher` enables hardware-accelerated native encryption via OpenSSL integration.
 
 #### Memory Management
-- **MemorySegmentPool**: Efficient pooling of off-heap memory segments
-- **RefCountedMemorySegment**: Reference-counted memory for safe concurrent access
-- Configurable pool sizes and warmup strategies
+Efficient memory management is achieved through `MemorySegmentPool`, which provides pooling of off-heap memory segments. `RefCountedMemorySegment` ensures safe concurrent access through reference counting. The system supports configurable pool sizes and warmup strategies to optimize resource utilization.
 
 #### I/O Optimization
-- **ReadaheadManager**: Intelligent prefetching for sequential reads
-- **BlockLoader**: Async block loading with io_uring on Linux
-- **DirectIOReaderUtil**: Direct I/O utilities for bypassing OS page cache
+I/O performance is enhanced through several optimization mechanisms. `ReadaheadManager` provides intelligent prefetching for sequential reads, while `BlockLoader` enables async block loading with io_uring on Linux systems. `DirectIOReaderUtil` offers utilities for bypassing the OS page cache when using Direct I/O.
 
 ## Requirements
 
@@ -175,7 +148,7 @@ PUT /encrypted-index
   "settings": {
     "index.store.type": "cryptofs",
     "index.store.crypto.kms.type": "aws-kms",
-    "index.store.crypto.kms.key_arn": "arn:aws:kms:us-east-1:970547373503:key/5afa7ffc-9986-439c-a95b-f8c61c0f1488"
+    "index.store.crypto.kms.key_arn": "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012"
   }
 }
 ```
@@ -190,7 +163,7 @@ PUT /_index_template/encrypted_template
     "settings": {
       "index.store.type": "cryptofs",
       "index.store.crypto.kms.type": "aws-kms",
-      "index.store.crypto.kms.key_arn": "arn:aws:kms:us-east-1:970547373503:key/5afa7ffc-9986-439c-a95b-f8c61c0f1488"
+      "index.store.crypto.kms.key_arn": "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012"
     }
   }
 }
