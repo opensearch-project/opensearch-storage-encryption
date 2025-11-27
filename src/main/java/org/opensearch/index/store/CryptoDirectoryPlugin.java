@@ -13,6 +13,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.node.DiscoveryNodes;
 import org.opensearch.cluster.service.ClusterService;
@@ -62,13 +64,49 @@ import org.opensearch.watcher.ResourceWatcherService;
  * A plugin that enables index level encryption and decryption.
  */
 public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, EnginePlugin, TelemetryAwarePlugin, ActionPlugin {
-    private NodeEnvironment nodeEnvironment;
+    private static final Logger log = LogManager.getLogger(CryptoDirectoryPlugin.class);
 
     /**
-     * The default constructor.
+     * Setting key for enabling the crypto plugin.
      */
-    public CryptoDirectoryPlugin() {
+    public static final String CRYPTO_PLUGIN_ENABLED = "plugins.crypto.enabled";
+
+    /**
+     * Setting for controlling whether the crypto plugin is enabled.
+     */
+    public static final Setting<Boolean> CRYPTO_PLUGIN_ENABLED_SETTING = Setting
+        .boolSetting(CRYPTO_PLUGIN_ENABLED, false, Setting.Property.NodeScope, Setting.Property.Filtered, Setting.Property.Final);
+
+    private NodeEnvironment nodeEnvironment;
+    private final boolean enabled;
+
+    /**
+     * Constructor with settings.
+     * @param settings OpenSearch node settings
+     */
+    public CryptoDirectoryPlugin(Settings settings) {
         super();
+        this.enabled = settings.getAsBoolean(CRYPTO_PLUGIN_ENABLED, false);
+
+        if (enabled) {
+            log.info("OpenSearch Crypto Directory Plugin is enabled and ready for encryption operations");
+        } else {
+            log
+                .warn(
+                    "OpenSearch Crypto Directory Plugin installed but disabled. "
+                        + "No encryption/decryption will be performed. "
+                        + "To enable encryption, set '{}' to true in opensearch.yml",
+                    CRYPTO_PLUGIN_ENABLED
+                );
+        }
+    }
+
+    /**
+     * Check if the plugin is disabled.
+     * @return true if the plugin is disabled, false otherwise
+     */
+    public boolean isDisabled() {
+        return !enabled;
     }
 
     /**
@@ -76,8 +114,9 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
      */
     @Override
     public List<Setting<?>> getSettings() {
-        return Arrays
+        List<Setting<?>> settings = Arrays
             .asList(
+                CRYPTO_PLUGIN_ENABLED_SETTING,
                 CryptoDirectoryFactory.INDEX_KEY_PROVIDER_SETTING,
                 CryptoDirectoryFactory.INDEX_CRYPTO_PROVIDER_SETTING,
                 CryptoDirectoryFactory.INDEX_KMS_ARN_SETTING,
@@ -88,6 +127,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                 PoolSizeCalculator.NODE_CACHE_TO_POOL_RATIO_SETTING,
                 PoolSizeCalculator.NODE_WARMUP_PERCENTAGE_SETTING
             );
+        return settings;
     }
 
     /**
@@ -95,6 +135,11 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
      */
     @Override
     public Map<String, DirectoryFactory> getDirectoryFactories() {
+        if (isDisabled()) {
+            log.debug("Crypto Directory Plugin is disabled. No directory factories will be registered.");
+            return Collections.emptyMap();
+        }
+        log.debug("Crypto Directory Plugin is enabled. Registering cryptofs directory factory.");
         return Collections.singletonMap(CryptoDirectoryFactory.STORE_TYPE, new CryptoDirectoryFactory());
     }
 
@@ -103,6 +148,10 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
      */
     @Override
     public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {
+        if (isDisabled()) {
+            return Optional.empty();
+        }
+
         // Only provide our custom engine factory for cryptofs indices
         if (CryptoDirectoryFactory.STORE_TYPE.equals(indexSettings.getValue(IndexModule.INDEX_STORE_TYPE_SETTING))) {
             return Optional.of(new CryptoEngineFactory());
@@ -126,6 +175,11 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         Tracer tracer,
         MetricsRegistry metricsRegistry
     ) {
+        if (isDisabled()) {
+            log.debug("Crypto Directory Plugin is disabled. Skipping component initialization.");
+            return Collections.emptyList();
+        }
+
         this.nodeEnvironment = nodeEnvironment;
 
         // Initialize health monitor first (creates monitor)
@@ -147,9 +201,14 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
 
     @Override
     public void close() {
+        if (isDisabled()) {
+            log.debug("Crypto Directory Plugin is disabled. No cleanup needed.");
+            return;
+        }
+
         MasterKeyHealthMonitor.shutdown();
         // Close shared pool resources if they were initialized
-        // the shared pool is initilized only when atleast one index
+        // the shared pool is initialized only when at least one index
         // level enc enabled index is created.
         CryptoDirectoryFactory.closeSharedPool();
     }
@@ -174,6 +233,15 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
 
     @Override
     public void onIndexModule(IndexModule indexModule) {
+        if (isDisabled()) {
+            log
+                .debug(
+                    "Crypto Directory Plugin is disabled. Skipping index module initialization for index: {}",
+                    indexModule.getIndex().getName()
+                );
+            return;
+        }
+
         Settings indexSettings = indexModule.getSettings();
         String storeType = indexSettings.get(IndexModule.INDEX_STORE_TYPE_SETTING.getKey());
 

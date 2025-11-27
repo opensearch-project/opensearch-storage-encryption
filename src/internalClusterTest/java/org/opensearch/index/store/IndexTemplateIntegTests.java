@@ -37,6 +37,7 @@ public class IndexTemplateIntegTests extends OpenSearchIntegTestCase {
         return Settings
             .builder()
             .put(super.nodeSettings(nodeOrdinal))
+            .put("plugins.crypto.enabled", true)
             .put("node.store.crypto.pool_size_percentage", 0.05)
             .put("node.store.crypto.warmup_percentage", 0.0)
             .put("node.store.crypto.cache_to_pool_ratio", 0.8)
@@ -992,5 +993,119 @@ public class IndexTemplateIntegTests extends OpenSearchIntegTestCase {
         assertThat(multiResponse.getHits().getTotalHits().value(), equalTo(100L));
 
         logger.info("Shard configuration test completed");
+    }
+
+    // ==================== Enable/Disable Flag Integration Tests ====================
+
+    /**
+     * Tests that when plugin is disabled, cryptofs store type cannot be used.
+     * This verifies the disable flag prevents encryption operations.
+     */
+    public void testPluginDisabledPreventsCryptofsIndices() throws Exception {
+        logger.info("Testing that disabled plugin prevents cryptofs indices");
+
+        // Note: This test assumes the plugin is enabled in the cluster setup
+        // In a real scenario with disabled plugin, creating a cryptofs index would fail
+        // Since we can't dynamically disable the plugin (it's a FINAL setting),
+        // we test that the plugin properly reports its state
+
+        // Create a disabled plugin instance to verify its behavior
+        Settings disabledSettings = Settings.builder().put(CryptoDirectoryPlugin.CRYPTO_PLUGIN_ENABLED, false).build();
+
+        CryptoDirectoryPlugin disabledPlugin = new CryptoDirectoryPlugin(disabledSettings);
+        assertTrue("Plugin should report as disabled", disabledPlugin.isDisabled());
+        assertTrue("Disabled plugin should not register directory factories", disabledPlugin.getDirectoryFactories().isEmpty());
+
+        logger.info("Disabled plugin test completed");
+    }
+
+    /**
+     * Tests that the enabled setting is properly configured with correct properties.
+     */
+    public void testEnabledSettingConfiguration() throws Exception {
+        logger.info("Testing enabled setting configuration");
+
+        CryptoDirectoryPlugin plugin = new CryptoDirectoryPlugin(Settings.EMPTY);
+
+        // Verify setting is included
+        boolean hasEnabledSetting = plugin
+            .getSettings()
+            .stream()
+            .anyMatch(s -> s.getKey().equals(CryptoDirectoryPlugin.CRYPTO_PLUGIN_ENABLED));
+
+        assertTrue("Plugin settings should include enabled setting", hasEnabledSetting);
+
+        // Verify default value (false = disabled by default)
+        assertEquals(
+            "Enabled setting should default to false (disabled by default)",
+            Boolean.FALSE,
+            CryptoDirectoryPlugin.CRYPTO_PLUGIN_ENABLED_SETTING.getDefault(Settings.EMPTY)
+        );
+
+        logger.info("Enabled setting configuration test completed");
+    }
+
+    /**
+     * Tests that enabled plugin properly creates encrypted indices.
+     */
+    public void testEnabledPluginCreatesEncryptedIndices() throws Exception {
+        logger.info("Testing that enabled plugin creates encrypted indices");
+
+        // Create index with cryptofs (plugin must be explicitly enabled in test cluster)
+        Settings indexSettings = Settings
+            .builder()
+            .put("index.store.type", "cryptofs")
+            .put("index.store.crypto.key_provider", "dummy")
+            .put("index.store.crypto.kms.key_arn", "test-enabled-key")
+            .put("index.number_of_shards", 1)
+            .put("index.number_of_replicas", 0)
+            .build();
+
+        client().admin().indices().prepareCreate("enabled-test-index").setSettings(indexSettings).get();
+        ensureGreen("enabled-test-index");
+
+        // Verify encryption is active
+        GetSettingsResponse settings = client().admin().indices().prepareGetSettings("enabled-test-index").get();
+        assertThat("Index should use cryptofs", settings.getSetting("enabled-test-index", "index.store.type"), equalTo("cryptofs"));
+
+        // Verify encryption works by indexing and retrieving data
+        int numDocs = randomIntBetween(10, 50);
+        for (int i = 0; i < numDocs; i++) {
+            client().prepareIndex("enabled-test-index").setSource("enabled_test", true, "doc_id", i).get();
+        }
+        refresh("enabled-test-index");
+
+        SearchResponse response = client().prepareSearch("enabled-test-index").setSize(0).get();
+        assertThat("All documents should be retrievable", response.getHits().getTotalHits().value(), equalTo((long) numDocs));
+
+        logger.info("Enabled plugin test completed - {} docs indexed and retrieved", numDocs);
+    }
+
+    /**
+     * Tests plugin state transitions and behavior consistency.
+     */
+    public void testPluginStateConsistency() throws Exception {
+        logger.info("Testing plugin state consistency");
+
+        // Test enabled state
+        Settings enabledSettings = Settings.builder().put(CryptoDirectoryPlugin.CRYPTO_PLUGIN_ENABLED, true).build();
+        CryptoDirectoryPlugin enabledPlugin = new CryptoDirectoryPlugin(enabledSettings);
+
+        assertFalse("Plugin should not be disabled when enabled", enabledPlugin.isDisabled());
+        assertFalse("Enabled plugin should register factories", enabledPlugin.getDirectoryFactories().isEmpty());
+        assertNotNull("Enabled plugin should provide cryptofs factory", enabledPlugin.getDirectoryFactories().get("cryptofs"));
+
+        // Test disabled state
+        Settings disabledSettings = Settings.builder().put(CryptoDirectoryPlugin.CRYPTO_PLUGIN_ENABLED, false).build();
+        CryptoDirectoryPlugin disabledPlugin = new CryptoDirectoryPlugin(disabledSettings);
+
+        assertTrue("Plugin should be disabled", disabledPlugin.isDisabled());
+        assertTrue("Disabled plugin should not register factories", disabledPlugin.getDirectoryFactories().isEmpty());
+
+        // Test default state (should be disabled by default)
+        CryptoDirectoryPlugin defaultPlugin = new CryptoDirectoryPlugin(Settings.EMPTY);
+        assertTrue("Plugin should be disabled by default", defaultPlugin.isDisabled());
+
+        logger.info("Plugin state consistency test completed");
     }
 }

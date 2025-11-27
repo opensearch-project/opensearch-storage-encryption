@@ -222,4 +222,73 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
          * FIX PENDING: https://github.com/opensearch-project/opensearch-storage-encryption/issues/47
          */
     }
+
+    // ==================== Enable/Disable Flag Tests ====================
+
+    /**
+     * Test that plugin is enabled when setting is true.
+     */
+    public void testPluginEnabledWhenSettingIsTrue() {
+        org.opensearch.common.settings.Settings settings = org.opensearch.common.settings.Settings
+            .builder()
+            .put(CryptoDirectoryPlugin.CRYPTO_PLUGIN_ENABLED, true)
+            .build();
+        CryptoDirectoryPlugin plugin = new CryptoDirectoryPlugin(settings);
+        assertFalse("Plugin should not be disabled when enabled setting is true", plugin.isDisabled());
+    }
+
+    /**
+     * Test that plugin is disabled by default.
+     */
+    public void testPluginDisabledByDefault() {
+        CryptoDirectoryPlugin plugin = new CryptoDirectoryPlugin(org.opensearch.common.settings.Settings.EMPTY);
+        assertTrue("Plugin should be disabled by default", plugin.isDisabled());
+    }
+
+    /**
+     * Test that no directory factories are registered when plugin is disabled.
+     */
+    public void testNoDirectoryFactoriesWhenDisabled() {
+        org.opensearch.common.settings.Settings settings = org.opensearch.common.settings.Settings
+            .builder()
+            .put(CryptoDirectoryPlugin.CRYPTO_PLUGIN_ENABLED, false)
+            .build();
+        CryptoDirectoryPlugin plugin = new CryptoDirectoryPlugin(settings);
+        assertTrue("Directory factories should be empty when disabled", plugin.getDirectoryFactories().isEmpty());
+    }
+
+    /**
+     * Test that directory factory is registered when plugin is enabled.
+     */
+    public void testDirectoryFactoryRegisteredWhenEnabled() {
+        org.opensearch.common.settings.Settings settings = org.opensearch.common.settings.Settings
+            .builder()
+            .put(CryptoDirectoryPlugin.CRYPTO_PLUGIN_ENABLED, true)
+            .build();
+        CryptoDirectoryPlugin plugin = new CryptoDirectoryPlugin(settings);
+        assertFalse("Directory factories should not be empty when enabled", plugin.getDirectoryFactories().isEmpty());
+        assertNotNull("CryptoFS factory should be registered", plugin.getDirectoryFactories().get("cryptofs"));
+    }
+
+    /**
+     * Test that enabled setting is included in plugin settings.
+     */
+    public void testEnabledSettingIncluded() {
+        CryptoDirectoryPlugin plugin = new CryptoDirectoryPlugin(org.opensearch.common.settings.Settings.EMPTY);
+        assertTrue(
+            "Settings should contain enabled setting",
+            plugin.getSettings().contains(CryptoDirectoryPlugin.CRYPTO_PLUGIN_ENABLED_SETTING)
+        );
+    }
+
+    /**
+     * Test that enabled setting has correct default value (false - disabled by default).
+     */
+    public void testEnabledSettingDefault() {
+        assertEquals(
+            "Enabled setting default should be false (disabled by default)",
+            Boolean.FALSE,
+            CryptoDirectoryPlugin.CRYPTO_PLUGIN_ENABLED_SETTING.getDefault(org.opensearch.common.settings.Settings.EMPTY)
+        );
+    }
 }

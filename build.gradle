@@ -114,6 +114,7 @@ tasks.named('yamlRestTest').configure {
 }
 
 testClusters.yamlRestTest {
+    setting 'plugins.crypto.enabled', 'true'
     setting 'node.store.crypto.pool_size_percentage', '0.0'
     setting 'node.store.crypto.warmup_percentage', '0.0'
 }

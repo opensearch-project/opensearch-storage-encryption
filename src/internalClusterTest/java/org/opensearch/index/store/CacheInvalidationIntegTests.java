@@ -37,6 +37,7 @@ public class CacheInvalidationIntegTests extends OpenSearchIntegTestCase {
         return Settings
             .builder()
             .put(super.nodeSettings(nodeOrdinal))
+            .put("plugins.crypto.enabled", true)
             .put("node.store.crypto.pool_size_percentage", 0.05)
             .put("node.store.crypto.warmup_percentage", 0.0)
             .put("node.store.crypto.cache_to_pool_ratio", 0.8)
