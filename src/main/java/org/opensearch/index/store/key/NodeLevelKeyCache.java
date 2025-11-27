@@ -132,11 +132,9 @@ public class NodeLevelKeyCache {
                     // No reload method needed since refresh is disabled
                 });
         } else {
-            // Create cache with refresh and expiration policy
-            // Keys refresh at intervals, expire after specified duration on consecutive failures
-            Caffeine<Object, Object> builder = Caffeine
-                .newBuilder()
-                .refreshAfterWrite(refreshDuration, java.util.concurrent.TimeUnit.SECONDS);
+            // Create cache with expiration only (no automatic refresh)
+            // Refresh is handled manually by MasterKeyHealthMonitor to avoid reload storms
+            Caffeine<Object, Object> builder = Caffeine.newBuilder();
 
             // Only set expireAfterWrite if keyExpiryDuration is positive
             if (keyExpiryDuration > 0) {
@@ -148,38 +146,7 @@ public class NodeLevelKeyCache {
                 public Key load(ShardCacheKey key) throws Exception {
                     return loadKey(key);
                 }
-
-                @Override
-                public Key reload(ShardCacheKey key, Key oldValue) throws Exception {
-                    String indexUuid = key.getIndexUuid();
-                    String indexName = key.getIndexName();
-
-                    try {
-                        KeyResolver resolver = ShardKeyResolverRegistry.getResolver(indexUuid, key.getShardId(), indexName);
-                        Key newKey = ((DefaultKeyResolver) resolver).loadKeyFromMasterKeyProvider();
-
-                        // Success: Report to health monitor
-                        healthMonitor.reportSuccess(indexUuid, indexName);
-                        return newKey;
-
-                    } catch (Exception e) {
-                        // Background refresh failure - old key still valid in cache
-                        // DON'T report to health monitor (don't trigger blocks)
-                        // Just log and let Caffeine handle (will keep returning old value)
-
-                        logger.info("Background key refresh failed for index {} (old key still valid): {}", indexName, e.getMessage());
-
-                        // Throw to signal refresh failure to Caffeine (it will keep old value)
-                        if (e instanceof KeyCacheException) {
-                            throw e;
-                        }
-                        throw new KeyCacheException(
-                            "Failed to reload key for index: " + indexName + ". Error: " + e.getMessage(),
-                            null,  // No cause - eliminates ~40 lines of AWS SDK stack trace
-                            true
-                        );
-                    }
-                }
+                // No reload method - manual refresh via health monitor
             });
         }
     }
@@ -284,6 +251,48 @@ public class NodeLevelKeyCache {
         ShardCacheKey key = new ShardCacheKey(indexUuid, shardId, indexName);
         // getIfPresent returns null if key is absent or expired
         return keyCache.getIfPresent(key) != null;
+    }
+
+    /**
+     * Manually refreshes a key in the cache by re-loading it from the Master Key Provider.
+     * This is called by MasterKeyHealthMonitor during periodic health checks to prevent
+     * Caffeine's reload storm issue.
+     * 
+     * <p>If the key is not in cache, does nothing (returns false).
+     * If refresh fails, throws the original exception for proper classification.
+     * 
+     * @param indexUuid the index UUID
+     * @param shardId   the shard ID
+     * @param indexName the index name
+     * @return true if refresh succeeded, false if key not in cache
+     * @throws Exception if refresh fails with the original exception for proper error classification
+     */
+    public boolean refreshKey(String indexUuid, int shardId, String indexName) throws Exception {
+        Objects.requireNonNull(indexUuid, "indexUuid cannot be null");
+        Objects.requireNonNull(indexName, "indexName cannot be null");
+
+        ShardCacheKey cacheKey = new ShardCacheKey(indexUuid, shardId, indexName);
+
+        // Only refresh if key exists in cache
+        if (keyCache.getIfPresent(cacheKey) == null) {
+            return false;
+        }
+
+        // Get resolver and load new key
+        KeyResolver resolver = ShardKeyResolverRegistry.getResolver(indexUuid, shardId, indexName);
+        if (resolver == null) {
+            return false;
+        }
+
+        // This can throw - let the exception propagate with full details
+        Key newKey = ((DefaultKeyResolver) resolver).loadKeyFromMasterKeyProvider();
+
+        // Update cache with new key
+        keyCache.put(cacheKey, newKey);
+
+        // Success
+        healthMonitor.reportSuccess(indexUuid, indexName);
+        return true;
     }
 
     /**

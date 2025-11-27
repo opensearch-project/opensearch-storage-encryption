@@ -427,17 +427,24 @@ public class MasterKeyHealthMonitor {
                         continue;
                     }
 
-                    // Try to load THIS index's specific key (validates MasterKey Provider connectivity)
-                    ((DefaultKeyResolver) resolver).loadKeyFromMasterKeyProvider();
+                    // Get any shard ID for cache operations
+                    int shardId = ShardKeyResolverRegistry.getAnyShardIdForIndex(indexUuid);
 
-                    // Success! Remove blocks if they exist
-                    if (hasBlocks(indexName)) {
-                        removeBlocks(indexName);
-                        recoveredCount++;
+                    // Manually refresh the key in cache (avoids Caffeine reload storm)
+                    boolean refreshSuccess = NodeLevelKeyCache.getInstance().refreshKey(indexUuid, shardId, indexName);
+
+                    if (refreshSuccess) {
+                        // Success! Remove blocks if they exist
+                        if (hasBlocks(indexName)) {
+                            removeBlocks(indexName);
+                            recoveredCount++;
+                        }
+
+                        // Clean up failure tracker if index was being tracked
+                        failureTracker.remove(indexUuid);
+                    } else {
+                        continue;
                     }
-
-                    // Clean up failure tracker if index was being tracked
-                    failureTracker.remove(indexUuid);
 
                 } catch (Exception e) {
                     // Key load failed for THIS index
