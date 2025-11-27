@@ -35,7 +35,8 @@ public class RestGetIndexCountForKeyAction extends BaseRestHandler {
     @Override
     protected RestChannelConsumer prepareRequest(RestRequest request, NodeClient client) throws IOException {
         String keyId = request.param("key_id");
-        GetIndexCountForKeyRequest countRequest = new GetIndexCountForKeyRequest(keyId);
+        String keyProvider = request.param("key_provider");
+        GetIndexCountForKeyRequest countRequest = new GetIndexCountForKeyRequest(keyId, keyProvider);
         return channel -> client.execute(GetIndexCountForKeyAction.INSTANCE, countRequest, new RestToXContentListener<>(channel));
     }
 }
