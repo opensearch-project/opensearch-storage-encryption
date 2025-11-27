@@ -69,16 +69,23 @@ public class MasterKeyHealthMonitor {
     static class FailureState {
         final AtomicLong lastFailureTimeMillis;
         final AtomicReference<Exception> lastException;
+        volatile FailureType failureType;
         volatile boolean blocksApplied = false;
 
-        FailureState(Exception exception) {
+        FailureState(Exception exception, FailureType failureType) {
             this.lastFailureTimeMillis = new AtomicLong(System.currentTimeMillis());
             this.lastException = new AtomicReference<>(exception);
+            this.failureType = failureType;
         }
 
-        void recordFailure(Exception exception) {
+        void recordFailure(Exception exception, FailureType failureType) {
             lastFailureTimeMillis.set(System.currentTimeMillis());
             lastException.set(exception);
+            // If new failure is critical and stored state was transient, upgrade to critical
+            // Example: first failure was throttling (TRANSIENT), second failure is disabled key (CRITICAL)
+            if (failureType == FailureType.CRITICAL) {
+                this.failureType = failureType;
+            }
         }
     }
 
@@ -155,27 +162,41 @@ public class MasterKeyHealthMonitor {
 
     /**
      * Reports a key load/reload failure for an index.
-     * Applies blocks on first failure to protect data.
+     * Applies blocks only for critical failures to protect data.
+     * Transient failures (throttling, rate limits) are logged but don't trigger blocks.
      * 
      * @param indexUuid the index UUID
      * @param indexName the index name
      * @param exception the failure exception
+     * @param failureType the type of failure (TRANSIENT or CRITICAL)
      */
-    public void reportFailure(String indexUuid, String indexName, Exception exception) {
+    public void reportFailure(String indexUuid, String indexName, Exception exception, FailureType failureType) {
         FailureState state = failureTracker.get(indexUuid);
 
         if (state == null) {
             // First failure
-            state = new FailureState(exception);
+            state = new FailureState(exception, failureType);
             failureTracker.put(indexUuid, state);
 
-            // Apply blocks on first failure
-            applyBlocks(indexName);
-            state.blocksApplied = true;
+            // Only apply blocks for CRITICAL errors
+            if (failureType == FailureType.CRITICAL) {
+                applyBlocks(indexName);
+                state.blocksApplied = true;
+                logger.warn("Critical KMS error for index {}: {}. Applied blocks.", indexName, exception.getMessage());
+            } else {
+                logger.info("Transient KMS error for index {} (will use cached key): {}", indexName, exception.getMessage());
+            }
 
         } else {
             // Subsequent failure
-            state.recordFailure(exception);
+            state.recordFailure(exception, failureType);
+
+            // If error type escalated from transient to critical, apply blocks now
+            if (failureType == FailureType.CRITICAL && !state.blocksApplied) {
+                applyBlocks(indexName);
+                state.blocksApplied = true;
+                logger.warn("Error escalated to critical for index {}. Applied blocks.", indexName);
+            }
         }
     }
 
@@ -420,24 +441,49 @@ public class MasterKeyHealthMonitor {
 
                 } catch (Exception e) {
                     // Key load failed for THIS index
+                    // Classify the error to determine if blocks are needed
+                    FailureType failureType = KeyCacheException.classify(e);
+
+                    // Get resolver and index name for further checks
+                    KeyResolver resolver = ShardKeyResolverRegistry.getAnyResolverForIndex(indexUuid);
+                    String indexName = resolver != null ? ((DefaultKeyResolver) resolver).getIndexName() : indexUuid;
+
+                    // Check if key is still cached (not expired)
+                    // We should only apply blocks if the cached key has expired or doesn't exist
+                    boolean keyInCache = false;
+                    if (resolver != null) {
+                        int shardId = ShardKeyResolverRegistry.getAnyShardIdForIndex(indexUuid);
+                        keyInCache = NodeLevelKeyCache.getInstance().isKeyPresentInCache(indexUuid, shardId, indexName);
+                    }
+
                     FailureState state = failureTracker.get(indexUuid);
                     if (state == null) {
                         // First failure detected by health check (early detection!)
-                        state = new FailureState(e);
+                        state = new FailureState(e, failureType);
                         failureTracker.put(indexUuid, state);
 
-                        // Get index name for logging
-                        KeyResolver resolver = ShardKeyResolverRegistry.getAnyResolverForIndex(indexUuid);
-                        String indexName = resolver != null ? ((DefaultKeyResolver) resolver).getIndexName() : indexUuid;
-
-                        // Apply blocks to protect data
-                        if (indexName != null && !indexName.equals(indexUuid)) {
+                        // Apply blocks only if:
+                        // 1. Error is CRITICAL, AND
+                        // 2. Key is NOT in cache (expired or never loaded)
+                        if (indexName != null && !indexName.equals(indexUuid) && failureType == FailureType.CRITICAL && !keyInCache) {
                             applyBlocks(indexName);
                             state.blocksApplied = true;
+                            logger.warn("Critical KMS error for index {} with no cached key. Applied blocks.", indexName);
+                        } else if (failureType == FailureType.CRITICAL && keyInCache) {
+                            logger.info("Critical KMS error for index {} but cached key still valid. No blocks applied.", indexName);
                         }
                     } else {
                         // Still failing, update failure time
-                        state.recordFailure(e);
+                        state.recordFailure(e, failureType);
+
+                        // If error escalated to critical AND key expired, apply blocks
+                        if (failureType == FailureType.CRITICAL && !state.blocksApplied && !keyInCache) {
+                            if (indexName != null && !indexName.equals(indexUuid)) {
+                                applyBlocks(indexName);
+                                state.blocksApplied = true;
+                                logger.warn("Error escalated to critical for index {} and cached key expired. Applied blocks.", indexName);
+                            }
+                        }
                     }
                 }
             }

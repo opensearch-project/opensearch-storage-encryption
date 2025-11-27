@@ -166,6 +166,23 @@ public class ShardKeyResolverRegistry {
     }
 
     /**
+     * Gets any shard ID for the specified index UUID that exists on this node.
+     * Since all shards of an index share the same master key, any shard ID can be used
+     * for cache lookups.
+     * 
+     * @param indexUuid the unique identifier for the index
+     * @return any shard ID for this index, or -1 if no shards exist on this node
+     */
+    public static int getAnyShardIdForIndex(String indexUuid) {
+        for (ShardCacheKey key : resolverCache.keySet()) {
+            if (key.getIndexUuid().equals(indexUuid)) {
+                return key.getShardId();  // Return first match - all shards share same master key
+            }
+        }
+        return -1;  // No shards for this index on this node
+    }
+
+    /**
      * Gets all unique index UUIDs that have encrypted shards on this node.
      * This deduplicates the shard-level entries to return index-level UUIDs.
      * 

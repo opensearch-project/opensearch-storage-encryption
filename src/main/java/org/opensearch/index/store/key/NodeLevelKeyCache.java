@@ -163,14 +163,16 @@ public class NodeLevelKeyCache {
                         return newKey;
 
                     } catch (Exception e) {
-                        // Failure: Report to health monitor (will apply blocks)
-                        healthMonitor.reportFailure(indexUuid, indexName, e);
+                        // Background refresh failure - old key still valid in cache
+                        // DON'T report to health monitor (don't trigger blocks)
+                        // Just log and let Caffeine handle (will keep returning old value)
 
-                        // If it's already a KeyCacheException with clean message, just rethrow
+                        logger.info("Background key refresh failed for index {} (old key still valid): {}", indexName, e.getMessage());
+
+                        // Throw to signal refresh failure to Caffeine (it will keep old value)
                         if (e instanceof KeyCacheException) {
                             throw e;
                         }
-                        // Only wrap unexpected exceptions
                         throw new KeyCacheException(
                             "Failed to reload key for index: " + indexName + ". Error: " + e.getMessage(),
                             null,  // No cause - eliminates ~40 lines of AWS SDK stack trace
@@ -183,7 +185,8 @@ public class NodeLevelKeyCache {
     }
 
     /**
-     * Loads a key from Master Key Provider and reports status to health monitor.
+     * Loads a key from Master Key Provider during initial load or post-expiry.
+     * Reports failures to health monitor, applying blocks only for critical errors.
      * 
      * @param key the shard cache key
      * @return the loaded encryption key
@@ -207,14 +210,21 @@ public class NodeLevelKeyCache {
             return loadedKey;
 
         } catch (Exception e) {
-            // Failure: Report to health monitor (will apply blocks)
-            healthMonitor.reportFailure(indexUuid, indexName, e);
+            // Classify the error to determine if blocks are needed
+            FailureType failureType = KeyCacheException.classify(e);
 
-            // If it's already a KeyCacheException with clean message, just rethrow
+            // Only report critical failures that require blocking
+            // Transient failures are logged but don't trigger blocks
+            if (failureType == FailureType.CRITICAL) {
+                healthMonitor.reportFailure(indexUuid, indexName, e, failureType);
+            } else {
+                logger.warn("Transient error loading key for index {} (will retry): {}", indexName, e.getMessage());
+            }
+
+            // Re-throw to prevent caching invalid state
             if (e instanceof KeyCacheException) {
                 throw e;
             }
-            // Only wrap unexpected exceptions
             throw new KeyCacheException("Failed to load key for index: " + indexName + ". Error: " + e.getMessage(), null, true);
         }
     }
@@ -256,6 +266,24 @@ public class NodeLevelKeyCache {
         Objects.requireNonNull(indexUuid, "indexUuid cannot be null");
         Objects.requireNonNull(indexName, "indexName cannot be null");
         keyCache.invalidate(new ShardCacheKey(indexUuid, shardId, indexName));
+    }
+
+    /**
+     * Checks if a key is present in the cache (not expired).
+     * Used by health monitor to determine if blocks should be applied.
+     * 
+     * @param indexUuid the index UUID
+     * @param shardId   the shard ID
+     * @param indexName the index name
+     * @return true if key is cached and valid, false otherwise
+     */
+    public boolean isKeyPresentInCache(String indexUuid, int shardId, String indexName) {
+        Objects.requireNonNull(indexUuid, "indexUuid cannot be null");
+        Objects.requireNonNull(indexName, "indexName cannot be null");
+
+        ShardCacheKey key = new ShardCacheKey(indexUuid, shardId, indexName);
+        // getIfPresent returns null if key is absent or expired
+        return keyCache.getIfPresent(key) != null;
     }
 
     /**

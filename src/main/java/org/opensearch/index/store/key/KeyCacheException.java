@@ -9,6 +9,9 @@ package org.opensearch.index.store.key;
  * This exception can optionally suppress stack traces to reduce log spam
  * for expected failure scenarios (e.g., when keys are disabled or Master Key Provider is unavailable).
  * 
+ * <p>Also provides utilities for classifying exceptions into transient vs critical failures
+ * to determine whether index blocks should be applied.
+ * 
  * @opensearch.internal
  */
 public class KeyCacheException extends RuntimeException {
@@ -58,5 +61,70 @@ public class KeyCacheException extends RuntimeException {
 
         String message = root.getMessage();
         return message != null ? message : root.getClass().getSimpleName();
+    }
+
+    /**
+     * Classifies an exception from Master Key Provider operations into transient vs critical failures.
+     * 
+     * <p>Transient failures (throttling, rate limits, temporary network issues) should not trigger
+     * index blocks as the system can continue using cached keys. Critical failures (disabled keys,
+     * revoked keys, access denied) require blocks to protect data integrity.
+     * 
+     * @param e the exception to classify
+     * @return TRANSIENT if the error is temporary, CRITICAL if it requires blocking
+     */
+    public static FailureType classify(Exception e) {
+        if (e == null) {
+            return FailureType.CRITICAL;
+        }
+
+        String message = e.getMessage();
+        String rootMessage = extractRootCauseMessage(e);
+
+        // Check for transient AWS KMS errors
+        if (isTransientError(message, rootMessage)) {
+            return FailureType.TRANSIENT;
+        }
+
+        // All other errors are considered critical (disabled key, access denied, etc.)
+        return FailureType.CRITICAL;
+    }
+
+    /**
+     * Checks if the error indicates a transient/throttling issue.
+     */
+    private static boolean isTransientError(String message, String rootMessage) {
+        // Common AWS throttling and transient error patterns
+        return containsAny(
+            message,
+            rootMessage,
+            "ThrottlingException",
+            "Rate exceeded",
+            "RequestLimitExceeded",
+            "TooManyRequestsException",
+            "SlowDown",
+            "ServiceUnavailableException",
+            "InternalErrorException",
+            "503 Service Unavailable"
+        );
+    }
+
+    /**
+     * Checks if any of the patterns appear in the message or root message (case-insensitive).
+     */
+    private static boolean containsAny(String message, String rootMessage, String... patterns) {
+        if (message == null && rootMessage == null) {
+            return false;
+        }
+
+        String combined = (message != null ? message : "") + " " + (rootMessage != null ? rootMessage : "");
+        String combinedLower = combined.toLowerCase();
+
+        for (String pattern : patterns) {
+            if (combinedLower.contains(pattern.toLowerCase())) {
+                return true;
+            }
+        }
+        return false;
     }
 }
