@@ -430,20 +430,46 @@ public class MasterKeyHealthMonitor {
                     // Get any shard ID for cache operations
                     int shardId = ShardKeyResolverRegistry.getAnyShardIdForIndex(indexUuid);
 
-                    // Manually refresh the key in cache (avoids Caffeine reload storm)
-                    boolean refreshSuccess = NodeLevelKeyCache.getInstance().refreshKey(indexUuid, shardId, indexName);
+                    // Try to recover the key (refresh if cached, reload if expired)
+                    boolean keyRecovered = false;
 
-                    if (refreshSuccess) {
-                        // Success! Remove blocks if they exist
-                        if (hasBlocks(indexName)) {
-                            removeBlocks(indexName);
-                            recoveredCount++;
+                    try {
+                        // Step 1: Try to refresh the key in cache (avoids reload storm for cached keys)
+                        boolean refreshed = NodeLevelKeyCache.getInstance().refreshKey(indexUuid, shardId, indexName);
+
+                        if (refreshed) {
+                            // Key was in cache and successfully refreshed
+                            keyRecovered = true;
+                            logger.info("Successfully refreshed cached key for index {}", indexName);
+                        } else {
+                            // Key not in cache (expired), try loading it from scratch
+                            logger.info("Key expired for index {}, attempting reload from KMS", indexName);
+
+                            try {
+                                NodeLevelKeyCache.getInstance().get(indexUuid, shardId, indexName);
+                                keyRecovered = true;
+                                logger.info("Successfully reloaded expired key for index {}", indexName);
+                            } catch (Exception loadException) {
+                                // Load failed, propagate to outer catch for error classification
+                                throw loadException;
+                            }
                         }
 
-                        // Clean up failure tracker if index was being tracked
-                        failureTracker.remove(indexUuid);
-                    } else {
-                        continue;
+                        if (keyRecovered) {
+                            // Remove blocks if they exist
+                            if (hasBlocks(indexName)) {
+                                removeBlocks(indexName);
+                                recoveredCount++;
+                                logger.info("Removed blocks from recovered index {}", indexName);
+                            }
+
+                            // Clean up failure tracker
+                            failureTracker.remove(indexUuid);
+                        }
+
+                    } catch (Exception recoveryException) {
+                        // Either refresh or load failed, treat as key load failure
+                        throw recoveryException;
                     }
 
                 } catch (Exception e) {
