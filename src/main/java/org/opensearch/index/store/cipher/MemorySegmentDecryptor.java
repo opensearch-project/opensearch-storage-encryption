@@ -232,9 +232,12 @@ public class MemorySegmentDecryptor {
     ) throws Exception {
 
         // Fast path: single frame
-        if (fileOffset + length <= frameSize) {
-            byte[] frameIV = AesCipherFactory.computeFrameIV(directoryKey, messageId, 0, fileOffset, filePath, cache);
-            decryptInPlace(addr, length, fileKey, frameIV, fileOffset);
+        long frameNumber = fileOffset / frameSize;
+        long offsetWithinFrame = fileOffset % frameSize;
+
+        if (offsetWithinFrame + length <= frameSize) {
+            byte[] frameIV = AesCipherFactory.computeFrameIV(directoryKey, messageId, frameNumber, offsetWithinFrame, filePath, cache);
+            decryptInPlace(addr, length, fileKey, frameIV, offsetWithinFrame);
             return;
         }
 
@@ -244,7 +247,7 @@ public class MemorySegmentDecryptor {
         long bufferOffset = 0;
 
         while (remaining > 0) {
-            long frameNumber = currentOffset / frameSize;
+            frameNumber = currentOffset / frameSize;
             long frameStart = frameNumber * frameSize;
             long frameEnd = frameStart + frameSize;
             long bytesInFrame = Math.min(remaining, frameEnd - currentOffset);

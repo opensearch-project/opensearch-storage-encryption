@@ -29,7 +29,6 @@ import org.opensearch.index.store.cipher.AesCipherFactory;
 import org.opensearch.index.store.cipher.EncryptionAlgorithm;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.footer.EncryptionFooter;
-import org.opensearch.index.store.key.HkdfKeyDerivation;
 import org.opensearch.index.store.key.KeyResolver;
 
 /**
@@ -82,23 +81,19 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         this.directoryKey = keyResolver.getDataKey().getEncoded();
 
         // Read footer with temporary key for authentication
+        // Read footer with temporary key for authentication
         EncryptionFooter footer = EncryptionFooter.readViaFileChannel(normalizedFilePath, channel, directoryKey, encryptionMetadataCache);
-        this.messageId = footer.getMessageId();
-        this.frameSize = footer.getFrameSize();
-        this.frameSizePower = footer.getFrameSizePower();
-        this.algorithm = EncryptionAlgorithm.fromId(footer.getAlgorithmId());
 
-        // Try cache for file key first
-        byte[] derivedKey = encryptionMetadataCache.getFileKey(normalizedFilePath);
-        if (derivedKey == null) {
-            // Cache miss - derive and cache
-            derivedKey = HkdfKeyDerivation.deriveAesKey(directoryKey, messageId, "file-encryption");
-            encryptionMetadataCache.putFileKey(normalizedFilePath, derivedKey);
-        }
-        this.keySpec = new SecretKeySpec(derivedKey, ALGORITHM);
+        // Get or create metadata atomically - ensures footer and key are always consistent
+        var metadata = encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, directoryKey);
+        this.messageId = metadata.getFooter().getMessageId();
+        this.frameSize = metadata.getFooter().getFrameSize();
+        this.frameSizePower = metadata.getFooter().getFrameSizePower();
+        this.algorithm = EncryptionAlgorithm.fromId(metadata.getFooter().getAlgorithmId());
+        this.keySpec = new SecretKeySpec(metadata.getFileKey(), ALGORITHM);
 
         // Calculate footer length
-        this.footerLength = footer.getFooterLength();
+        this.footerLength = metadata.getFooter().getFooterLength();
     }
 
     public CryptoBufferedIndexInput(

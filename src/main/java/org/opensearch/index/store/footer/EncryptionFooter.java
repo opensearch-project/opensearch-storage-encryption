@@ -383,7 +383,7 @@ public class EncryptionFooter {
         byte[] footerBytes = Arrays.copyOfRange(bufferArray, footerStart, bufferArray.length);
 
         EncryptionFooter footer = deserialize(footerBytes, fileKey);
-        encryptionMetadataCache.putFooter(normalizedFilePath, footer);
+        encryptionMetadataCache.putFooter(normalizedFilePath, footer, fileKey);
         return footer;
     }
 

@@ -9,6 +9,7 @@ import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SI
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -206,6 +207,10 @@ public class CryptoDirectIODirectory extends FSDirectory {
     public void deleteFile(String name) throws IOException {
         Path file = dirPath.resolve(name);
 
+        // Cancel any pending async read-ahead operations for this file FIRST
+        // to prevent race where read-ahead tries to load blocks from deleted/replaced file
+        readAheadworker.cancel(file);
+
         if (blockCache != null) {
             try {
                 long fileSize = Files.size(file);
@@ -222,12 +227,13 @@ public class CryptoDirectIODirectory extends FSDirectory {
                 LOGGER.warn("Failed to get file size for clearing cache for deleting shard", e);
             }
         }
-        encryptionMetadataCache.invalidateFile(EncryptionMetadataCache.normalizePath(file));
         super.deleteFile(name);
+        encryptionMetadataCache.invalidateFile(EncryptionMetadataCache.normalizePath(file));
     }
 
     /**
-     * Calculate content length with OSEF validation.
+     * Calculate content length by reading footer if file is an OSEF file.
+     * Returns raw file size for non-OSEF files (< MIN_FOOTER_SIZE).
      */
     private long calculateContentLengthWithValidation(Path file, long rawFileSize) throws IOException {
         if (rawFileSize < EncryptionMetadataTrailer.MIN_FOOTER_SIZE) {
@@ -236,13 +242,24 @@ public class CryptoDirectIODirectory extends FSDirectory {
 
         String normalizedPath = EncryptionMetadataCache.normalizePath(file);
 
-        // Fast path: check cache first - else throw error as cache must be populated during IndexOutput
+        // Check cache first for fast path
         EncryptionFooter cachedFooter = encryptionMetadataCache.getFooter(normalizedPath);
         if (cachedFooter != null) {
             return rawFileSize - cachedFooter.getFooterLength();
-        } else {
-            LOGGER.error("Cache miss for footer for file - {}", file.toString());
-            throw new RuntimeException("Unexpected footer cache miss for " + file.toString());
+        }
+
+        // Cache miss - read footer from disk (happens during file open before cache populated)
+        try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
+            byte[] directoryKey = dataKeyBytes;
+            EncryptionFooter footer = EncryptionFooter.readViaFileChannel(normalizedPath, channel, directoryKey, encryptionMetadataCache);
+
+            // Load metadata atomically into cache for future reads
+            encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, directoryKey);
+
+            return rawFileSize - footer.getFooterLength();
+        } catch (EncryptionFooter.NotOSEFFileException e) {
+            // Not an encrypted file - return raw size
+            return rawFileSize;
         }
     }
 
