@@ -191,8 +191,8 @@ public class MasterKeyHealthMonitor {
             state = new FailureState(exception, failureType);
             failureTracker.put(indexUuid, state);
 
-            // Only apply blocks for CRITICAL errors
-            if (failureType == FailureType.CRITICAL) {
+            // Only apply blocks for CRITICAL errors with valid index name
+            if (failureType == FailureType.CRITICAL && indexName != null) {
                 applyBlocks(indexName);
                 state.blocksApplied = true;
             }
@@ -202,7 +202,7 @@ public class MasterKeyHealthMonitor {
             state.recordFailure(exception, failureType);
 
             // If error type escalated from transient to critical, apply blocks now
-            if (failureType == FailureType.CRITICAL && !state.blocksApplied) {
+            if (failureType == FailureType.CRITICAL && !state.blocksApplied && indexName != null) {
                 applyBlocks(indexName);
                 state.blocksApplied = true;
             }
