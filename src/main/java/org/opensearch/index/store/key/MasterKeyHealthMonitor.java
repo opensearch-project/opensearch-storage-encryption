@@ -168,8 +168,6 @@ public class MasterKeyHealthMonitor {
                     INSTANCE.refreshIntervalSeconds,  // Use configured interval
                     TimeUnit.SECONDS
                 );
-
-            logger.info("Started health monitoring with interval: {}s", INSTANCE.refreshIntervalSeconds);
         }
     }
 
@@ -468,7 +466,6 @@ public class MasterKeyHealthMonitor {
                             if (hasBlocks(indexName)) {
                                 removeBlocks(indexName);
                                 recoveredCount++;
-                                logger.info("Removed blocks from recovered index {}", indexName);
                             }
 
                             // Clean up failure tracker
@@ -508,9 +505,6 @@ public class MasterKeyHealthMonitor {
                         if (indexName != null && !indexName.equals(indexUuid) && failureType == FailureType.CRITICAL && !keyInCache) {
                             applyBlocks(indexName);
                             state.blocksApplied = true;
-                            logger.warn("Critical KMS error for index {} with no cached key. Applied blocks.", indexName);
-                        } else if (failureType == FailureType.CRITICAL && keyInCache) {
-                            logger.info("Critical KMS error for index {} but cached key still valid. No blocks applied.", indexName);
                         }
                     } else {
                         state.recordFailure(e, failureType);
@@ -519,7 +513,6 @@ public class MasterKeyHealthMonitor {
                             if (indexName != null && !indexName.equals(indexUuid)) {
                                 applyBlocks(indexName);
                                 state.blocksApplied = true;
-                                logger.warn("Error escalated to critical for index {} and cached key expired. Applied blocks.", indexName);
                             }
                         }
                     }
@@ -554,7 +547,6 @@ public class MasterKeyHealthMonitor {
                     }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    logger.warn("Interrupted while waiting for health check executor to terminate");
                 }
             }
         }

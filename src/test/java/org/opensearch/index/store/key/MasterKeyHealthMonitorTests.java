@@ -408,4 +408,99 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
         ConcurrentHashMap<String, FailureState> tracker = getFailureTracker();
         assertFalse(tracker.containsKey("non-existent-uuid"));
     }
+
+    /**
+     * Test unknown errors default to TRANSIENT 
+     * This validates the safer default behavior where unknown errors don't block indices
+     */
+    public void testUnknownErrorsDefaultToTransient() throws Exception {
+        // Setup
+        when(mockIndexMetadata.getSettings()).thenReturn(Settings.EMPTY);
+
+        // Unknown/unexpected error that doesn't match any critical or transient pattern
+        Exception unknownError = new RuntimeException("Some unexpected random error XYZ-999");
+
+        // Classify the error (should default to TRANSIENT)
+        FailureType type = KeyCacheException.classify(unknownError);
+        assertEquals("Unknown errors should default to TRANSIENT", FailureType.TRANSIENT, type);
+
+        // Act: Report this unknown error
+        monitor.reportFailure(TEST_INDEX_UUID, TEST_INDEX_NAME, unknownError, type);
+
+        Thread.sleep(100);
+
+        // Assert: No blocks applied (transient errors don't trigger blocks)
+        verify(mockIndicesAdminClient, never()).updateSettings(any());
+
+        ConcurrentHashMap<String, FailureState> tracker = getFailureTracker();
+        FailureState state = tracker.get(TEST_INDEX_UUID);
+        assertNotNull("Failure should be tracked", state);
+        assertFalse("Blocks should not be applied for unknown error", state.blocksApplied);
+        assertEquals("Failure type should be TRANSIENT", FailureType.TRANSIENT, state.failureType);
+    }
+
+    /**
+     * Test explicit critical error patterns are correctly identified
+     */
+    public void testExplicitCriticalErrorPatterns() throws Exception {
+        // Setup
+        when(mockIndexMetadata.getSettings()).thenReturn(Settings.EMPTY);
+
+        // Test various critical error patterns
+        String[] criticalPatterns = {
+            "DisabledException: Key is disabled",
+            "AccessDeniedException: Access denied",
+            "NotFoundException: Key not found",
+            "access denied to resource"
+        };
+
+        for (String pattern : criticalPatterns) {
+            Exception criticalError = new RuntimeException(pattern);
+            FailureType type = KeyCacheException.classify(criticalError);
+            assertEquals("Pattern '" + pattern + "' should be classified as CRITICAL", 
+                FailureType.CRITICAL, type);
+        }
+    }
+
+    /**
+     * Test explicit transient error patterns are correctly identified
+     */
+    public void testExplicitTransientErrorPatterns() throws Exception {
+        // Test various transient error patterns
+        String[] transientPatterns = {
+            "ThrottlingException: Rate exceeded",
+            "RequestLimitExceeded",
+            "503 Service Unavailable",
+            "Connection timeout occurred",
+            "Network error: Failed to connect" };
+
+        for (String pattern : transientPatterns) {
+            Exception transientError = new RuntimeException(pattern);
+            FailureType type = KeyCacheException.classify(transientError);
+            assertEquals("Pattern '" + pattern + "' should be classified as TRANSIENT", FailureType.TRANSIENT, type);
+        }
+    }
+
+    /**
+     * Test AWS SDK exception types detected via class name (most reliable method)
+     * This simulates what happens when DisabledException is wrapped in KeyCacheException
+     */
+    public void testExceptionTypeDetectionForWrappedAwsSdkExceptions() throws Exception {
+        // Create a real DisabledException class for testing
+        class DisabledException extends Exception {
+            DisabledException(String message) {
+                super(message);
+            }
+        }
+
+        Exception awsKmsDisabled = new DisabledException("arn:aws:kms:us-east-1:...:key/... is disabled.");
+
+        Exception wrapped = new KeyCacheException("Failed to load key for index: logs-221998", awsKmsDisabled);
+
+        // The class name check should detect "DisabledException" in the cause chain
+        // even though the message doesn't contain "DisabledException"
+        FailureType type = KeyCacheException.classify(wrapped);
+
+        assertEquals("Wrapped DisabledException should be classified as CRITICAL", FailureType.CRITICAL, type);
+    }
 }
