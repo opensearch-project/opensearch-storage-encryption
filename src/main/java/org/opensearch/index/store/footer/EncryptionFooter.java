@@ -318,7 +318,7 @@ public class EncryptionFooter {
      *
      * @param normalizedFilePath normalized file path string
      * @param channel FileChannel to read from
-     * @param fileKey Key for footer authentication
+     * @param directoryKey Directory key for footer authentication and file key derivation
      * @param encryptionMetadataCache cache for encryption metadata
      * @return Deserialized EncryptionFooter
      * @throws IOException If reading or deserialization fails
@@ -327,7 +327,7 @@ public class EncryptionFooter {
     public static EncryptionFooter readViaFileChannel(
         String normalizedFilePath,
         java.nio.channels.FileChannel channel,
-        byte[] fileKey,
+        byte[] directoryKey,
         EncryptionMetadataCache encryptionMetadataCache
     ) throws IOException {
 
@@ -382,8 +382,8 @@ public class EncryptionFooter {
         int footerStart = bufferArray.length - footerLength;
         byte[] footerBytes = Arrays.copyOfRange(bufferArray, footerStart, bufferArray.length);
 
-        EncryptionFooter footer = deserialize(footerBytes, fileKey);
-        encryptionMetadataCache.putFooter(normalizedFilePath, footer, fileKey);
+        EncryptionFooter footer = deserialize(footerBytes, directoryKey);
+        encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, directoryKey);
         return footer;
     }
 

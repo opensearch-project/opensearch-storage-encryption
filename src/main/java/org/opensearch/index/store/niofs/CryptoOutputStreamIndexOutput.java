@@ -218,7 +218,7 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
                 super.close();
 
                 if (normalizedFilePath != null) {
-                    encryptionMetadataCache.putFooter(normalizedFilePath, footer, this.directoryKey);
+                    encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, this.directoryKey);
                 }
 
             } catch (IOException e) {

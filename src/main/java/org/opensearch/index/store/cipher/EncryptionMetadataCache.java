@@ -113,14 +113,6 @@ public class EncryptionMetadataCache {
         return metadata != null ? metadata.getFileKey() : null;
     }
 
-    /**
-     * @deprecated Use getOrLoadMetadata() instead for atomic footer+key operations
-     */
-    @Deprecated
-    public void putFooter(String normalizedPath, EncryptionFooter footer, byte[] directoryKey) {
-        getOrLoadMetadata(normalizedPath, footer, directoryKey);
-    }
-
     public byte[] getFrameIv(String normalizedPath, long frameNumber) {
         return frameIvCache.get(new FrameKey(normalizedPath, frameNumber));
     }

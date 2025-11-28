@@ -352,7 +352,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                 footer.setFrameCount(totalFrames);
                 out.write(footer.serialize(null, this.directoryKey));
 
-                encryptionMetadataCache.putFooter(normalizedPath, footer, this.directoryKey);
+                encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, this.directoryKey);
 
                 // close() only flushes to the OS (kernel page cache). It does NOT guarantee
                 // * durability on disk (no fsync here). Lucene will provide the durability boundary by calling
