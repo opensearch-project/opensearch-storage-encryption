@@ -23,6 +23,8 @@ import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.common.unit.TimeValue;
+import org.opensearch.index.store.CryptoDirectoryFactory;
 import org.opensearch.transport.client.Client;
 
 /**
@@ -56,9 +58,11 @@ public class MasterKeyHealthMonitor {
     private final ScheduledExecutorService healthCheckExecutor;
     private volatile ScheduledFuture<?> healthCheckTask = null;
 
+    // Configurable health check interval from node settings
+    private final long refreshIntervalSeconds;
+
     // Random initial delay (0-300 seconds) to prevent thundering herd when cluster starts
     private static final long HEALTH_CHECK_INITIAL_DELAY_MAX_SECONDS = 300;
-    private static final long HEALTH_CHECK_INTERVAL_SECONDS = 3600;
 
     // Grace period between write and read block (allows in-flight reads to complete)
     private static final long BLOCK_GRACE_PERIOD_SECONDS = 10;
@@ -99,8 +103,11 @@ public class MasterKeyHealthMonitor {
      */
     public static synchronized void initialize(Settings settings, Client client, ClusterService clusterService) {
         if (INSTANCE == null) {
-            INSTANCE = new MasterKeyHealthMonitor(client, clusterService);
-            logger.info("Initialized MasterKeyHealthMonitor");
+            TimeValue refreshInterval = CryptoDirectoryFactory.NODE_KEY_REFRESH_INTERVAL_SETTING.get(settings);
+            long refreshIntervalSeconds = refreshInterval.getSeconds();
+
+            INSTANCE = new MasterKeyHealthMonitor(client, clusterService, refreshIntervalSeconds);
+            logger.info("Initialized MasterKeyHealthMonitor with refresh interval: {}", refreshInterval);
         }
     }
 
@@ -121,10 +128,15 @@ public class MasterKeyHealthMonitor {
      * Private constructor.
      * Only creates the monitor instance without starting background threads.
      * Call {@link #start()} to begin health monitoring.
+     * 
+     * @param client the client for cluster operations
+     * @param clusterService the cluster service
+     * @param refreshIntervalSeconds the health check interval in seconds
      */
-    private MasterKeyHealthMonitor(Client client, ClusterService clusterService) {
+    private MasterKeyHealthMonitor(Client client, ClusterService clusterService, long refreshIntervalSeconds) {
         this.client = Objects.requireNonNull(client, "client cannot be null");
         this.clusterService = Objects.requireNonNull(clusterService, "clusterService cannot be null");
+        this.refreshIntervalSeconds = refreshIntervalSeconds;
         this.failureTracker = new ConcurrentHashMap<>();
 
         // Initialize executor but don't start health check yet
@@ -154,9 +166,11 @@ public class MasterKeyHealthMonitor {
                 .scheduleAtFixedRate(
                     INSTANCE::checkKmsHealthAndRecover,
                     randomInitialDelay,
-                    HEALTH_CHECK_INTERVAL_SECONDS,
+                    INSTANCE.refreshIntervalSeconds,  // Use configured interval
                     TimeUnit.SECONDS
                 );
+
+            logger.info("Started health monitoring with interval: {}s", INSTANCE.refreshIntervalSeconds);
         }
     }
 
@@ -326,17 +340,30 @@ public class MasterKeyHealthMonitor {
     private void triggerShardRetry(int recoveredCount) {
         // Use virtual thread - lightweight, no thread pool needed
         Thread.startVirtualThread(() -> {
-            retryWithBackoff(() -> {
-                ClusterRerouteRequest request = new ClusterRerouteRequest();
-                request.setRetryFailed(true);
-                client.admin().cluster().reroute(request).actionGet();
-                logger.info("Successfully triggered shard retry for {} recovered indices", recoveredCount);
-                return true;
-            },
-                3,  // max attempts
-                1000,  // initial delay ms
-                "shard retry"
-            );
+            try {
+                // Wait for shards to finish closing after block removal
+                // This prevents ShardLockObtainFailedException when shards are still closing
+                logger
+                    .info(
+                        "Waiting 30 seconds for shards to finish closing before triggering retry for {} recovered indices",
+                        recoveredCount
+                    );
+                Thread.sleep(30000); // 30 seconds delay
+
+                retryWithBackoff(() -> {
+                    ClusterRerouteRequest request = new ClusterRerouteRequest();
+                    request.setRetryFailed(true);
+                    client.admin().cluster().reroute(request).actionGet();
+                    logger.info("Successfully triggered shard retry for {} recovered indices", recoveredCount);
+                    return true;
+                },
+                    3,  // max attempts
+                    1000,  // initial delay ms
+                    "shard retry"
+                );
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         });
     }
 

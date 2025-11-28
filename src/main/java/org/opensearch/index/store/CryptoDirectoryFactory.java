@@ -166,9 +166,13 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     );
 
     /**
-     * Specifies the node-level interval for refreshing data keys.
-     * Default is 1 hour (1h).
-     * Set to -1 to disable key refresh (keys are loaded once and cached forever).
+     * Specifies the node-level interval for proactive health monitoring of encryption keys.
+     * The health monitor periodically validates all encrypted indices and attempts to refresh their keys,
+     * providing early detection of issues and automatic recovery.
+     * 
+     * Default: 1 hour (1h)
+     * Minimum: 1 second (1s) - must be positive
+     * 
      * This setting applies globally to all indices.
      * 
      * Supported units: s (seconds), m (minutes), h (hours), d (days)
@@ -178,19 +182,21 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         .timeSetting(
             "node.store.crypto.key_refresh_interval",
             TimeValue.timeValueHours(1),  // default: 1 hour
-            TimeValue.timeValueSeconds(-1),  // minimum: -1 means never refresh
+            TimeValue.timeValueSeconds(1),  // minimum: 1 second (must be positive)
             Property.NodeScope
         );
 
     /**
-     * Specifies the node-level expiration time for data keys after refresh failures.
-     * Default is 3 hours (3h).
-     * Set to -1 to never expire keys (same as refresh disabled).
-     * Keys expire after this duration.
+     * Specifies the node-level expiration time for cached encryption keys.
+     * Keys are evicted from cache after this duration and must be reloaded from the key provider.
+     * 
+     * Default: 24 hours (24h)
+     * Set to -1 to never expire keys (cache forever until node restart).
+     * 
      * This setting applies globally to all indices.
      * 
      * Supported units: s (seconds), m (minutes), h (hours), d (days)
-     * Examples: 60s, 10m, 3h, 12h
+     * Examples: 60s, 10m, 3h, 12h, -1 (never expire)
      */
     public static final Setting<TimeValue> NODE_KEY_EXPIRY_INTERVAL_SETTING = Setting
         .timeSetting(

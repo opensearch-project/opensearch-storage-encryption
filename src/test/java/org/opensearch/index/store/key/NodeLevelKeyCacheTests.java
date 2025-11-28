@@ -195,13 +195,11 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         verify(mockResolver, times(1)).loadKeyFromMasterKeyProvider();
     }
 
-    public void testRefreshSuccess() throws Exception {
-        // Use a very short TTL for testing
-        Settings settings = Settings.builder().put("node.store.crypto.key_refresh_interval", "1s").build();
+    public void testExpiryWithNegativeOne() throws Exception {
+        // Set expiry to -1 (never expire)
+        Settings settings = Settings.builder().put("node.store.crypto.key_expiry_interval", "-1").build();
 
-        when(mockResolver.loadKeyFromMasterKeyProvider())
-            .thenReturn(testKey1)  // Initial load
-            .thenReturn(testKey2); // Refresh
+        when(mockResolver.loadKeyFromMasterKeyProvider()).thenReturn(testKey1);
 
         MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
         NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
@@ -210,113 +208,18 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         // Register the mock resolver
         registerMockResolver(TEST_INDEX_UUID, TEST_SHARD_ID);
 
-        // Initial load
-        Key initialKey = cache.get(TEST_INDEX_UUID, TEST_SHARD_ID, "test-index");
-        assertEquals(testKey1, initialKey);
-
-        // Wait for refresh to trigger and complete
-        Thread.sleep(1500);
-
-        // Force a get to ensure refresh is complete
+        // Load key
         cache.get(TEST_INDEX_UUID, TEST_SHARD_ID, "test-index");
 
-        // Wait a bit more for async refresh to complete
-        Thread.sleep(500);
-
-        // Access again - should get refreshed key
-        Key refreshedKey = cache.get(TEST_INDEX_UUID, TEST_SHARD_ID, "test-index");
-        assertEquals(testKey2, refreshedKey);
-    }
-
-    public void testRefreshFailureReturnsOldKey() throws Exception {
-        // Use a very short TTL for testing
-        Settings settings = Settings.builder().put("node.store.crypto.key_refresh_interval", "1s").build();
-
-        when(mockResolver.loadKeyFromMasterKeyProvider())
-            .thenReturn(testKey1)  // Initial load
-            .thenThrow(new RuntimeException("KMS refresh failed")); // Refresh fails
-
-        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
-        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
-        NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
-
-        // Register the mock resolver
-        registerMockResolver(TEST_INDEX_UUID, TEST_SHARD_ID);
-
-        // Initial load
-        Key initialKey = cache.get(TEST_INDEX_UUID, TEST_SHARD_ID, "test-index");
-        assertEquals(testKey1, initialKey);
-
-        // Wait for refresh to trigger (longer wait for async refresh)
+        // Wait for what would normally be an expiry period
         Thread.sleep(2000);
 
-        // Force multiple gets to ensure refresh is triggered and completed
-        for (int i = 0; i < 3; i++) {
-            Key stillOldKey = cache.get(TEST_INDEX_UUID, TEST_SHARD_ID, "test-index");
-            assertEquals(testKey1, stillOldKey);
-            Thread.sleep(100); // Small delay between attempts
-        }
+        // Key should still be cached (never expires with -1)
+        Key sameKey = cache.get(TEST_INDEX_UUID, TEST_SHARD_ID, "test-index");
+        assertEquals(testKey1, sameKey);
 
-        // Wait a bit more for any background refresh to complete
-        Thread.sleep(500);
-
-        // Verify that refresh was attempted (should be at least 2 calls total)
-        verify(mockResolver, org.mockito.Mockito.atLeast(2)).loadKeyFromMasterKeyProvider();
-    }
-
-    public void testMultipleRefreshFailures() throws Exception {
-        // Use a very short TTL for testing, with explicit expiry interval
-        Settings settings = Settings
-            .builder()
-            .put("node.store.crypto.key_refresh_interval", "1s")
-            .put("node.store.crypto.key_expiry_interval", "3s")
-            .build();
-
-        when(mockResolver.loadKeyFromMasterKeyProvider())
-            .thenReturn(testKey1)  // Initial load
-            .thenThrow(new RuntimeException("KMS refresh failed 1"))
-            .thenThrow(new RuntimeException("KMS refresh failed 2"))
-            .thenThrow(new RuntimeException("KMS refresh failed 3"))
-            .thenThrow(new RuntimeException("KMS refresh failed 4")); // For post-expiry load
-
-        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
-        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
-        NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
-
-        // Register the mock resolver
-        registerMockResolver(TEST_INDEX_UUID, TEST_SHARD_ID);
-
-        // Initial load at t=0
-        Key initialKey = cache.get(TEST_INDEX_UUID, TEST_SHARD_ID, "test-index");
-        assertEquals(testKey1, initialKey);
-
-        // Access at t=1.2s - triggers async refresh which fails
-        Thread.sleep(1200);
-        Key key1 = cache.get(TEST_INDEX_UUID, TEST_SHARD_ID, "test-index");
-        assertEquals(testKey1, key1); // Still returns stale key
-
-        // Access at t=2.4s - triggers another async refresh which fails
-        Thread.sleep(1200);
-        Key key2 = cache.get(TEST_INDEX_UUID, TEST_SHARD_ID, "test-index");
-        assertEquals(testKey1, key2); // Still returns stale key
-
-        // Wait past expiry time (3s from initial load) + buffer for async operations
-        // At t=4s, the entry is expired and evicted
-        Thread.sleep(1800);
-
-        // Next access should trigger fresh load() which will fail
-        Exception thrown = null;
-        try {
-            cache.get(TEST_INDEX_UUID, TEST_SHARD_ID, "test-index");
-            fail("Expected KeyCacheException after cache expiry");
-        } catch (KeyCacheException e) {
-            thrown = e;
-            assertTrue(e.getMessage().contains("Failed to load key for index"));
-        }
-        assertNotNull(thrown);
-
-        // Verify at least 4 load attempts (initial + 2 refreshes + post-expiry load)
-        verify(mockResolver, org.mockito.Mockito.atLeast(4)).loadKeyFromMasterKeyProvider();
+        // Should only load once (no reload after "expiry")
+        verify(mockResolver, times(1)).loadKeyFromMasterKeyProvider();
     }
 
     public void testEviction() throws Exception {
@@ -501,45 +404,26 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         assertNotNull(NodeLevelKeyCache.getInstance());
     }
 
-    public void testCacheWithRefreshDisabled() throws Exception {
-        when(mockResolver.loadKeyFromMasterKeyProvider())
-            .thenReturn(testKey1)  // Initial load
-            .thenReturn(testKey2); // Should never be called with -1 TTL
-
-        // Initialize with TTL = -1 (never refresh)
-        Settings settings = Settings.builder().put("node.store.crypto.key_refresh_interval", "-1").build();
-        MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
-        NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
-        NodeLevelKeyCache cache = NodeLevelKeyCache.getInstance();
-
-        // Register the mock resolver
-        registerMockResolver(TEST_INDEX_UUID, TEST_SHARD_ID);
-
-        // Initial load
-        Key initialKey = cache.get(TEST_INDEX_UUID, TEST_SHARD_ID, "test-index");
-        assertEquals(testKey1, initialKey);
-
-        // Wait for what would be a refresh period
-        Thread.sleep(2000);
-
-        // Access again - should still get same key (no refresh)
-        Key sameKey = cache.get(TEST_INDEX_UUID, TEST_SHARD_ID, "test-index");
-        assertEquals(testKey1, sameKey);
-
-        // Should only load once (no refresh)
-        verify(mockResolver, times(1)).loadKeyFromMasterKeyProvider();
-    }
-
-    public void testInvalidTTLValues() {
-        // Test that invalid time values are rejected
-        Settings settings = Settings.builder().put("node.store.crypto.key_refresh_interval", "invalid").build();
+    public void testInvalidRefreshIntervalValues() {
+        // Test that invalid time format is rejected
+        Settings invalidFormatSettings = Settings.builder().put("node.store.crypto.key_refresh_interval", "invalid").build();
 
         try {
-            CryptoDirectoryFactory.NODE_KEY_REFRESH_INTERVAL_SETTING.get(settings);
-            fail("Expected IllegalArgumentException for invalid TTL value");
+            CryptoDirectoryFactory.NODE_KEY_REFRESH_INTERVAL_SETTING.get(invalidFormatSettings);
+            fail("Expected IllegalArgumentException for invalid format");
         } catch (IllegalArgumentException e) {
             // TimeValue parsing will throw IllegalArgumentException for invalid formats
             assertTrue(e.getMessage().contains("failed to parse") || e.getMessage().contains("unit is missing"));
+        }
+
+        // Test that values below minimum (1 second) are rejected
+        Settings belowMinSettings = Settings.builder().put("node.store.crypto.key_refresh_interval", "500ms").build();
+
+        try {
+            CryptoDirectoryFactory.NODE_KEY_REFRESH_INTERVAL_SETTING.get(belowMinSettings);
+            fail("Expected IllegalArgumentException for value below minimum");
+        } catch (IllegalArgumentException e) {
+            assertNotNull("Exception message should be present", e.getMessage());
         }
     }
 }
