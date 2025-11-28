@@ -47,7 +47,7 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
     private final long end;
     private final KeyResolver keyResolver;
     private final SecretKeySpec keySpec;
-    private final byte[] directoryKey;
+    private final byte[] masterKey;
     private final byte[] messageId;
     private final int footerLength;
     private final long frameSize;
@@ -77,15 +77,14 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         this.normalizedFilePath = EncryptionMetadataCache.normalizePath(filePath);
         this.encryptionMetadataCache = encryptionMetadataCache;
 
-        // Get directory key first
-        this.directoryKey = keyResolver.getDataKey().getEncoded();
+        // Get master key first
+        this.masterKey = keyResolver.getDataKey().getEncoded();
 
-        // Read footer with temporary key for authentication
-        // Read footer with temporary key for authentication
-        EncryptionFooter footer = EncryptionFooter.readViaFileChannel(normalizedFilePath, channel, directoryKey, encryptionMetadataCache);
+        // Read footer and cache metadata atomically
+        EncryptionFooter footer = EncryptionFooter.readViaFileChannel(normalizedFilePath, channel, masterKey, encryptionMetadataCache);
 
-        // Get or create metadata atomically - ensures footer and key are always consistent
-        var metadata = encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, directoryKey);
+        // Get metadata (already cached by readViaFileChannel)
+        var metadata = encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, masterKey);
         this.messageId = metadata.getFooter().getMessageId();
         this.frameSize = metadata.getFooter().getFrameSize();
         this.frameSizePower = metadata.getFooter().getFrameSizePower();
@@ -108,7 +107,7 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         long frameSize,
         int frameSizePower,
         short algorithmId,
-        byte[] directoryKey,
+        byte[] masterKey,
         byte[] messageId,
         String normalizedFilePath,
         EncryptionMetadataCache encryptionMetadataCache
@@ -125,7 +124,7 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         this.frameSize = frameSize;
         this.frameSizePower = frameSizePower;
         this.algorithm = EncryptionAlgorithm.fromId(algorithmId);
-        this.directoryKey = directoryKey;  // Passed from parent
+        this.masterKey = masterKey;  // Passed from parent
         this.messageId = messageId;  // Passed from parent
         this.normalizedFilePath = normalizedFilePath;
         this.encryptionMetadataCache = encryptionMetadataCache;
@@ -164,7 +163,7 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
             frameSize,
             frameSizePower,
             algorithm.getAlgorithmId(),
-            directoryKey,  // Pass directory key
+            masterKey,  // Pass directory key
             messageId,      // Pass message ID
             normalizedFilePath,
             encryptionMetadataCache
@@ -202,7 +201,7 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         try {
             Cipher cipher = algorithm.getDecryptionCipher();
             byte[] frameIV = AesCipherFactory
-                .computeFrameIV(directoryKey, messageId, frameNumber, offsetWithinFrame, this.normalizedFilePath, encryptionMetadataCache);
+                .computeFrameIV(masterKey, messageId, frameNumber, offsetWithinFrame, this.normalizedFilePath, encryptionMetadataCache);
             cipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(frameIV));
 
             // skip partial AES block within frame if needed

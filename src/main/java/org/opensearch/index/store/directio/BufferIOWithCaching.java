@@ -88,7 +88,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
     private static class EncryptedOutputStream extends FilterOutputStream {
 
         private final EncryptionFooter footer;
-        private final byte[] directoryKey;
+        private final byte[] masterKey;
         private final Key fileKey;
         private final byte[] buffer;
         private final Path path;
@@ -128,7 +128,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             super(os);
             this.path = path;
             this.normalizedPath = EncryptionMetadataCache.normalizePath(path);
-            this.directoryKey = key;
+            this.masterKey = key;
             this.buffer = new byte[BUFFER_SIZE];
             this.memorySegmentPool = memorySegmentPool;
             this.blockCache = blockCache;
@@ -143,7 +143,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             this.footer = EncryptionFooter.generateNew(frameSize, (short) EncryptionMetadataTrailer.ALGORITHM_AES_256_GCM);
 
             // Derive file-specific key
-            byte[] derivedKey = HkdfKeyDerivation.deriveFileKey(directoryKey, footer.getMessageId());
+            byte[] derivedKey = HkdfKeyDerivation.deriveFileKey(masterKey, footer.getMessageId());
             this.fileKey = new javax.crypto.spec.SecretKeySpec(derivedKey, "AES");
 
             // Initialize first frame cipher
@@ -350,9 +350,13 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
 
                 finalizeCurrentFrame();
                 footer.setFrameCount(totalFrames);
-                out.write(footer.serialize(null, this.directoryKey));
 
-                encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, this.directoryKey);
+                // Serialize footer with file key for authentication
+                byte[] fileKeyBytes = fileKey.getEncoded();
+                out.write(footer.serialize(null, fileKeyBytes));
+
+                // Cache metadata for future reads
+                encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, this.masterKey);
 
                 // close() only flushes to the OS (kernel page cache). It does NOT guarantee
                 // * durability on disk (no fsync here). Lucene will provide the durability boundary by calling
@@ -459,7 +463,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                 // Compute frame-specific IV
                 byte[] frameIV = AesCipherFactory
                     .computeFrameIV(
-                        directoryKey,
+                        masterKey,
                         footer.getMessageId(),
                         frameNumber,
                         offsetWithinFrame,

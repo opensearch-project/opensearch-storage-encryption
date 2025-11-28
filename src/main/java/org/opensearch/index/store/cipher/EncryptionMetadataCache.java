@@ -25,9 +25,9 @@ public class EncryptionMetadataCache {
         private final EncryptionFooter footer;
         private final byte[] fileKey;
 
-        FileEncryptionMetadata(EncryptionFooter footer, byte[] directoryKey) {
+        FileEncryptionMetadata(EncryptionFooter footer, byte[] masterKey) {
             this.footer = footer;
-            this.fileKey = HkdfKeyDerivation.deriveAesKey(directoryKey, footer.getMessageId(), "file-encryption");
+            this.fileKey = HkdfKeyDerivation.deriveFileKey(masterKey, footer.getMessageId());
         }
 
         public EncryptionFooter getFooter() {
@@ -90,11 +90,11 @@ public class EncryptionMetadataCache {
      *
      * @param normalizedPath normalized file path
      * @param footer the footer containing messageId for derivation
-     * @param directoryKey directory key for deriving file key
+     * @param masterKey master key for deriving file key
      * @return file encryption metadata (cached or newly created)
      */
-    public FileEncryptionMetadata getOrLoadMetadata(String normalizedPath, EncryptionFooter footer, byte[] directoryKey) {
-        return fileMetadataCache.computeIfAbsent(normalizedPath, k -> new FileEncryptionMetadata(footer, directoryKey));
+    public FileEncryptionMetadata getOrLoadMetadata(String normalizedPath, EncryptionFooter footer, byte[] masterKey) {
+        return fileMetadataCache.computeIfAbsent(normalizedPath, k -> new FileEncryptionMetadata(footer, masterKey));
     }
 
     /**

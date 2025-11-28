@@ -23,17 +23,17 @@ public class HkdfKeyDerivation {
     private static final int HASH_LENGTH = 48; // SHA-384 output length
 
     /**
-     * Derive a key from Directory Key + MessageId using HKDF
+     * Derive a file key from Master Key + MessageId using HKDF
      *
-     * @param directoryKey the master key from KeyResolver (32 bytes)
+     * @param masterKey the master key (32 bytes)
      * @param messageId the unique file identifier (16 bytes from footer)
      * @param context the context string for key derivation
      * @param keyLength the desired output key length in bytes
      * @return derived key bytes
      */
-    public static byte[] deriveKey(byte[] directoryKey, byte[] messageId, String context, int keyLength) {
-        if (directoryKey == null || directoryKey.length != 32) {
-            throw new IllegalArgumentException("Directory key must be 32 bytes");
+    public static byte[] deriveKey(byte[] masterKey, byte[] messageId, String context, int keyLength) {
+        if (masterKey == null || masterKey.length != 32) {
+            throw new IllegalArgumentException("Master key must be 32 bytes");
         }
         if (messageId == null || messageId.length != 16) {
             throw new IllegalArgumentException("MessageId must be 16 bytes");
@@ -43,9 +43,9 @@ public class HkdfKeyDerivation {
         }
 
         try {
-            // HKDF-Extract: PRK = HMAC-Hash(directoryKey, messageId)
-            // Use directory key as salt, messageId as input key material
-            byte[] prk = hmac(directoryKey, messageId);
+            // HKDF-Extract: PRK = HMAC-Hash(masterKey, messageId)
+            // Use master key as salt, messageId as input key material
+            byte[] prk = hmac(masterKey, messageId);
 
             // HKDF-Expand: OKM = HMAC-Hash(PRK, info || counter)
             byte[] info = context.getBytes(StandardCharsets.UTF_8);
@@ -57,10 +57,10 @@ public class HkdfKeyDerivation {
     }
 
     /**
-     * Convenience method for deriving AES-256 keys (32 bytes)
+     * Convenience method for deriving AES-256 file keys (32 bytes)
      */
-    public static byte[] deriveAesKey(byte[] directoryKey, byte[] messageId, String context) {
-        return deriveKey(directoryKey, messageId, context, 32);
+    public static byte[] deriveAesKey(byte[] masterKey, byte[] messageId, String context) {
+        return deriveKey(masterKey, messageId, context, 32);
     }
 
     private static byte[] hmac(byte[] key, byte[] data) throws NoSuchAlgorithmException, InvalidKeyException {
@@ -89,38 +89,29 @@ public class HkdfKeyDerivation {
         return okm;
     }
 
-    public static byte[] deriveIndexKey(byte[] masterKey, String indexUuid) {
-        byte[] indexUuidBytes = indexUuid.getBytes(StandardCharsets.UTF_8);
-        byte[] paddedUuid = new byte[16];
-        System.arraycopy(indexUuidBytes, 0, paddedUuid, 0, Math.min(indexUuidBytes.length, 16));
-        return deriveKey(masterKey, paddedUuid, "index-key", 32);
-    }
-
-    public static byte[] deriveDirectoryKey(byte[] indexKey, int shardId) {
-        byte[] shardIdBytes = new byte[16];
-        shardIdBytes[0] = (byte) (shardId >>> 24);
-        shardIdBytes[1] = (byte) (shardId >>> 16);
-        shardIdBytes[2] = (byte) (shardId >>> 8);
-        shardIdBytes[3] = (byte) shardId;
-        return deriveKey(indexKey, shardIdBytes, "directory-key", 32);
-    }
-
-    public static byte[] deriveFileKey(byte[] directoryKey, byte[] messageId) {
-        return deriveKey(directoryKey, messageId, "file-encryption", 32);
+    /**
+     * Derive file key directly from master key and messageId.
+     *
+     * @param masterKey the master key (32 bytes)
+     * @param messageId the file's unique message ID (16 bytes)
+     * @return derived 32-byte file key
+     */
+    public static byte[] deriveFileKey(byte[] masterKey, byte[] messageId) {
+        return deriveKey(masterKey, messageId, "file-encryption", 32);
     }
 
     /**
-     * Derive base IV for translog encryption from directory key and translog UUID.
+     * Derive base IV for translog encryption from master key and translog UUID.
      * This ensures deterministic IV generation for translog files.
      *
-     * @param directoryKey the directory-level key (32 bytes)
+     * @param masterKey the master key (32 bytes)
      * @param translogUUID the translog UUID string
      * @return derived 16-byte base IV for translog
      */
-    public static byte[] deriveTranslogBaseIV(byte[] directoryKey, String translogUUID) {
+    public static byte[] deriveTranslogBaseIV(byte[] masterKey, String translogUUID) {
         byte[] uuidBytes = translogUUID.getBytes(StandardCharsets.UTF_8);
         byte[] paddedUuid = new byte[16];
         System.arraycopy(uuidBytes, 0, paddedUuid, 0, Math.min(uuidBytes.length, 16));
-        return deriveKey(directoryKey, paddedUuid, "translog-base-iv", 16);
+        return deriveKey(masterKey, paddedUuid, "translog-base-iv", 16);
     }
 }

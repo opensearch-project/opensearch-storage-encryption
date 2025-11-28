@@ -97,13 +97,13 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
             long bytesRead = readBytes.byteSize();
 
             String normalizedPath = filePath.toAbsolutePath().normalize().toString();
-            byte[] directoryKey = keyResolver.getDataKey().getEncoded();
+            byte[] masterKey = keyResolver.getDataKey().getEncoded();
 
             // Get footer from disk and load metadata (footer + derived key) atomically into cache
-            EncryptionFooter footer = readFooterFromDisk(filePath, directoryKey);
+            EncryptionFooter footer = readFooterFromDisk(filePath, masterKey);
 
             // Get or create metadata atomically - ensures footer and key are always consistent
-            var metadata = encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, directoryKey);
+            var metadata = encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, masterKey);
             byte[] messageId = metadata.getFooter().getMessageId();
             byte[] fileKey = metadata.getFileKey();
 
@@ -113,7 +113,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
                     readBytes.address(),
                     readBytes.byteSize(),
                     fileKey,                                    // Derived file key (matches write path)
-                    directoryKey,                               // Directory key for IV computation
+                    masterKey,                                  // Master key for IV computation
                     messageId,                                  // Message ID from footer
                     org.opensearch.index.store.footer.EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE, // Frame size
                     startOffset,                                 // File offset
@@ -171,7 +171,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
         }
     }
 
-    private EncryptionFooter readFooterFromDisk(Path filePath, byte[] directoryKey) throws IOException {
+    private EncryptionFooter readFooterFromDisk(Path filePath, byte[] masterKey) throws IOException {
         String normalizedPath = filePath.toAbsolutePath().normalize().toString();
 
         // Check cache first for fast path
@@ -198,7 +198,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
                 throw new IOException("Not an OSEF file -" + filePath);
             }
 
-            return EncryptionFooter.readViaFileChannel(normalizedPath, channel, directoryKey, encryptionMetadataCache);
+            return EncryptionFooter.readViaFileChannel(normalizedPath, channel, masterKey, encryptionMetadataCache);
         }
     }
 

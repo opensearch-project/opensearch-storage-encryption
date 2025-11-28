@@ -66,7 +66,7 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
     private static class EncryptedOutputStream extends FilterOutputStream {
 
         private final Key fileKey;
-        private final byte[] directoryKey;
+        private final byte[] masterKey;
         private final byte[] buffer;
         private final EncryptionFooter footer;
         private final Provider provider;
@@ -101,8 +101,8 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
 
             // Generate MessageId and derive file-specific key
             this.footer = EncryptionFooter.generateNew(1L << frameSizePower, (short) algorithmId);
-            this.directoryKey = keyResolver.getDataKey().getEncoded();
-            byte[] derivedKey = HkdfKeyDerivation.deriveFileKey(directoryKey, footer.getMessageId());
+            this.masterKey = keyResolver.getDataKey().getEncoded();
+            byte[] derivedKey = HkdfKeyDerivation.deriveFileKey(masterKey, footer.getMessageId());
             this.fileKey = new javax.crypto.spec.SecretKeySpec(derivedKey, "AES");
 
             this.provider = provider;
@@ -212,13 +212,14 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
                 // Set final frame count in footer
                 footer.setFrameCount(totalFrames);
 
-                // Write footer with directory key for authentication
-                out.write(footer.serialize(java.nio.file.Paths.get(normalizedFilePath), this.directoryKey));
+                // Write footer with file key for authentication
+                byte[] fileKeyBytes = fileKey.getEncoded();
+                out.write(footer.serialize(java.nio.file.Paths.get(normalizedFilePath), fileKeyBytes));
 
                 super.close();
 
                 if (normalizedFilePath != null) {
-                    encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, this.directoryKey);
+                    encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, this.masterKey);
                 }
 
             } catch (IOException e) {
@@ -246,7 +247,7 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
 
             byte[] frameIV = AesCipherFactory
                 .computeFrameIV(
-                    directoryKey,
+                    masterKey,
                     footer.getMessageId(),
                     frameNumber,
                     offsetWithinFrame,

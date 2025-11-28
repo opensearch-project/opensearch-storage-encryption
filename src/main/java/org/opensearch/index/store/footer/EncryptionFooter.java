@@ -20,6 +20,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.index.store.cipher.AesGcmCipherFactory;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
+import org.opensearch.index.store.key.HkdfKeyDerivation;
 
 /**
  * Footer format: [FooterAuthTag(16)][GcmTags...][TagCount(4)][FrameSize(8)][FrameCount(4)][MessageId(16)][KeyMetadata(0)]
@@ -318,7 +319,7 @@ public class EncryptionFooter {
      *
      * @param normalizedFilePath normalized file path string
      * @param channel FileChannel to read from
-     * @param directoryKey Directory key for footer authentication and file key derivation
+     * @param masterKey Master key for file key derivation and footer authentication
      * @param encryptionMetadataCache cache for encryption metadata
      * @return Deserialized EncryptionFooter
      * @throws IOException If reading or deserialization fails
@@ -327,7 +328,7 @@ public class EncryptionFooter {
     public static EncryptionFooter readViaFileChannel(
         String normalizedFilePath,
         java.nio.channels.FileChannel channel,
-        byte[] directoryKey,
+        byte[] masterKey,
         EncryptionMetadataCache encryptionMetadataCache
     ) throws IOException {
 
@@ -382,9 +383,45 @@ public class EncryptionFooter {
         int footerStart = bufferArray.length - footerLength;
         byte[] footerBytes = Arrays.copyOfRange(bufferArray, footerStart, bufferArray.length);
 
-        EncryptionFooter footer = deserialize(footerBytes, directoryKey);
-        encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, directoryKey);
+        // Extract messageId to derive file key for authentication
+        byte[] messageId = extractMessageId(footerBytes);
+        byte[] fileKey = HkdfKeyDerivation.deriveFileKey(masterKey, messageId);
+
+        // Deserialize footer with file key for authentication
+        EncryptionFooter footer = deserialize(footerBytes, fileKey);
+        encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, masterKey);
         return footer;
+    }
+
+    /**
+     * Extract messageId from footer bytes without full deserialization or authentication.
+     * This is needed to derive the file key before we can verify the footer's auth tag.
+     *
+     * @param footerBytes complete footer bytes including auth tag
+     * @return 16-byte messageId
+     * @throws IOException if footer format is invalid
+     */
+    private static byte[] extractMessageId(byte[] footerBytes) throws IOException {
+        if (footerBytes.length < EncryptionMetadataTrailer.MIN_FOOTER_SIZE) {
+            throw new IOException("Footer too small: " + footerBytes.length);
+        }
+
+        // Skip auth tag at beginning
+        byte[] footerData = Arrays.copyOfRange(footerBytes, EncryptionMetadataTrailer.FOOTER_AUTH_TAG_SIZE, footerBytes.length);
+
+        // Read KeyMetadataLength to know how much to skip
+        int keyMetadataLengthPos = footerData.length - EncryptionMetadataTrailer.MAGIC.length - EncryptionMetadataTrailer.FOOTER_LENGTH_SIZE
+            - EncryptionMetadataTrailer.ALGORITHM_ID_SIZE - EncryptionMetadataTrailer.KEY_METADATA_LENGTH_SIZE;
+        short keyMetadataLength = ByteBuffer
+            .wrap(footerData, keyMetadataLengthPos, EncryptionMetadataTrailer.KEY_METADATA_LENGTH_SIZE)
+            .getShort();
+
+        // MessageId is before KeyMetadata
+        int messageIdPos = footerData.length - EncryptionMetadataTrailer.MAGIC.length - EncryptionMetadataTrailer.FOOTER_LENGTH_SIZE
+            - EncryptionMetadataTrailer.ALGORITHM_ID_SIZE - EncryptionMetadataTrailer.KEY_METADATA_LENGTH_SIZE - keyMetadataLength
+            - EncryptionMetadataTrailer.MESSAGE_ID_SIZE;
+
+        return Arrays.copyOfRange(footerData, messageIdPos, messageIdPos + EncryptionMetadataTrailer.MESSAGE_ID_SIZE);
     }
 
     /**

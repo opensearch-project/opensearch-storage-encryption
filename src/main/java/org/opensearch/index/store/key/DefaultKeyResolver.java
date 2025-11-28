@@ -136,7 +136,7 @@ public class DefaultKeyResolver implements KeyResolver {
     }
 
     /**
-     * Loads key from Master Key provider by decrypting the stored encrypted key.
+     * Loads master key from Master Key provider by decrypting the stored encrypted key.
      * This method is called by the node-level cache.
      * Exceptions are allowed to bubble up - the cache will handle fallback to old value.
      */
@@ -145,9 +145,7 @@ public class DefaultKeyResolver implements KeyResolver {
         try {
             byte[] encryptedKey = readByteArrayFile(KEY_FILE);
             byte[] masterKey = keyProvider.decryptKey(encryptedKey);
-            byte[] indexKey = HkdfKeyDerivation.deriveIndexKey(masterKey, indexUuid);
-            byte[] directoryKey = HkdfKeyDerivation.deriveDirectoryKey(indexKey, shardId);
-            return new SecretKeySpec(directoryKey, "AES");
+            return new SecretKeySpec(masterKey, "AES");
         } catch (Exception e) {
             CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, getMetricKey(e));
             throw e;
@@ -157,7 +155,7 @@ public class DefaultKeyResolver implements KeyResolver {
 
     /**
      * {@inheritDoc}
-     * Returns the data key for all operations.
+     * Returns the master key. File-specific keys are derived on-demand from master key + messageId.
      * The cache handles MasterKey Provider failures by returning the last known key.
      */
     @Override

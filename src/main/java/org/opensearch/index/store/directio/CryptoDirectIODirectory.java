@@ -72,7 +72,7 @@ public class CryptoDirectIODirectory extends FSDirectory {
     private final Worker readAheadworker;
     private final Provider provider;
     private final Path dirPath;
-    private final byte[] dataKeyBytes;
+    private final byte[] masterKeyBytes;
     private final EncryptionMetadataCache encryptionMetadataCache;
 
     /**
@@ -106,7 +106,7 @@ public class CryptoDirectIODirectory extends FSDirectory {
         this.readAheadworker = worker;
         this.provider = provider;
         this.dirPath = getDirectory();
-        this.dataKeyBytes = keyResolver.getDataKey().getEncoded();
+        this.masterKeyBytes = keyResolver.getDataKey().getEncoded();
         this.encryptionMetadataCache = encryptionMetadataCache;
 
         // startCacheStatsTelemetry(); // uncomment for local testing
@@ -156,7 +156,7 @@ public class CryptoDirectIODirectory extends FSDirectory {
             name,
             path,
             fos,
-            dataKeyBytes,
+            masterKeyBytes,
             this.memorySegmentPool,
             this.blockCache,
             this.provider,
@@ -180,7 +180,7 @@ public class CryptoDirectIODirectory extends FSDirectory {
             name,
             path,
             fos,
-            dataKeyBytes,
+            masterKeyBytes,
             this.memorySegmentPool,
             this.blockCache,
             this.provider,
@@ -250,11 +250,9 @@ public class CryptoDirectIODirectory extends FSDirectory {
 
         // Cache miss - read footer from disk (happens during file open before cache populated)
         try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
-            byte[] directoryKey = dataKeyBytes;
-            EncryptionFooter footer = EncryptionFooter.readViaFileChannel(normalizedPath, channel, directoryKey, encryptionMetadataCache);
+            EncryptionFooter footer = EncryptionFooter.readViaFileChannel(normalizedPath, channel, masterKeyBytes, encryptionMetadataCache);
 
-            // Load metadata atomically into cache for future reads
-            encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, directoryKey);
+            // Metadata is already cached by readViaFileChannel
 
             return rawFileSize - footer.getFooterLength();
         } catch (EncryptionFooter.NotOSEFFileException e) {
