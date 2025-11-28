@@ -86,7 +86,6 @@ public class MasterKeyHealthMonitor {
             lastFailureTimeMillis.set(System.currentTimeMillis());
             lastException.set(exception);
             // If new failure is critical and stored state was transient, upgrade to critical
-            // Example: first failure was throttling (TRANSIENT), second failure is disabled key (CRITICAL)
             if (failureType == FailureType.CRITICAL) {
                 this.failureType = failureType;
             }
@@ -196,9 +195,6 @@ public class MasterKeyHealthMonitor {
             if (failureType == FailureType.CRITICAL) {
                 applyBlocks(indexName);
                 state.blocksApplied = true;
-                logger.warn("Critical KMS error for index {}: {}. Applied blocks.", indexName, exception.getMessage());
-            } else {
-                logger.info("Transient KMS error for index {} (will use cached key): {}", indexName, exception.getMessage());
             }
 
         } else {
@@ -209,7 +205,6 @@ public class MasterKeyHealthMonitor {
             if (failureType == FailureType.CRITICAL && !state.blocksApplied) {
                 applyBlocks(indexName);
                 state.blocksApplied = true;
-                logger.warn("Error escalated to critical for index {}. Applied blocks.", indexName);
             }
         }
     }
@@ -343,12 +338,7 @@ public class MasterKeyHealthMonitor {
             try {
                 // Wait for shards to finish closing after block removal
                 // This prevents ShardLockObtainFailedException when shards are still closing
-                logger
-                    .info(
-                        "Waiting 30 seconds for shards to finish closing before triggering retry for {} recovered indices",
-                        recoveredCount
-                    );
-                Thread.sleep(30000); // 30 seconds delay
+                Thread.sleep(30000);
 
                 retryWithBackoff(() -> {
                     ClusterRerouteRequest request = new ClusterRerouteRequest();
@@ -467,19 +457,10 @@ public class MasterKeyHealthMonitor {
                         if (refreshed) {
                             // Key was in cache and successfully refreshed
                             keyRecovered = true;
-                            logger.info("Successfully refreshed cached key for index {}", indexName);
                         } else {
                             // Key not in cache (expired), try loading it from scratch
-                            logger.info("Key expired for index {}, attempting reload from KMS", indexName);
-
-                            try {
-                                NodeLevelKeyCache.getInstance().get(indexUuid, shardId, indexName);
-                                keyRecovered = true;
-                                logger.info("Successfully reloaded expired key for index {}", indexName);
-                            } catch (Exception loadException) {
-                                // Load failed, propagate to outer catch for error classification
-                                throw loadException;
-                            }
+                            NodeLevelKeyCache.getInstance().get(indexUuid, shardId, indexName);
+                            keyRecovered = true;
                         }
 
                         if (keyRecovered) {
@@ -518,12 +499,11 @@ public class MasterKeyHealthMonitor {
 
                     FailureState state = failureTracker.get(indexUuid);
                     if (state == null) {
-                        // First failure detected by health check (early detection!)
                         state = new FailureState(e, failureType);
                         failureTracker.put(indexUuid, state);
 
                         // Apply blocks only if:
-                        // 1. Error is CRITICAL, AND
+                        // 1. Error is critical, AND
                         // 2. Key is NOT in cache (expired or never loaded)
                         if (indexName != null && !indexName.equals(indexUuid) && failureType == FailureType.CRITICAL && !keyInCache) {
                             applyBlocks(indexName);
@@ -533,10 +513,8 @@ public class MasterKeyHealthMonitor {
                             logger.info("Critical KMS error for index {} but cached key still valid. No blocks applied.", indexName);
                         }
                     } else {
-                        // Still failing, update failure time
                         state.recordFailure(e, failureType);
 
-                        // If error escalated to critical AND key expired, apply blocks
                         if (failureType == FailureType.CRITICAL && !state.blocksApplied && !keyInCache) {
                             if (indexName != null && !indexName.equals(indexUuid)) {
                                 applyBlocks(indexName);
@@ -555,7 +533,6 @@ public class MasterKeyHealthMonitor {
 
         } catch (Exception e) {
             logger.error("Error during Master Key Provider health check", e);
-            // Keep monitoring thread running even on error
         }
     }
 

@@ -94,7 +94,7 @@ public class KeyCacheException extends RuntimeException {
      * Checks if the error indicates a transient/throttling issue.
      */
     private static boolean isTransientError(String message, String rootMessage) {
-        // Common AWS throttling and transient error patterns
+        // Common throttling and transient error patterns
         return containsAny(
             message,
             rootMessage,
