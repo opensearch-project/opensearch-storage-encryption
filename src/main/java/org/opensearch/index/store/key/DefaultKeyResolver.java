@@ -96,7 +96,7 @@ public class DefaultKeyResolver implements KeyResolver {
                 CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, getMetricKey(ex));
                 String rootCause = KeyCacheException.extractRootCauseMessage(ex);
                 throw new KeyCacheException(
-                    "KMS error for index '" + indexName + "' (UUID: " + indexUuid + "): " + rootCause,
+                    "Error encountered for index '" + indexName + "' (UUID: " + indexUuid + "): " + rootCause,
                     ex,
                     true  // suppress stack trace
                 );
@@ -104,7 +104,7 @@ public class DefaultKeyResolver implements KeyResolver {
         } catch (Exception e) {
             CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, getMetricKey(e));
             String rootCause = KeyCacheException.extractRootCauseMessage(e);
-            throw new KeyCacheException("KMS error for index '" + indexName + "' (UUID: " + indexUuid + "): " + rootCause, e, true);
+            throw new KeyCacheException("Error encountered for index '" + indexName + "' (UUID: " + indexUuid + "): " + rootCause, e, true);
         }
     }
 

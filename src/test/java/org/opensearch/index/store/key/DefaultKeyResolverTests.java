@@ -357,7 +357,7 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
             new DefaultKeyResolver(TEST_INDEX_UUID, "test-index", directory, provider, mockKeyProvider, TEST_SHARD_ID);
             fail("Expected KeyCacheException");
         } catch (KeyCacheException e) {
-            assertTrue(e.getMessage().contains("KMS error for index"));
+            assertTrue(e.getMessage().contains("Error encountered for index"));
         }
     }
 }
