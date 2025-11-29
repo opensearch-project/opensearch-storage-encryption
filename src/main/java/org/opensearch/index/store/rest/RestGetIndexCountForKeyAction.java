@@ -10,6 +10,7 @@ import static org.opensearch.rest.RestRequest.Method.GET;
 import java.io.IOException;
 import java.util.List;
 
+import org.opensearch.index.store.Constants;
 import org.opensearch.index.store.action.GetIndexCountForKeyAction;
 import org.opensearch.index.store.action.GetIndexCountForKeyRequest;
 import org.opensearch.rest.BaseRestHandler;
@@ -36,7 +37,8 @@ public class RestGetIndexCountForKeyAction extends BaseRestHandler {
     protected RestChannelConsumer prepareRequest(RestRequest request, NodeClient client) throws IOException {
         String keyId = request.param("key_id");
         String keyProvider = request.param("key_provider");
-        GetIndexCountForKeyRequest countRequest = new GetIndexCountForKeyRequest(keyId, keyProvider);
+        String encryptionContext = request.param("encryption_context", Constants.DEFAULT_KMS_ENC_CTX); // default to empty string
+        GetIndexCountForKeyRequest countRequest = new GetIndexCountForKeyRequest(keyId, keyProvider, encryptionContext);
         return channel -> client.execute(GetIndexCountForKeyAction.INSTANCE, countRequest, new RestToXContentListener<>(channel));
     }
 }

@@ -53,7 +53,7 @@ public class DefaultKeyResolver implements KeyResolver {
      * @param provider    the JCE provider used for cipher operations
      * @param keyProvider the master key provider used to encrypt/decrypt data keys
      * @param shardId     the shard ID
-     * @throws IOException if an I/O error occurs while reading or writing key metadata
+     * @throws KeyCacheException if an I/O error occurs while reading or writing key metadata
      */
     public DefaultKeyResolver(
         String indexUuid,

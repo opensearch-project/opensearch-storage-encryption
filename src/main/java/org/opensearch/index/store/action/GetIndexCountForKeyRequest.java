@@ -23,7 +23,13 @@ public class GetIndexCountForKeyRequest extends ActionRequest {
      */
     private final String keyProvider;
 
-    public GetIndexCountForKeyRequest(String keyId, String keyProvider) {
+    /**
+     * Additional authenticated data (AAD) for KMS encryption operations.
+     * This context must match during both encryption and decryption.
+     */
+    private final String encryptionContext;
+
+    public GetIndexCountForKeyRequest(String keyId, String keyProvider, String encryptionContext) {
         if (keyId == null || keyId.isBlank()) {
             throw new IllegalArgumentException("keyId must not be null or empty");
         }
@@ -32,12 +38,14 @@ public class GetIndexCountForKeyRequest extends ActionRequest {
         }
         this.keyId = keyId;
         this.keyProvider = keyProvider;
+        this.encryptionContext = encryptionContext;
     }
 
     public GetIndexCountForKeyRequest(StreamInput in) throws IOException {
         super(in);
         this.keyId = in.readString();
         this.keyProvider = in.readString();
+        this.encryptionContext = in.readString();
     }
 
     public String getKeyId() {
@@ -46,6 +54,10 @@ public class GetIndexCountForKeyRequest extends ActionRequest {
 
     public String getKeyProvider() {
         return keyProvider;
+    }
+
+    public String getEncryptionContext() {
+        return encryptionContext;
     }
 
     @Override
@@ -72,5 +84,6 @@ public class GetIndexCountForKeyRequest extends ActionRequest {
         super.writeTo(out);
         out.writeString(keyId);
         out.writeString(keyProvider);
+        out.writeString(encryptionContext);
     }
 }

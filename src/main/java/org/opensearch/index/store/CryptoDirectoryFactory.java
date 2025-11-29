@@ -155,13 +155,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     */
     public static final Setting<String> INDEX_KMS_ENC_CTX_SETTING = new Setting<>(
         "index.store.crypto.kms.encryption_context",
-        "",
+        Constants.DEFAULT_KMS_ENC_CTX,
         Function.identity(),
-        (s) -> {
-            if (s == null || s.isEmpty()) {
-                throw new SettingsException("index.store.kms.arn must be set");
-            }
-        },
         Property.IndexScope
     );
 
