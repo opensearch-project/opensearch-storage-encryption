@@ -104,17 +104,9 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     public static final String CRYPTO_SETTING = "index.store.crypto";
 
     /**
-     * Specifies a crypto provider to be used for encryption. The default value
-     * is SunJCE.
+     * Default crypto provider name.
      */
-    public static final Setting<Provider> INDEX_CRYPTO_PROVIDER_SETTING = new Setting<>("index.store.crypto.provider", "SunJCE", (s) -> {
-        Provider p = Security.getProvider(s);
-        if (p == null) {
-            throw new SettingsException("unrecognized [index.store.crypto.provider] \"" + s + "\"");
-        } else {
-            return p;
-        }
-    }, Property.IndexScope, Property.InternalIndex);
+    public static final String DEFAULT_CRYPTO_PROVIDER = "SunJCE";
 
     /**
      * Specifies the Key management plugin type to be used. The desired CryptoKeyProviderPlugin
@@ -247,7 +239,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      */
     protected Directory newFSDirectory(Path location, LockFactory lockFactory, IndexSettings indexSettings, int shardId)
         throws IOException {
-        final Provider provider = indexSettings.getValue(INDEX_CRYPTO_PROVIDER_SETTING);
+        final Provider provider = Security.getProvider(DEFAULT_CRYPTO_PROVIDER);
 
         // Use index-level key resolver - store keys at index level
 

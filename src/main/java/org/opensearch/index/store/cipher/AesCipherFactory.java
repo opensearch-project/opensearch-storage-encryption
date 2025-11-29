@@ -12,6 +12,7 @@ import java.util.Arrays;
 import javax.crypto.Cipher;
 import javax.crypto.NoSuchPaddingException;
 
+import org.opensearch.index.store.CryptoDirectoryFactory;
 import org.opensearch.index.store.footer.EncryptionMetadataTrailer;
 import org.opensearch.index.store.key.HkdfKeyDerivation;
 
@@ -58,12 +59,14 @@ public class AesCipherFactory {
     }
 
     /**
-     * Thread-local cipher pool for AES/CTR/NoPadding operations using SunJCE provider.
+     * Thread-local cipher pool for AES/CTR/NoPadding operations.
      * Each thread gets its own cipher instance to avoid synchronization overhead.
      */
     public static final ThreadLocal<Cipher> CIPHER_POOL = ThreadLocal.withInitial(() -> {
         try {
-            return Cipher.getInstance("AES/CTR/NoPadding", "SunJCE");
+            // todo we can make provider comfigirable but for now with AES/CTR, SunJCE works best
+            // in terms of performance.
+            return Cipher.getInstance("AES/CTR/NoPadding", CryptoDirectoryFactory.DEFAULT_CRYPTO_PROVIDER);
         } catch (NoSuchAlgorithmException | NoSuchProviderException | NoSuchPaddingException e) {
             throw new RuntimeException(e);
         }
