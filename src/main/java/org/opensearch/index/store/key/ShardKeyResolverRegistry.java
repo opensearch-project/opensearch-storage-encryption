@@ -23,6 +23,9 @@ import org.opensearch.common.crypto.MasterKeyProvider;
  * 
  * <p>Uses shard-level granularity (indexUuid + shardId) for precise lifecycle management
  * and cache isolation between shards.
+ * 
+ * <p>Index-level locking ensures that when multiple shards of the same index are created
+ * concurrently, only one thread initializes the shared index-level keyfile.
  *
  * @opensearch.internal
  */
@@ -38,12 +41,19 @@ public class ShardKeyResolverRegistry {
     // Thread-safe cache of resolvers by shard
     private static final ConcurrentMap<ShardCacheKey, KeyResolver> resolverCache = new ConcurrentHashMap<>();
 
+    // Index-level locks for keyfile initialization
+    // Ensures that concurrent creation of multiple shards from the same index
+    // doesn't result in race conditions when initializing the shared keyfile
+    private static final ConcurrentMap<String, Object> indexInitLocks = new ConcurrentHashMap<>();
+
     /**
      * Gets or creates a KeyResolver for the specified shard.
      * If a resolver already exists for this shard, returns the existing instance.
      * Otherwise, creates a new resolver and caches it.
      * 
      * <p>This method is thread-safe and prevents race conditions during resolver creation.
+     * Uses index-level locking to ensure that when multiple shards of the same index
+     * are created concurrently, only one thread initializes the shared keyfile.
      *
      * @param indexUuid      the unique identifier for the index
      * @param indexDirectory the directory where encryption keys are stored
@@ -62,17 +72,26 @@ public class ShardKeyResolverRegistry {
         String indexName
     ) {
         ShardCacheKey key = new ShardCacheKey(indexUuid, shardId, indexName);
-        return resolverCache.computeIfAbsent(key, k -> {
-            try {
-                return new DefaultKeyResolver(indexUuid, indexName, indexDirectory, provider, keyProvider, shardId);
-            } catch (KeyCacheException e) {
-                // KeyCacheException already has clean, actionable error message - just rethrow
-                throw e;
-            } catch (Exception e) {
-                // Unexpected error - wrap with context
-                throw new RuntimeException("Failed to create KeyResolver for shard: " + k, e);
-            }
-        });
+
+        // Get or create index-level lock object for this index
+        // This ensures all shards of the same index synchronize on the same lock
+        Object indexLock = indexInitLocks.computeIfAbsent(indexUuid, k -> new Object());
+
+        // Synchronize at INDEX level to serialize keyfile initialization
+        // This prevents race conditions when multiple shards are created concurrently
+        synchronized (indexLock) {
+            return resolverCache.computeIfAbsent(key, k -> {
+                try {
+                    return new DefaultKeyResolver(indexUuid, indexName, indexDirectory, provider, keyProvider, shardId);
+                } catch (KeyCacheException e) {
+                    // KeyCacheException already has clean, actionable error message - just rethrow
+                    throw e;
+                } catch (Exception e) {
+                    // Unexpected error - wrap with context
+                    throw new RuntimeException("Failed to create KeyResolver for shard: " + k, e);
+                }
+            });
+        }
     }
 
     /**
@@ -91,6 +110,7 @@ public class ShardKeyResolverRegistry {
      * Removes the cached resolver for the specified shard.
      * This should be called when a shard is closed to prevent memory leaks.
      * Also evicts the key from the node-level cache.
+     * Cleans up the index-level lock if this was the last shard for the index.
      *
      * @param indexUuid the unique identifier for the index
      * @param shardId   the shard ID
@@ -107,6 +127,15 @@ public class ShardKeyResolverRegistry {
             } catch (IllegalStateException e) {
                 logger.debug("Could not evict from NodeLevelKeyCache: {}", e.getMessage());
             }
+
+            // Clean up index lock if no more shards remain for this index
+            // This prevents memory leaks from accumulating lock objects
+            synchronized (indexInitLocks) {
+                boolean hasOtherShards = resolverCache.keySet().stream().anyMatch(k -> k.getIndexUuid().equals(indexUuid));
+                if (!hasOtherShards) {
+                    indexInitLocks.remove(indexUuid);
+                }
+            }
         }
         return removed;
     }
@@ -122,7 +151,7 @@ public class ShardKeyResolverRegistry {
     }
 
     /**
-     * Clears all cached resolvers.
+     * Clears all cached resolvers and index-level locks.
      * This method is primarily for testing purposes.
      *
      * @return the number of resolvers that were removed
@@ -130,6 +159,7 @@ public class ShardKeyResolverRegistry {
     public static int clearCache() {
         int size = resolverCache.size();
         resolverCache.clear();
+        indexInitLocks.clear();
         return size;
     }
 
