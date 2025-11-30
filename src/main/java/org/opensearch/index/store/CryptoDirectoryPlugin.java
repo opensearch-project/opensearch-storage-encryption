@@ -181,6 +181,9 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
 
         this.nodeEnvironment = nodeEnvironment;
 
+        // Set cluster service for accessing cluster metadata (e.g., repository settings)
+        CryptoDirectoryFactory.setClusterService(clusterService);
+
         // Initialize health monitor first (creates monitor)
         MasterKeyHealthMonitor.initialize(environment.settings(), client, clusterService);
 

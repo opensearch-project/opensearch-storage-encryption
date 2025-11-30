@@ -21,6 +21,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.cluster.metadata.CryptoMetadata;
+import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Setting;
@@ -43,6 +44,8 @@ import org.opensearch.index.store.directio.CryptoDirectIODirectory;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
 import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
+import org.opensearch.index.store.kms_encryption_context.EncryptionContextResolver;
+import org.opensearch.index.store.kms_encryption_context.EncryptionContextResolverFactory;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 import org.opensearch.index.store.pool.PoolBuilder;
 import org.opensearch.index.store.read_ahead.Worker;
@@ -85,6 +88,12 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * Lock for thread-safe initialization of shared resources.
      */
     private static final Object initLock = new Object();
+
+    /**
+     * Resolver for obtaining default encryption context from cluster metadata.
+     * Abstracted to allow Amazon-specific logic to be maintained separately.
+     */
+    private static volatile EncryptionContextResolver encryptionContextResolver;
 
     /**
      * Creates a new CryptoDirectoryFactory
@@ -201,6 +210,19 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             Property.NodeScope
         );
 
+    /**
+     * Get default encryption context from cluster metadata using the configured resolver.
+     *
+     * @return the encryption context from cluster settings, or empty string if not found
+     */
+    private String getDefaultEncryptionContextFromCluster() {
+        if (encryptionContextResolver == null) {
+            return "";
+        }
+
+        return encryptionContextResolver.resolveDefaultEncryptionContext();
+    }
+
     MasterKeyProvider getKeyProvider(IndexSettings indexSettings) {
         final String KEY_PROVIDER = indexSettings.getValue(INDEX_KEY_PROVIDER_SETTING);
 
@@ -211,6 +233,37 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         }
 
         Settings settings = indexSettings.getSettings().getAsSettings(CRYPTO_SETTING);
+
+        // Always try to get default encryption context from cluster repositories as a baseline
+        String defaultEncCtx = getDefaultEncryptionContextFromCluster();
+        String indexEncCtx = settings.get("kms.encryption_context");
+
+        // Merge default encryption context with index-specific context
+        if (!defaultEncCtx.isEmpty()) {
+            if (indexEncCtx == null || indexEncCtx.isEmpty()) {
+                // Use default encryption context if index doesn't specify one
+                LOGGER
+                    .info(
+                        "Using default encryption context from cluster repository for index {}: {}",
+                        indexSettings.getIndex().getName(),
+                        defaultEncCtx
+                    );
+                settings = Settings.builder().put(settings).put("kms.encryption_context", defaultEncCtx).build();
+            } else {
+                // Merge: default context is the baseline, index context is additional
+                String mergedEncCtx = defaultEncCtx + "," + indexEncCtx;
+                LOGGER
+                    .info(
+                        "Merging default encryption context '{}' with index-specific context '{}' for index {}: result='{}'",
+                        defaultEncCtx,
+                        indexEncCtx,
+                        indexSettings.getIndex().getName(),
+                        mergedEncCtx
+                    );
+                settings = Settings.builder().put(settings).put("kms.encryption_context", mergedEncCtx).build();
+            }
+        }
+
         CryptoMetadata cryptoMetadata = new CryptoMetadata(KEY_PROVIDER, "", settings);
         MasterKeyProvider keyProvider;
         try {
@@ -394,6 +447,17 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      */
     public static void setNodeSettings(Settings settings) {
         nodeSettings = settings;
+    }
+
+    /**
+     * Set cluster service for accessing cluster metadata and initialize encryption context resolver.
+     * Called from CryptoDirectoryPlugin.createComponents() during node startup.
+     *
+     * @param service the cluster service
+     */
+    public static void setClusterService(ClusterService service) {
+        // Initialize encryption context resolver
+        encryptionContextResolver = EncryptionContextResolverFactory.create(service);
     }
 
     /**
