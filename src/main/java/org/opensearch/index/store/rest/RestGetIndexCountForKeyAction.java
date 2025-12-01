@@ -21,7 +21,7 @@ import org.opensearch.transport.client.node.NodeClient;
 public class RestGetIndexCountForKeyAction extends BaseRestHandler {
 
     private static final String ACTION_NAME = "get_index_count_for_key_action";
-    private static final String ROUTE_PATH = "/_plugin/opensearch-storage-encryption/_index_count_for_key";
+    private static final String ROUTE_PATH = "/_plugins/_opensearch_storage_encryption/_index_count_for_key";
 
     @Override
     public String getName() {

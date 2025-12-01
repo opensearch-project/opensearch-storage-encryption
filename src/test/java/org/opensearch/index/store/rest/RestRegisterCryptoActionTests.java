@@ -34,7 +34,7 @@ public class RestRegisterCryptoActionTests extends OpenSearchTestCase {
     public void testRoutes() {
         assertEquals(1, action.routes().size());
         assertEquals(POST, action.routes().get(0).getMethod());
-        assertEquals("/_plugin/opensearch-storage-encryption/_register_key", action.routes().get(0).getPath());
+        assertEquals("/_plugins/_opensearch_storage_encryption/_register_key", action.routes().get(0).getPath());
     }
 
     public void testPrepareRequestThrowsUnsupportedOperationException() {

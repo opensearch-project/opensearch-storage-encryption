@@ -17,7 +17,7 @@ import org.opensearch.transport.client.node.NodeClient;
 public class RestRegisterCryptoAction extends BaseRestHandler {
 
     private static final String ACTION_NAME = "register_key_action";
-    private static final String ROUTE_PATH = "/_plugin/opensearch-storage-encryption/_register_key";
+    private static final String ROUTE_PATH = "/_plugins/_opensearch_storage_encryption/_register_key";
 
     @Override
     public String getName() {
