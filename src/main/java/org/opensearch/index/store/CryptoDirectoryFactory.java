@@ -122,7 +122,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             }
         },
         Property.NodeScope,
-        Property.IndexScope
+        Property.IndexScope,
+        Property.InternalIndex
     );
 
     /**
@@ -138,7 +139,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                 throw new SettingsException("index.store.kms.arn must be set");
             }
         },
-        Property.IndexScope
+        Property.IndexScope,
+        Property.InternalIndex
     );
 
     /**
@@ -149,7 +151,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         "index.store.crypto.kms.encryption_context",
         Constants.DEFAULT_KMS_ENC_CTX,
         Function.identity(),
-        Property.IndexScope
+        Property.IndexScope,
+        Property.InternalIndex
     );
 
     /**
