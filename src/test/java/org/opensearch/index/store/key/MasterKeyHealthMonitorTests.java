@@ -9,6 +9,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -17,6 +18,8 @@ import static org.mockito.Mockito.when;
 
 import java.lang.reflect.Field;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.After;
 import org.junit.Before;
@@ -144,13 +147,23 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
         // Setup: Index has no blocks initially
         when(mockIndexMetadata.getSettings()).thenReturn(Settings.EMPTY);
 
+        // Create a CountDownLatch to track when updateSettings is called
+        CountDownLatch updateSettingsLatch = new CountDownLatch(1);
+
+        // Setup mock to count down latch when updateSettings is called
+        doAnswer(invocation -> {
+            updateSettingsLatch.countDown();
+            return mockFuture;
+        }).when(mockIndicesAdminClient).updateSettings(any(UpdateSettingsRequest.class));
+
         Exception criticalError = new RuntimeException("DisabledException: Key is disabled");
 
         // Act: Report critical failure
         monitor.reportFailure(TEST_INDEX_UUID, TEST_INDEX_NAME, criticalError, FailureType.CRITICAL);
 
-        // Give async operations time to complete
-        Thread.sleep(100);
+        // Wait for the async operation to complete (with timeout)
+        assertTrue("updateSettings should be called within 2 seconds",
+                updateSettingsLatch.await(2, TimeUnit.SECONDS));
 
         // Assert: Blocks applied
         verify(mockIndicesAdminClient, times(1)).updateSettings(any());
@@ -195,6 +208,15 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
         // Setup
         when(mockIndexMetadata.getSettings()).thenReturn(Settings.EMPTY);
 
+        // Create a CountDownLatch to track when updateSettings is called
+        CountDownLatch updateSettingsLatch = new CountDownLatch(1);
+
+        // Setup mock to count down latch when updateSettings is called
+        doAnswer(invocation -> {
+            updateSettingsLatch.countDown();
+            return mockFuture;
+        }).when(mockIndicesAdminClient).updateSettings(any(UpdateSettingsRequest.class));
+
         Exception transientError = new RuntimeException("ThrottlingException: Rate exceeded");
         Exception criticalError = new RuntimeException("DisabledException: Key is disabled");
 
@@ -207,7 +229,9 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
         // Escalate to critical
         monitor.reportFailure(TEST_INDEX_UUID, TEST_INDEX_NAME, criticalError, FailureType.CRITICAL);
 
-        Thread.sleep(100);
+        // Wait for the async operation to complete (with timeout)
+        assertTrue("updateSettings should be called within 2 seconds",
+                updateSettingsLatch.await(2, TimeUnit.SECONDS));
 
         // Assert: Blocks now applied
         verify(mockIndicesAdminClient, times(1)).updateSettings(any());
@@ -226,16 +250,32 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
         Settings settingsWithBlocks = Settings.builder().put("index.blocks.read", true).put("index.blocks.write", true).build();
         when(mockIndexMetadata.getSettings()).thenReturn(settingsWithBlocks);
 
+        // Create two latches - one for apply blocks, one for remove blocks
+        CountDownLatch applyBlocksLatch = new CountDownLatch(1);
+        CountDownLatch removeBlocksLatch = new CountDownLatch(1);
+
+        // Setup mock to count down appropriate latch based on call order
+        doAnswer(invocation -> {
+            if (applyBlocksLatch.getCount() > 0) {
+                applyBlocksLatch.countDown();
+            } else {
+                removeBlocksLatch.countDown();
+            }
+            return mockFuture;
+        }).when(mockIndicesAdminClient).updateSettings(any(UpdateSettingsRequest.class));
+
         // First report a critical failure to establish state
         Exception criticalError = new RuntimeException("DisabledException: Key is disabled");
         monitor.reportFailure(TEST_INDEX_UUID, TEST_INDEX_NAME, criticalError, FailureType.CRITICAL);
 
-        Thread.sleep(100);
+        // Wait for blocks to be applied
+        assertTrue("Blocks should be applied within 2 seconds", applyBlocksLatch.await(2, TimeUnit.SECONDS));
 
         // Act: Report success
         monitor.reportSuccess(TEST_INDEX_UUID, TEST_INDEX_NAME);
 
-        Thread.sleep(100);
+        // Wait for blocks to be removed
+        assertTrue("Blocks should be removed within 2 seconds", removeBlocksLatch.await(2, TimeUnit.SECONDS));
 
         // Assert: Blocks removed
         verify(mockIndicesAdminClient, times(2)).updateSettings(any()); // Once for apply, once for remove
@@ -331,17 +371,30 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
         // Setup
         when(mockIndexMetadata.getSettings()).thenReturn(Settings.EMPTY);
 
+        // Create a CountDownLatch to track when updateSettings is called
+        CountDownLatch updateSettingsLatch = new CountDownLatch(1);
+
+        // Setup mock to count down latch when updateSettings is called
+        doAnswer(invocation -> {
+            updateSettingsLatch.countDown();
+            return mockFuture;
+        }).when(mockIndicesAdminClient).updateSettings(any(UpdateSettingsRequest.class));
+
         Exception criticalError = new RuntimeException("DisabledException: Key is disabled");
 
         // Act: Report multiple critical failures
         monitor.reportFailure(TEST_INDEX_UUID, TEST_INDEX_NAME, criticalError, FailureType.CRITICAL);
-        Thread.sleep(100);
 
-        monitor.reportFailure(TEST_INDEX_UUID, TEST_INDEX_NAME, criticalError, FailureType.CRITICAL);
-        Thread.sleep(100);
+        // Wait for the async operation to complete (with timeout)
+        assertTrue("updateSettings should be called within 2 seconds",
+                updateSettingsLatch.await(2, TimeUnit.SECONDS));
 
+        // Report additional failures
         monitor.reportFailure(TEST_INDEX_UUID, TEST_INDEX_NAME, criticalError, FailureType.CRITICAL);
-        Thread.sleep(100);
+        monitor.reportFailure(TEST_INDEX_UUID, TEST_INDEX_NAME, criticalError, FailureType.CRITICAL);
+
+        // Small delay to ensure no additional calls are made
+        Thread.sleep(200);
 
         // Assert: Blocks applied only once
         verify(mockIndicesAdminClient, times(1)).updateSettings(any());
@@ -359,6 +412,15 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
 
         when(mockIndexMetadata.getSettings()).thenReturn(Settings.EMPTY);
 
+        // Create a CountDownLatch to track when updateSettings is called for index2 (critical failure)
+        CountDownLatch updateSettingsLatch = new CountDownLatch(1);
+
+        // Setup mock to count down latch when updateSettings is called
+        doAnswer(invocation -> {
+            updateSettingsLatch.countDown();
+            return mockFuture;
+        }).when(mockIndicesAdminClient).updateSettings(any(UpdateSettingsRequest.class));
+
         Exception transientError = new RuntimeException("ThrottlingException");
         Exception criticalError = new RuntimeException("DisabledException");
 
@@ -366,7 +428,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
         monitor.reportFailure(index1Uuid, index1Name, transientError, FailureType.TRANSIENT);
         monitor.reportFailure(index2Uuid, index2Name, criticalError, FailureType.CRITICAL);
 
-        Thread.sleep(100);
+        // Wait for the async operation to complete for index2
+        assertTrue("updateSettings should be called for index2 within 2 seconds", updateSettingsLatch.await(2, TimeUnit.SECONDS));
 
         // Assert: Independent states
         ConcurrentHashMap<String, FailureState> tracker = getFailureTracker();
