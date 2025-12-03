@@ -285,6 +285,71 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     }
 
     /**
+     * Handles keyfile copying for clone/resize operations.
+     * When an index is cloned, Lucene copies the ciphertext segment files verbatim,
+     * but if we generate a new key for the target index, decryption will fail.
+     * This method detects clone operations and copies the source keyfile to the target.
+     *
+     * @param indexSettings the index settings
+     * @param targetIndexDirectory the target index directory path
+     * @throws IOException if keyfile copy fails
+     */
+    private void handleCloneKeyfileCopy(IndexSettings indexSettings, Path targetIndexDirectory) throws IOException {
+        // Check for resize source UUID setting (indicates clone/shrink/split operation)
+        String resizeSourceUuid = indexSettings.getSettings().get("index.resize.source.uuid");
+        String resizeSourceName = indexSettings.getSettings().get("index.resize.source.name");
+
+        if (resizeSourceUuid == null || resizeSourceUuid.isEmpty()) {
+            // Not a clone operation, proceed with normal key generation
+            return;
+        }
+
+        LOGGER
+            .info(
+                "Detected clone/resize operation for index {} from source index {} (UUID: {})",
+                indexSettings.getIndex().getName(),
+                resizeSourceName,
+                resizeSourceUuid
+            );
+
+        // Determine source index directory path
+        // Source index directory is at: <data_path>/nodes/0/indices/<source_uuid>/
+        Path targetParent = targetIndexDirectory.getParent(); // indices/
+        Path sourceIndexDirectory = targetParent.resolve(resizeSourceUuid);
+
+        Path sourceKeyfile = sourceIndexDirectory.resolve("keyfile");
+        Path targetKeyfile = targetIndexDirectory.resolve("keyfile");
+
+        // Check if source keyfile exists
+        if (!Files.exists(sourceKeyfile)) {
+            LOGGER
+                .warn(
+                    "Source keyfile not found at {} for clone operation. Source index {} may not be encrypted.",
+                    sourceKeyfile,
+                    resizeSourceName
+                );
+            return;
+        }
+
+        // Check if target keyfile already exists (shouldn't happen in normal flow)
+        if (Files.exists(targetKeyfile)) {
+            LOGGER.warn("Target keyfile already exists at {}. Skipping copy.", targetKeyfile);
+            return;
+        }
+
+        // Copy keyfile from source to target
+        try {
+            Files.copy(sourceKeyfile, targetKeyfile);
+            LOGGER.info("Successfully copied keyfile from {} to {} for clone operation", sourceKeyfile, targetKeyfile);
+        } catch (IOException e) {
+            throw new IOException(
+                "Failed to copy keyfile from source index " + resizeSourceName + " to target index " + indexSettings.getIndex().getName(),
+                e
+            );
+        }
+    }
+
+    /**
      * Creates an encrypted directory based on the configured store type.
      *
      * @param location the directory location
@@ -304,6 +369,9 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
 
         // Create a directory for the index-level keys
         Directory indexKeyDirectory = FSDirectory.open(indexDirectory);
+
+        // Check if this is a clone/resize operation
+        handleCloneKeyfileCopy(indexSettings, indexDirectory);
 
         // Use shared resolver registry to prevent race conditions
         String indexUuid = indexSettings.getIndex().getUUID();
