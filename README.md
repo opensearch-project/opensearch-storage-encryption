@@ -1,4 +1,4 @@
-# opensearch-storage-encryption
+# Opensearch Storage Encryption
 
 A high-performance OpenSearch plugin that provides transparent, on-the-fly encryption and decryption of index data at rest. This plugin implements encryption at the Lucene Directory level, offering a seamless integration that requires no changes to application code. Currently only supporting AWS KMS as master key provider but will allow other key providers as well in future versions.
 
@@ -175,13 +175,13 @@ PUT /_index_template/encrypted_template
 
 Configure these when creating an index. Setting `index.store.type` to `"cryptofs"` enables encryption.
 
-| Setting | Description | Default | Type | Options/Range |
-|---------|-------------|---------|------|---------------|
-| `index.store.type` | **Set to `"cryptofs"` to enable encryption** | `niofs` | String | `cryptofs` (for encryption) or standard types (`niofs`, `hybridfs`, `mmapfs`, `simplefs`) |
-| `index.store.crypto.provider` | Crypto provider for encryption | `SunJCE` | String | Any registered Java Security provider |
-| `index.store.crypto.key_provider` | Key management provider type **(required when using cryptofs)** | - | String | `aws-kms`, `dummy` (testing only) |
-| `index.store.crypto.kms.key_arn` | AWS KMS key ARN (master key) **(required)** | - | String | Valid AWS KMS ARN format |
-| `index.store.crypto.kms.encryption_context` | AWS KMS encryption context **(required)** | - | String | Additional authenticated data for KMS |
+| Setting | Description | Type | Options/Range |
+|---------|-------------|------|---------------|
+| `index.store.type` | **Set to `"cryptofs"` to enable encryption** | String | `cryptofs` (for encryption) or standard types (`niofs`, `hybridfs`, `mmapfs`, `simplefs`) |
+| `index.store.crypto.provider` | Crypto provider for encryption | String | Any registered Java Security provider |
+| `index.store.crypto.key_provider` | Key management provider type **(required when using cryptofs)** | String | `aws-kms`, `dummy` (testing only) |
+| `index.store.crypto.kms.key_arn` | AWS KMS key ARN (master key) **(required when using cryptofs)** | String | Valid AWS KMS ARN format |
+| `index.store.crypto.kms.encryption_context` | AWS KMS encryption context **(required when using cryptofs)** | String | Additional authenticated data for KMS |
 
 **How Encryption Works:**
 - When you set `index.store.type: "cryptofs"`, the plugin automatically wraps the node's default store type with encryption

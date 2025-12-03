@@ -642,7 +642,7 @@ For performance analysis:
 
 #### Plugin Installation Fails
 - **Cause**: Version mismatch between OpenSearch and plugin
-- **Solution**: Ensure compatible versions (`3.3.0-SNAPSHOT`)
+- **Solution**: Ensure compatible versions between OpenSearch and Plugin version (Example: both being on `3.3.0-SNAPSHOT`)
 
 #### KMS Integration Issues
 - **Cause**: Invalid AWS credentials or permissions
