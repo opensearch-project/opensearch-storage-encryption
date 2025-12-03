@@ -290,30 +290,31 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * but if we generate a new key for the target index, decryption will fail.
      * This method detects clone operations and copies the source keyfile to the target.
      *
+     * Package-private for testing.
+     *
      * @param indexSettings the index settings
      * @param targetIndexDirectory the target index directory path
      * @throws IOException if keyfile copy fails
      */
-    private void handleCloneKeyfileCopy(IndexSettings indexSettings, Path targetIndexDirectory) throws IOException {
+    void handleResizeOperation(IndexSettings indexSettings, Path targetIndexDirectory) throws IOException {
         // Check for resize source UUID setting (indicates clone/shrink/split operation)
         String resizeSourceUuid = indexSettings.getSettings().get("index.resize.source.uuid");
         String resizeSourceName = indexSettings.getSettings().get("index.resize.source.name");
 
         if (resizeSourceUuid == null || resizeSourceUuid.isEmpty()) {
-            // Not a clone operation, proceed with normal key generation
+            // Not a resize operation, proceed with normal key generation
             return;
         }
 
         LOGGER
             .info(
-                "Detected clone/resize operation for index {} from source index {} (UUID: {})",
+                "Detected resize operation for index {} from source index {} (UUID: {})",
                 indexSettings.getIndex().getName(),
                 resizeSourceName,
                 resizeSourceUuid
             );
 
         // Determine source index directory path
-        // Source index directory is at: <data_path>/nodes/0/indices/<source_uuid>/
         Path targetParent = targetIndexDirectory.getParent(); // indices/
         Path sourceIndexDirectory = targetParent.resolve(resizeSourceUuid);
 
@@ -340,7 +341,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         // Copy keyfile from source to target
         try {
             Files.copy(sourceKeyfile, targetKeyfile);
-            LOGGER.info("Successfully copied keyfile from {} to {} for clone operation", sourceKeyfile, targetKeyfile);
+            LOGGER.info("Successfully copied keyfile from {} to {} for resize operation", sourceKeyfile, targetKeyfile);
         } catch (IOException e) {
             throw new IOException(
                 "Failed to copy keyfile from source index " + resizeSourceName + " to target index " + indexSettings.getIndex().getName(),
@@ -371,7 +372,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         Directory indexKeyDirectory = FSDirectory.open(indexDirectory);
 
         // Check if this is a clone/resize operation
-        handleCloneKeyfileCopy(indexSettings, indexDirectory);
+        handleResizeOperation(indexSettings, indexDirectory);
 
         // Use shared resolver registry to prevent race conditions
         String indexUuid = indexSettings.getIndex().getUUID();

@@ -1,0 +1,363 @@
+---
+"Clone encrypted index and verify data integrity":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create source encrypted index
+  - do:
+      indices.create:
+        index: source-encrypted-index
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+            index.store.crypto.kms.key_arn: "dummyArn"
+
+  - match: { acknowledged: true }
+
+  # Index documents in source
+  - do:
+      index:
+        index: source-encrypted-index
+        id: "1"
+        body: { "title": "Clone Test Doc 1", "content": "Encrypted content for clone", "value": 100 }
+        refresh: true
+
+  - do:
+      index:
+        index: source-encrypted-index
+        id: "2"
+        body: { "title": "Clone Test Doc 2", "content": "More encrypted clone data", "value": 200 }
+        refresh: true
+
+  - do:
+      index:
+        index: source-encrypted-index
+        id: "3"
+        body: { "title": "Clone Test Doc 3", "content": "Even more clone data", "value": 300 }
+        refresh: true
+
+  # Verify source has 3 documents
+  - do:
+      search:
+        index: source-encrypted-index
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 3 }
+
+  # Set index to read-only for clone operation
+  - do:
+      indices.put_settings:
+        index: source-encrypted-index
+        body:
+          index.blocks.write: true
+
+  # Clone the index
+  - do:
+      indices.clone:
+        index: source-encrypted-index
+        target: cloned-encrypted-index
+        body:
+          settings:
+            index.blocks.write: null
+            index.number_of_shards: 1
+            index.number_of_replicas: 0
+
+  - match: { acknowledged: true }
+
+  # Wait for clone to complete
+  - do:
+      cluster.health:
+        index: cloned-encrypted-index
+        wait_for_status: green
+        timeout: 30s
+
+  # Verify cloned index settings
+  - do:
+      indices.get_settings:
+        index: cloned-encrypted-index
+
+  - match: { cloned-encrypted-index.settings.index.store.type: "cryptofs" }
+  - match: { cloned-encrypted-index.settings.index.store.crypto.key_provider: "dummy" }
+
+  # Verify cloned index has same documents
+  - do:
+      search:
+        index: cloned-encrypted-index
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 3 }
+
+  # Verify document content in cloned index
+  - do:
+      get:
+        index: cloned-encrypted-index
+        id: "1"
+
+  - match: { _source.title: "Clone Test Doc 1" }
+  - match: { _source.content: "Encrypted content for clone" }
+  - match: { _source.value: 100 }
+
+  - do:
+      get:
+        index: cloned-encrypted-index
+        id: "2"
+
+  - match: { _source.title: "Clone Test Doc 2" }
+  - match: { _source.value: 200 }
+
+  # Search cloned index to verify decryption works
+  - do:
+      search:
+        index: cloned-encrypted-index
+        body:
+          query:
+            match:
+              content: "clone"
+
+  - gte: { hits.total.value: 2 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: source-encrypted-index
+
+  - do:
+      indices.delete:
+        index: cloned-encrypted-index
+
+---
+"Split encrypted index and verify data integrity":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create source encrypted index with single shard
+  - do:
+      indices.create:
+        index: source-split-index
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+            index.store.crypto.kms.key_arn: "dummyArn"
+
+  - match: { acknowledged: true }
+
+  # Index documents
+  - do:
+      index:
+        index: source-split-index
+        id: "1"
+        body: { "title": "Split Doc 1", "value": 10 }
+        refresh: true
+
+  - do:
+      index:
+        index: source-split-index
+        id: "2"
+        body: { "title": "Split Doc 2", "value": 20 }
+        refresh: true
+
+  # Set index to read-only for split
+  - do:
+      indices.put_settings:
+        index: source-split-index
+        body:
+          index.blocks.write: true
+
+  # Split index from 1 to 2 shards
+  - do:
+      indices.split:
+        index: source-split-index
+        target: split-target-index
+        body:
+          settings:
+            index.blocks.write: null
+            index.number_of_shards: 2
+            index.number_of_replicas: 0
+
+  - match: { acknowledged: true }
+
+  # Wait for split to complete
+  - do:
+      cluster.health:
+        index: split-target-index
+        wait_for_status: green
+        timeout: 30s
+
+  # Verify split index settings
+  - do:
+      indices.get_settings:
+        index: split-target-index
+
+  - match: { split-target-index.settings.index.store.type: "cryptofs" }
+  - match: { split-target-index.settings.index.number_of_shards: "2" }
+
+  # Verify split index has same documents
+  - do:
+      search:
+        index: split-target-index
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 2 }
+
+  # Verify document content
+  - do:
+      get:
+        index: split-target-index
+        id: "1"
+
+  - match: { _source.title: "Split Doc 1" }
+  - match: { _source.value: 10 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: source-split-index
+
+  - do:
+      indices.delete:
+        index: split-target-index
+
+---
+"Shrink encrypted index and verify data integrity":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create source encrypted index with 2 shards
+  - do:
+      indices.create:
+        index: source-shrink-index
+        body:
+          settings:
+            number_of_shards: 2
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+            index.store.crypto.kms.key_arn: "dummyArn"
+
+  - match: { acknowledged: true }
+
+  # Index documents
+  - do:
+      index:
+        index: source-shrink-index
+        id: "1"
+        body: { "title": "Shrink Doc 1", "value": 100 }
+        refresh: true
+
+  - do:
+      index:
+        index: source-shrink-index
+        id: "2"
+        body: { "title": "Shrink Doc 2", "value": 200 }
+        refresh: true
+
+  - do:
+      index:
+        index: source-shrink-index
+        id: "3"
+        body: { "title": "Shrink Doc 3", "value": 300 }
+        refresh: true
+
+  # Set index to read-only for shrink
+  - do:
+      indices.put_settings:
+        index: source-shrink-index
+        body:
+          index.blocks.write: true
+
+  # Shrink index from 2 to 1 shard
+  - do:
+      indices.shrink:
+        index: source-shrink-index
+        target: shrink-target-index
+        body:
+          settings:
+            index.blocks.write: null
+            index.number_of_shards: 1
+            index.number_of_replicas: 0
+
+  - match: { acknowledged: true }
+
+  # Wait for shrink to complete
+  - do:
+      cluster.health:
+        index: shrink-target-index
+        wait_for_status: green
+        timeout: 30s
+
+  # Verify shrink index settings
+  - do:
+      indices.get_settings:
+        index: shrink-target-index
+
+  - match: { shrink-target-index.settings.index.store.type: "cryptofs" }
+  - match: { shrink-target-index.settings.index.number_of_shards: "1" }
+
+  # Verify shrink index has all documents
+  - do:
+      search:
+        index: shrink-target-index
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 3 }
+
+  # Verify document content in shrunk index
+  - do:
+      get:
+        index: shrink-target-index
+        id: "1"
+
+  - match: { _source.title: "Shrink Doc 1" }
+  - match: { _source.value: 100 }
+
+  - do:
+      get:
+        index: shrink-target-index
+        id: "2"
+
+  - match: { _source.value: 200 }
+
+  - do:
+      get:
+        index: shrink-target-index
+        id: "3"
+
+  - match: { _source.value: 300 }
+
+  # Search shrunk index
+  - do:
+      search:
+        index: shrink-target-index
+        body:
+          query:
+            range:
+              value:
+                gte: 100
+
+  - match: { hits.total.value: 3 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: source-shrink-index
+
+  - do:
+      indices.delete:
+        index: shrink-target-index

@@ -105,7 +105,7 @@ public final class QueuingWorker implements Worker {
         this.blockCache = blockCache;
         this.inFlight = ConcurrentHashMap.newKeySet();
         this.maxRunners = Math.max(1, maxRunners);
-        LOGGER.info("Readahead worker initialized capacity={} maxRunners={}", capacity, maxRunners);
+        LOGGER.debug("Readahead worker initialized capacity={} maxRunners={}", capacity, maxRunners);
     }
 
     @Override
