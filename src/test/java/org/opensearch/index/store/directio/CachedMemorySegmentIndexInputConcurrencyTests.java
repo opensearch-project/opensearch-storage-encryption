@@ -28,6 +28,8 @@ import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
+import org.opensearch.index.store.bufferpoolfs.BlockSlotTinyCache;
+import org.opensearch.index.store.bufferpoolfs.CachedMemorySegmentIndexInput;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
 import org.opensearch.test.OpenSearchTestCase;
@@ -36,7 +38,7 @@ import org.opensearch.test.OpenSearchTestCase;
  * Tests concurrent access to CachedMemorySegmentIndexInput to reproduce and validate
  * fixes for CorruptIndexException issues found during concurrent operations.
  */
-@SuppressWarnings("unchecked")
+@SuppressWarnings("preview")
 public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTestCase {
 
     private static final int BLOCK_SIZE = 8192;

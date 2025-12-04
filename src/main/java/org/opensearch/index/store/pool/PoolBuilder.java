@@ -4,7 +4,7 @@
  */
 package org.opensearch.index.store.pool;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE;
 
 import java.io.Closeable;
 import java.time.Duration;

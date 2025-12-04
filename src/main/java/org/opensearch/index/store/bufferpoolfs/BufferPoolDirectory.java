@@ -2,10 +2,10 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.directio;
+package org.opensearch.index.store.bufferpoolfs;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
+import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE_POWER;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -63,8 +63,8 @@ import org.opensearch.index.store.read_ahead.impl.ReadaheadManagerImpl;
  * @opensearch.internal
  */
 @SuppressForbidden(reason = "uses custom DirectIO")
-public class CryptoDirectIODirectory extends FSDirectory {
-    private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIODirectory.class);
+public class BufferPoolDirectory extends FSDirectory {
+    private static final Logger LOGGER = LogManager.getLogger(BufferPoolDirectory.class);
     private final AtomicLong nextTempFileCounter = new AtomicLong();
 
     private final Pool<RefCountedMemorySegment> memorySegmentPool;
@@ -88,7 +88,7 @@ public class CryptoDirectIODirectory extends FSDirectory {
      * @param worker background worker for read-ahead operations
      * @throws IOException if the directory cannot be created or accessed
      */
-    public CryptoDirectIODirectory(
+    public BufferPoolDirectory(
         Path path,
         LockFactory lockFactory,
         Provider provider,

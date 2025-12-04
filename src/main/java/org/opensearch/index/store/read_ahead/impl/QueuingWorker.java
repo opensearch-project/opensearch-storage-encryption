@@ -4,7 +4,7 @@
  */
 package org.opensearch.index.store.read_ahead.impl;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
+import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE_POWER;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;

@@ -24,6 +24,7 @@ import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
+import org.opensearch.index.store.bufferpoolfs.BlockSlotTinyCache;
 
 /**
  * Benchmark for BlockSlotTinyCache comparing different synchronization strategies:

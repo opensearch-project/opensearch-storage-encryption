@@ -41,8 +41,8 @@ import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
+import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
-import org.opensearch.index.store.directio.CryptoDirectIODirectory;
 import org.opensearch.index.store.key.DefaultKeyResolver;
 import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.key.MasterKeyHealthMonitor;
@@ -474,7 +474,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
 
         // Write and verify encryption with DirectIO (keep directory open for footer cache)
         try (
-            Directory cryptoDirA = new CryptoDirectIODirectory(
+            Directory cryptoDirA = new BufferPoolDirectory(
                 dirA,
                 SimpleFSLockFactory.INSTANCE,
                 cryptoProvider,
@@ -554,7 +554,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
 
         // Write and read with same directory instance
         try (
-            Directory cryptoDirA = new CryptoDirectIODirectory(
+            Directory cryptoDirA = new BufferPoolDirectory(
                 dirA,
                 SimpleFSLockFactory.INSTANCE,
                 cryptoProvider,
@@ -633,7 +633,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
 
         // Write and read with same directory instance
         try (
-            Directory cryptoDirA = new CryptoDirectIODirectory(
+            Directory cryptoDirA = new BufferPoolDirectory(
                 dirA,
                 SimpleFSLockFactory.INSTANCE,
                 cryptoProvider,
@@ -713,7 +713,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
 
         // Write and read data to populate cache
         try (
-            Directory cryptoDirA = new CryptoDirectIODirectory(
+            Directory cryptoDirA = new BufferPoolDirectory(
                 dirA,
                 SimpleFSLockFactory.INSTANCE,
                 cryptoProvider,

@@ -2,24 +2,30 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.directio;
+package org.opensearch.index.store.bufferpoolfs;
 
 import org.opensearch.index.store.PanamaNativeAccess;
 
 /**
- * Configuration constants for Direct I/O operations and caching.
- * 
- * <p>This class defines system-wide configuration parameters used by the Direct I/O
- * subsystem, including alignment requirements, buffer sizes, cache configurations,
- * and memory pool settings. Many values can be overridden via system properties
- * for testing and performance tuning.
+ * Static configuration constants for the encrypted storage buffer pool and Direct I/O operations.
  *
- * @opensearch.internal
+ * <p>These configurations are intentionally static and immutable, not dynamic settings.
+ * They are determined at JVM startup based on system properties and cannot be changed
+ * at runtime. This design ensures:
+ * <ul>
+ *   <li>Consistent behavior across all indices using encrypted storage</li>
+ *   <li>Memory allocations and buffer sizes remain stable throughout the JVM lifecycle</li>
+ *   <li>Direct I/O alignment requirements are satisfied based on system page size</li>
+ *   <li>No runtime overhead from dynamic configuration lookups</li>
+ * </ul>
+ *
+ * <p>If you need to change these values, they must be set via JVM properties or code changes,
+ * and require a node restart to take effect.
  */
-public class DirectIoConfigs {
+public class StaticConfigs {
 
     // Prevent instantiation
-    private DirectIoConfigs() {
+    private StaticConfigs() {
         throw new AssertionError("Utility class - do not instantiate");
     }
 

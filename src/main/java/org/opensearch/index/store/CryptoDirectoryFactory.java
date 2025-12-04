@@ -4,7 +4,7 @@
  */
 package org.opensearch.index.store;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.READ_AHEAD_QUEUE_SIZE;
+import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.READ_AHEAD_QUEUE_SIZE;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -38,9 +38,9 @@ import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
+import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.cipher.EncryptionMetadataCacheRegistry;
-import org.opensearch.index.store.directio.CryptoDirectIODirectory;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
 import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
@@ -74,7 +74,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
 
     /**
      * Shared pool resources including pool, cache, and telemetry.
-     * Lazily initialized on first cryptofs shard creation and shared across all CryptoDirectIODirectory instances.
+     * Lazily initialized on first cryptofs shard creation and shared across all CryptoBufferPoolFSDirectory instances.
      * This prevents resource allocation on dedicated master nodes which never create shards.
      */
     private static volatile PoolBuilder.PoolResources poolResources;
@@ -320,7 +320,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             case HYBRIDFS -> {
                 LOGGER.debug("Using HYBRIDFS directory with Direct I/O and block caching");
                 final Set<String> nioExtensions = new HashSet<>(indexSettings.getValue(IndexModule.INDEX_STORE_HYBRID_NIO_EXTENSIONS));
-                CryptoDirectIODirectory cryptoDirectIODirectory = createCryptoDirectIODirectory(
+                BufferPoolDirectory bufferPoolDirectory = createCryptoBufferPoolFSDirectory(
                     location,
                     lockFactory,
                     provider,
@@ -329,7 +329,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                 );
                 return new HybridCryptoDirectory(
                     lockFactory,
-                    cryptoDirectIODirectory,
+                    bufferPoolDirectory,
                     provider,
                     keyResolver,
                     encryptionMetadataCache,
@@ -337,8 +337,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                 );
             }
             case MMAPFS -> {
-                LOGGER.info("MMAPFS not supported natively for index-level-encryption; using directio direct-io with block caching");
-                return createCryptoDirectIODirectory(location, lockFactory, provider, keyResolver, encryptionMetadataCache);
+                LOGGER.info("MMAPFS not supported natively for index-level-encryption; using bufferpoolfs with block caching");
+                return createCryptoBufferPoolFSDirectory(location, lockFactory, provider, keyResolver, encryptionMetadataCache);
             }
             case SIMPLEFS, NIOFS -> {
                 LOGGER.debug("Using NIOFS directory for encrypted storage");
@@ -349,7 +349,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     }
 
     @SuppressWarnings("unchecked")
-    private CryptoDirectIODirectory createCryptoDirectIODirectory(
+    private BufferPoolDirectory createCryptoBufferPoolFSDirectory(
         Path location,
         LockFactory lockFactory,
         Provider provider,
@@ -361,7 +361,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         * Shared Block Cache Architecture
         * ================================
         *
-        * This method creates a CryptoDirectIODirectory that uses node-level shared resources
+        * This method creates a CryptoBufferPoolFSDirectory that uses node-level shared resources
         * (pool and cache) for efficient memory utilization and high cache hit rates.
         *
         * Shared Resources:
@@ -421,7 +421,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         int maxRunners = Math.max(2, Runtime.getRuntime().availableProcessors() / 8);
         Worker readaheadWorker = new QueuingWorker(READ_AHEAD_QUEUE_SIZE, maxRunners, poolResources.getReadAheadExecutor(), directoryCache);
 
-        return new CryptoDirectIODirectory(
+        return new BufferPoolDirectory(
             location,
             lockFactory,
             provider,

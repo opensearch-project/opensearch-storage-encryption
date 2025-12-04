@@ -13,8 +13,8 @@ import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
+import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
-import org.opensearch.index.store.directio.CryptoDirectIODirectory;
 import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 
@@ -24,7 +24,7 @@ import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
  *
  * <p>Routing logic:
  * <ul>
- * <li><strong>Direct I/O</strong> ({@link CryptoDirectIODirectory}): Files NOT in nioExtensions
+ * <li><strong>Direct I/O</strong> ({@link BufferPoolDirectory}): Files NOT in nioExtensions
  *     (e.g., tim, doc, dvd, nvd, cfs) - large data files with block caching</li>
  * <li><strong>NIO</strong> ({@link CryptoNIOFSDirectory}): Files in nioExtensions
  *     (e.g., si, cfe, fnm, fdx, segments_N) - metadata and small files</li>
@@ -35,7 +35,7 @@ import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
  * @opensearch.internal
  */
 public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
-    private final CryptoDirectIODirectory cryptoDirectIODirectory;
+    private final BufferPoolDirectory bufferPoolDirectory;
     private final Set<String> nioExtensions;
 
     /**
@@ -52,7 +52,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
      */
     public HybridCryptoDirectory(
         LockFactory lockFactory,
-        CryptoDirectIODirectory delegate,
+        BufferPoolDirectory delegate,
         Provider provider,
         KeyResolver keyResolver,
         EncryptionMetadataCache encryptionMetadataCache,
@@ -60,7 +60,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
     )
         throws IOException {
         super(lockFactory, delegate.getDirectory(), provider, keyResolver, encryptionMetadataCache);
-        this.cryptoDirectIODirectory = delegate;
+        this.bufferPoolDirectory = delegate;
         this.nioExtensions = nioExtensions;
     }
 
@@ -83,7 +83,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         ensureCanRead(name);
 
         if (shouldUseDirectIO(extension)) {
-            return cryptoDirectIODirectory.openInput(name, context);
+            return bufferPoolDirectory.openInput(name, context);
         }
 
         return super.openInput(name, context);
@@ -97,7 +97,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         ensureCanRead(name);
 
         if (shouldUseDirectIO(extension)) {
-            return cryptoDirectIODirectory.createOutput(name, context);
+            return bufferPoolDirectory.createOutput(name, context);
         }
 
         return super.createOutput(name, context);
@@ -108,7 +108,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         String extension = FileSwitchDirectory.getExtension(name);
 
         if (shouldUseDirectIO(extension)) {
-            cryptoDirectIODirectory.deleteFile(name);
+            bufferPoolDirectory.deleteFile(name);
         } else {
             super.deleteFile(name);
         }
@@ -116,7 +116,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
 
     @Override
     public void close() throws IOException {
-        cryptoDirectIODirectory.close(); // only closes its resources.
+        bufferPoolDirectory.close(); // only closes its resources.
         super.close(); // actually closes pending files.
     }
 }

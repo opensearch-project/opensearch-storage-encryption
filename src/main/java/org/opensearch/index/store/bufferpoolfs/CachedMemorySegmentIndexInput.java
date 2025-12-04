@@ -2,10 +2,10 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.directio;
+package org.opensearch.index.store.bufferpoolfs;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_MASK;
+import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -46,7 +46,7 @@ import org.opensearch.index.store.read_ahead.ReadaheadManager;
  */
 @SuppressWarnings("preview")
 public class CachedMemorySegmentIndexInput extends IndexInput implements RandomAccessInput {
-    private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIODirectory.class);
+    private static final Logger LOGGER = LogManager.getLogger(BufferPoolDirectory.class);
 
     static final ValueLayout.OfByte LAYOUT_BYTE = ValueLayout.JAVA_BYTE;
     static final ValueLayout.OfShort LAYOUT_LE_SHORT = ValueLayout.JAVA_SHORT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);

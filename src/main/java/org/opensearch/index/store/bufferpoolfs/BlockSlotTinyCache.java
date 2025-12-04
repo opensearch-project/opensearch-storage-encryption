@@ -2,9 +2,9 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.directio;
+package org.opensearch.index.store.bufferpoolfs;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_SIZE_POWER;
+import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE_POWER;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -80,7 +80,7 @@ public class BlockSlotTinyCache {
         private final BlockCacheValue<RefCountedMemorySegment> value;
         private final boolean cacheHit;
 
-        LookupResult(BlockCacheValue<RefCountedMemorySegment> value, boolean cacheHit) {
+        public LookupResult(BlockCacheValue<RefCountedMemorySegment> value, boolean cacheHit) {
             this.value = value;
             this.cacheHit = cacheHit;
         }

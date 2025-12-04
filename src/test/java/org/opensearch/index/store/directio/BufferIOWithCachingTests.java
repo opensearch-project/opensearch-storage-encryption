@@ -26,6 +26,7 @@ import org.junit.Before;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
+import org.opensearch.index.store.bufferpoolfs.BufferIOWithCaching;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.pool.Pool;
 import org.opensearch.test.OpenSearchTestCase;

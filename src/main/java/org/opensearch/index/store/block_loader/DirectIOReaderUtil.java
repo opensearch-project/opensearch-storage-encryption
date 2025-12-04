@@ -4,7 +4,7 @@
  */
 package org.opensearch.index.store.block_loader;
 
-import static org.opensearch.index.store.directio.DirectIoConfigs.DIRECT_IO_ALIGNMENT;
+import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.DIRECT_IO_ALIGNMENT;
 
 import java.io.IOException;
 import java.lang.foreign.Arena;

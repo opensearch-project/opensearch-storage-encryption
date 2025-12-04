@@ -33,8 +33,8 @@ import org.apache.lucene.store.LockFactory;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
-import org.opensearch.index.store.directio.CryptoDirectIODirectory;
 import org.opensearch.index.store.key.KeyResolver;
 
 /**
@@ -47,7 +47,7 @@ public class HybridCryptoDirectoryTests {
     private Provider provider;
     private EncryptionMetadataCache encryptionMetadataCache;
     private LockFactory lockFactory;
-    private CryptoDirectIODirectory mockDirectIODirectory;
+    private BufferPoolDirectory bufferPoolDirectory;
     private Set<String> nioExtensions;
 
     @Before
@@ -67,8 +67,8 @@ public class HybridCryptoDirectoryTests {
         lockFactory = FSLockFactory.getDefault();
 
         // Mock CryptoDirectIODirectory
-        mockDirectIODirectory = mock(CryptoDirectIODirectory.class);
-        when(mockDirectIODirectory.getDirectory()).thenReturn(tempDir);
+        bufferPoolDirectory = mock(BufferPoolDirectory.class);
+        when(bufferPoolDirectory.getDirectory()).thenReturn(tempDir);
 
         // Default NIO extensions (metadata/small files)
         nioExtensions = Set.of("si", "cfe", "fnm", "fdx", "fdt", "pos", "pay", "nvm", "dvm", "tvx", "tvd", "liv", "dii", "vem");
@@ -92,7 +92,7 @@ public class HybridCryptoDirectoryTests {
         try (
             HybridCryptoDirectory hybridDir = new HybridCryptoDirectory(
                 lockFactory,
-                mockDirectIODirectory,
+                bufferPoolDirectory,
                 provider,
                 keyResolver,
                 encryptionMetadataCache,
@@ -101,19 +101,19 @@ public class HybridCryptoDirectoryTests {
         ) {
             // Mock the createOutput for DirectIO
             IndexOutput mockOutput = mock(IndexOutput.class);
-            when(mockDirectIODirectory.createOutput(eq("test.tim"), any(IOContext.class))).thenReturn(mockOutput);
+            when(bufferPoolDirectory.createOutput(eq("test.tim"), any(IOContext.class))).thenReturn(mockOutput);
 
             // .tim is NOT in nioExtensions, should route to DirectIO
             IndexOutput output = hybridDir.createOutput("test.tim", IOContext.DEFAULT);
             assertEquals(mockOutput, output);
-            verify(mockDirectIODirectory).createOutput(eq("test.tim"), any(IOContext.class));
+            verify(bufferPoolDirectory).createOutput(eq("test.tim"), any(IOContext.class));
         }
     }
 
     @Test
     public void testCreateOutputRoutesToNIOForMetadataFiles() throws Exception {
         HybridCryptoDirectory hybridDir = spy(
-            new HybridCryptoDirectory(lockFactory, mockDirectIODirectory, provider, keyResolver, encryptionMetadataCache, nioExtensions)
+            new HybridCryptoDirectory(lockFactory, bufferPoolDirectory, provider, keyResolver, encryptionMetadataCache, nioExtensions)
         );
 
         try {
@@ -124,7 +124,7 @@ public class HybridCryptoDirectoryTests {
             output.close();
 
             // Verify DirectIO was NOT called
-            verify(mockDirectIODirectory, never()).createOutput(eq("test.si"), any(IOContext.class));
+            verify(bufferPoolDirectory, never()).createOutput(eq("test.si"), any(IOContext.class));
 
             // Verify file was created
             assertTrue(Files.exists(tempDir.resolve("test.si")));
@@ -138,7 +138,7 @@ public class HybridCryptoDirectoryTests {
         try (
             HybridCryptoDirectory hybridDir = new HybridCryptoDirectory(
                 lockFactory,
-                mockDirectIODirectory,
+                bufferPoolDirectory,
                 provider,
                 keyResolver,
                 encryptionMetadataCache,
@@ -147,7 +147,7 @@ public class HybridCryptoDirectoryTests {
         ) {
             // Mock the openInput for DirectIO
             IndexInput mockInput = mock(IndexInput.class);
-            when(mockDirectIODirectory.openInput(eq("test.doc"), any(IOContext.class))).thenReturn(mockInput);
+            when(bufferPoolDirectory.openInput(eq("test.doc"), any(IOContext.class))).thenReturn(mockInput);
 
             // Create dummy file so ensureCanRead passes
             Files.createFile(tempDir.resolve("test.doc"));
@@ -155,14 +155,14 @@ public class HybridCryptoDirectoryTests {
             // .doc is NOT in nioExtensions, should route to DirectIO
             IndexInput input = hybridDir.openInput("test.doc", IOContext.DEFAULT);
             assertEquals(mockInput, input);
-            verify(mockDirectIODirectory).openInput(eq("test.doc"), any(IOContext.class));
+            verify(bufferPoolDirectory).openInput(eq("test.doc"), any(IOContext.class));
         }
     }
 
     @Test
     public void testOpenInputRoutesToNIOForMetadataFiles() throws Exception {
         HybridCryptoDirectory hybridDir = spy(
-            new HybridCryptoDirectory(lockFactory, mockDirectIODirectory, provider, keyResolver, encryptionMetadataCache, nioExtensions)
+            new HybridCryptoDirectory(lockFactory, bufferPoolDirectory, provider, keyResolver, encryptionMetadataCache, nioExtensions)
         );
 
         try {
@@ -177,7 +177,7 @@ public class HybridCryptoDirectoryTests {
             input.close();
 
             // Verify DirectIO was NOT called
-            verify(mockDirectIODirectory, never()).openInput(eq("test.fnm"), any(IOContext.class));
+            verify(bufferPoolDirectory, never()).openInput(eq("test.fnm"), any(IOContext.class));
         } finally {
             hybridDir.close();
         }
@@ -188,7 +188,7 @@ public class HybridCryptoDirectoryTests {
         try (
             HybridCryptoDirectory hybridDir = new HybridCryptoDirectory(
                 lockFactory,
-                mockDirectIODirectory,
+                bufferPoolDirectory,
                 provider,
                 keyResolver,
                 encryptionMetadataCache,
@@ -197,14 +197,14 @@ public class HybridCryptoDirectoryTests {
         ) {
             // .cfs is NOT in nioExtensions, should route to DirectIO
             hybridDir.deleteFile("test.cfs");
-            verify(mockDirectIODirectory).deleteFile("test.cfs");
+            verify(bufferPoolDirectory).deleteFile("test.cfs");
         }
     }
 
     @Test
     public void testDeleteFileRoutesToNIOForMetadataFiles() throws Exception {
         HybridCryptoDirectory hybridDir = spy(
-            new HybridCryptoDirectory(lockFactory, mockDirectIODirectory, provider, keyResolver, encryptionMetadataCache, nioExtensions)
+            new HybridCryptoDirectory(lockFactory, bufferPoolDirectory, provider, keyResolver, encryptionMetadataCache, nioExtensions)
         );
 
         try {
@@ -215,7 +215,7 @@ public class HybridCryptoDirectoryTests {
             hybridDir.deleteFile("test.dvm");
 
             // Verify DirectIO was NOT called
-            verify(mockDirectIODirectory, never()).deleteFile("test.dvm");
+            verify(bufferPoolDirectory, never()).deleteFile("test.dvm");
 
             // Verify file was deleted
             assertTrue(!Files.exists(tempDir.resolve("test.dvm")));
@@ -229,7 +229,7 @@ public class HybridCryptoDirectoryTests {
         try (
             HybridCryptoDirectory hybridDir = new HybridCryptoDirectory(
                 lockFactory,
-                mockDirectIODirectory,
+                bufferPoolDirectory,
                 provider,
                 keyResolver,
                 encryptionMetadataCache,
@@ -241,7 +241,7 @@ public class HybridCryptoDirectoryTests {
             // Test data file extensions (should go to DirectIO)
             String[] directIOExtensions = { "tim", "doc", "dvd", "nvd", "cfs", "kdd", "tip", "tmd" };
             for (String ext : directIOExtensions) {
-                when(mockDirectIODirectory.createOutput(eq("test." + ext), any(IOContext.class))).thenReturn(mockOutput);
+                when(bufferPoolDirectory.createOutput(eq("test." + ext), any(IOContext.class))).thenReturn(mockOutput);
                 IndexOutput output = hybridDir.createOutput("test." + ext, IOContext.DEFAULT);
                 assertEquals("Extension ." + ext + " should route to DirectIO", mockOutput, output);
             }
@@ -253,7 +253,7 @@ public class HybridCryptoDirectoryTests {
         try (
             HybridCryptoDirectory hybridDir = new HybridCryptoDirectory(
                 lockFactory,
-                mockDirectIODirectory,
+                bufferPoolDirectory,
                 provider,
                 keyResolver,
                 encryptionMetadataCache,
@@ -262,11 +262,11 @@ public class HybridCryptoDirectoryTests {
         ) {
             IndexOutput mockOutput = mock(IndexOutput.class);
             // .xyz is not in nioExtensions, should route to DirectIO
-            when(mockDirectIODirectory.createOutput(eq("test.xyz"), any(IOContext.class))).thenReturn(mockOutput);
+            when(bufferPoolDirectory.createOutput(eq("test.xyz"), any(IOContext.class))).thenReturn(mockOutput);
 
             IndexOutput output = hybridDir.createOutput("test.xyz", IOContext.DEFAULT);
             assertEquals(mockOutput, output);
-            verify(mockDirectIODirectory).createOutput(eq("test.xyz"), any(IOContext.class));
+            verify(bufferPoolDirectory).createOutput(eq("test.xyz"), any(IOContext.class));
         }
     }
 }
