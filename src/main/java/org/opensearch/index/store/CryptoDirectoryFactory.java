@@ -325,26 +325,38 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         if (!Files.exists(sourceKeyfile)) {
             LOGGER
                 .warn(
-                    "Source keyfile not found at {} for clone operation. Source index {} may not be encrypted.",
-                    sourceKeyfile,
+                    "[Resize operation] for index {} from source index {} which does not have index-level encryption enabled. "
+                        + "Target index will generate a new encryption key.",
+                    indexSettings.getIndex().getName(),
                     resizeSourceName
                 );
             return;
         }
 
-        // Check if target keyfile already exists (shouldn't happen in normal flow)
+        // Check if target keyfile already exists
+        // This can happen when multiple shards are initialized concurrently on the same node
+        // and another shard has already copied the keyfile
         if (Files.exists(targetKeyfile)) {
-            LOGGER.warn("Target keyfile already exists at {}. Skipping copy.", targetKeyfile);
+            LOGGER
+                .debug(
+                    "[Resize operation] encryption keyfile already exists at {} for index {}"
+                        + "Skipping copy as it was likely created by another shard initialization.",
+                    targetKeyfile,
+                    indexSettings.getIndex().getName()
+                );
             return;
         }
 
         // Copy keyfile from source to target
         try {
             Files.copy(sourceKeyfile, targetKeyfile);
-            LOGGER.info("Successfully copied keyfile from {} to {} for resize operation", sourceKeyfile, targetKeyfile);
+            LOGGER.debug("Successfully copied keyfile from {} to {} for resize operation", sourceKeyfile, targetKeyfile);
         } catch (IOException e) {
             throw new IOException(
-                "Failed to copy keyfile from source index " + resizeSourceName + " to target index " + indexSettings.getIndex().getName(),
+                "[Resize operation] Failed to copy keyfile from source index "
+                    + resizeSourceName
+                    + " to target index "
+                    + indexSettings.getIndex().getName(),
                 e
             );
         }
