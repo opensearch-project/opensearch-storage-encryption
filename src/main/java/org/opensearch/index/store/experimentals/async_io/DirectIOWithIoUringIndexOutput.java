@@ -2,7 +2,7 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.directio;
+package org.opensearch.index.store.experimentals.async_io;
 
 import static org.opensearch.index.store.block_loader.DirectIOReaderUtil.getDirectOpenOption;
 import static org.opensearch.index.store.directio.DirectIoConfigs.CACHE_BLOCK_MASK;
@@ -33,7 +33,6 @@ import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.BufferedChecksum;
 import org.apache.lucene.store.IndexOutput;
 import org.opensearch.common.SuppressForbidden;
-import org.opensearch.index.store.async_io.IoUringFile;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;

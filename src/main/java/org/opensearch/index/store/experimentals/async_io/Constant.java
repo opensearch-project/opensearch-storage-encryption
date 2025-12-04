@@ -2,7 +2,7 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.async_io;
+package org.opensearch.index.store.experimentals.async_io;
 
 /**
  * Constants for POSIX file operations and Linux io_uring operations.

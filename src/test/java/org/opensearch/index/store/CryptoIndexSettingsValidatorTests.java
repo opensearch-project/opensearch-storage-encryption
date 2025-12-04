@@ -179,7 +179,6 @@ public class CryptoIndexSettingsValidatorTests extends OpenSearchTestCase {
                 CryptoDirectoryFactory.INDEX_KMS_ARN_SETTING.getKey(),
                 "arn:aws:kms:us-west-2:248189931838:key/eb9f247c-304a-4078-becb-2219e596c40d"
             )
-            .put(CryptoDirectoryFactory.INDEX_CRYPTO_PROVIDER_SETTING.getKey(), "SunJCE")
             .build();
 
         // Should not throw any exception

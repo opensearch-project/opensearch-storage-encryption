@@ -2,7 +2,7 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.async_io;
+package org.opensearch.index.store.experimentals.async_io;
 
 import java.io.File;
 import java.io.IOException;
