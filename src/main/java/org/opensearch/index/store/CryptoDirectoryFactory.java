@@ -285,6 +285,84 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     }
 
     /**
+     * Handles keyfile copying for clone/resize operations.
+     * When an index is cloned, Lucene copies the ciphertext segment files verbatim,
+     * but if we generate a new key for the target index, decryption will fail.
+     * This method detects clone operations and copies the source keyfile to the target.
+     *
+     * Package-private for testing.
+     *
+     * @param indexSettings the index settings
+     * @param targetIndexDirectory the target index directory path
+     * @throws IOException if keyfile copy fails
+     */
+    void handleResizeOperation(IndexSettings indexSettings, Path targetIndexDirectory) throws IOException {
+        // Check for resize source UUID setting (indicates clone/shrink/split operation)
+        String resizeSourceUuid = indexSettings.getSettings().get("index.resize.source.uuid");
+        String resizeSourceName = indexSettings.getSettings().get("index.resize.source.name");
+
+        if (resizeSourceUuid == null || resizeSourceUuid.isEmpty()) {
+            // Not a resize operation, proceed with normal key generation
+            return;
+        }
+
+        LOGGER
+            .info(
+                "Detected resize operation for index {} from source index {} (UUID: {})",
+                indexSettings.getIndex().getName(),
+                resizeSourceName,
+                resizeSourceUuid
+            );
+
+        // Determine source index directory path
+        Path targetParent = targetIndexDirectory.getParent(); // indices/
+        Path sourceIndexDirectory = targetParent.resolve(resizeSourceUuid);
+
+        Path sourceKeyfile = sourceIndexDirectory.resolve("keyfile");
+        Path targetKeyfile = targetIndexDirectory.resolve("keyfile");
+
+        // Check if source keyfile exists
+        if (!Files.exists(sourceKeyfile)) {
+            LOGGER
+                .warn(
+                    "[Resize operation] for index {} from source index {} which does not have index-level encryption enabled. "
+                        + "Target index will generate a new encryption key.",
+                    indexSettings.getIndex().getName(),
+                    resizeSourceName
+                );
+            return;
+        }
+
+        // Now, check if target keyfile already exists
+        // This can happen when multiple shards are initialized concurrently on the same node
+        // and another shard has already copied the keyfile
+        if (Files.exists(targetKeyfile)) {
+            LOGGER
+                .debug(
+                    "[Resize operation] encryption keyfile already exists at {} for index {}"
+                        + "Skipping copy as it was likely created by another shard initialization.",
+                    targetKeyfile,
+                    indexSettings.getIndex().getName()
+                );
+            return;
+        }
+
+        // Copy keyfile from source to target
+        try {
+            Files.copy(sourceKeyfile, targetKeyfile);
+            LOGGER.debug("Successfully copied keyfile from {} to {} for resize operation", sourceKeyfile, targetKeyfile);
+        } catch (IOException e) {
+            throw new IOException(
+                "[Resize operation] Failed to copy keyfile from source index "
+                    + resizeSourceName
+                    + " to target index "
+                    + indexSettings.getIndex().getName(),
+                e
+            );
+        }
+    }
+
+    /**
      * Creates an encrypted directory based on the configured store type.
      *
      * @param location the directory location
@@ -304,6 +382,9 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
 
         // Create a directory for the index-level keys
         Directory indexKeyDirectory = FSDirectory.open(indexDirectory);
+
+        // Check if this is a clone/resize operation
+        handleResizeOperation(indexSettings, indexDirectory);
 
         // Use shared resolver registry to prevent race conditions
         String indexUuid = indexSettings.getIndex().getUUID();
