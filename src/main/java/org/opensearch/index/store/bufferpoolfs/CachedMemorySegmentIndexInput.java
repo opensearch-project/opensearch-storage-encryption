@@ -19,10 +19,12 @@ import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
+import org.apache.lucene.util.BitUtil;
 import org.apache.lucene.util.GroupVIntUtil;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
+import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
 
@@ -75,6 +77,9 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     private int lastOffsetInBlock;
 
     private final BlockSlotTinyCache blockSlotTinyCache;
+
+    // Prefetch optimization: track consecutive cache hits to avoid overhead
+    private int consecutivePrefetchHitCount = 0;
 
     /**
      * Creates a new CachedMemorySegmentIndexInput instance.
@@ -643,6 +648,35 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         }
 
         return slice;
+    }
+
+    @Override
+    public void prefetch(long offset, long length) throws IOException {
+        if (readaheadContext == null) {
+            return;
+        }
+
+        ensureOpen();
+
+        // copied from lucene's logic.
+        if (BitUtil.isZeroOrPowerOfTwo(consecutivePrefetchHitCount++) == false) {
+            // We've had enough consecutive hits in our cache that this number is neither zero
+            // nor a power of two. There is a good chance that a good chunk of this index input is
+            // cached in our block cache. Let's skip the overhead of triggering readahead.
+            return;
+        }
+
+        final long startFileOffset = absoluteBaseOffset + offset;
+        final long startBlockOffset = startFileOffset & ~CACHE_BLOCK_MASK;
+
+        FileBlockCacheKey key = new FileBlockCacheKey(path, startBlockOffset);
+        BlockCacheValue<RefCountedMemorySegment> cached = blockCache.get(key);
+
+        if (cached == null) {
+            // We have a cache miss, reset the counter and trigger readahead
+            consecutivePrefetchHitCount = 0;
+            readaheadContext.triggerReadahead(startFileOffset);
+        }
     }
 
     @Override
