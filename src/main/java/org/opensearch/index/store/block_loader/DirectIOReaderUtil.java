@@ -125,12 +125,7 @@ public class DirectIOReaderUtil {
         int available = Math.max(0, bytesRead - (int) offsetDelta);
         int toCopy = (int) Math.min(length, available);
 
-        MemorySegment finalSegment = arena.allocate(toCopy);
-        if (toCopy > 0) {
-            MemorySegment.copy(alignedSegment, offsetDelta, finalSegment, 0, toCopy);
-        }
-
-        return finalSegment;
+        return alignedSegment.asSlice(offsetDelta, toCopy);
     }
 
     /**
