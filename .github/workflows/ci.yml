@@ -16,14 +16,13 @@ jobs:
     with:
       product: opensearch
 
-  build-linux:
-    name: Linux - Gradle check
+  build:
+    name: Build
     needs: ["Get-CI-Image-Tag"]
     strategy:
       fail-fast: false
       matrix:
         jdk: [21]
-        platform: [ubuntu-latest]
     runs-on: ubuntu-latest
     permissions:
       checks: write
@@ -40,7 +39,7 @@ jobs:
       - name: Set up JDK for build and test
         uses: actions/setup-java@v5
         with:
-          distribution: temurin # Temurin is a distribution of adoptium
+          distribution: temurin
           java-version: ${{ matrix.jdk }}
       
       - name: Checkout opensearch-storage-encryption
@@ -55,30 +54,170 @@ jobs:
           arguments: |
             assemble -Dbuild.snapshot=false
       
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts-jdk${{ matrix.jdk }}
+          path: |
+            ./build/
+            ./gradle/
+            ./gradlew
+            ./gradlew.bat
+            ./settings.gradle
+            ./build.gradle
+
+  unit-tests:
+    name: Unit Tests
+    needs: ["Get-CI-Image-Tag", "build"]
+    strategy:
+      fail-fast: false
+      matrix:
+        jdk: [21]
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      pull-requests: write
+      contents: read
+    container:
+      image: ${{ needs.Get-CI-Image-Tag.outputs.ci-image-version-linux }}
+      options: ${{ needs.Get-CI-Image-Tag.outputs.ci-image-start-options }}
+    
+    steps:
+      - name: Run start commands
+        run: ${{ needs.Get-CI-Image-Tag.outputs.ci-image-start-command }}
+      
+      - name: Set up JDK for build and test
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk }}
+      
+      - name: Checkout opensearch-storage-encryption
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts-jdk${{ matrix.jdk }}
+      
       - name: Switch to ci-runner user and Run Unit tests
         run: |
           chown -R ci-runner:ci-runner $GITHUB_WORKSPACE
           find $GITHUB_WORKSPACE -type d -exec chmod 755 {} \;
           find $GITHUB_WORKSPACE -type f -exec chmod 644 {} \;
           chmod +x $GITHUB_WORKSPACE/gradlew
-          # Preserve environment variables when switching users
           su ci-runner -c "export JAVA_HOME=$JAVA_HOME && export GRADLE_OPTS='$GRADLE_OPTS' && cd $GITHUB_WORKSPACE && ./gradlew check -x internalClusterTest -x yamlRestTest -Dbuild.snapshot=false"
 
-      - name: Run internal cluster tests
-        if: always()
-        run: |
-          su ci-runner -c "export JAVA_HOME=$JAVA_HOME && export GRADLE_OPTS='$GRADLE_OPTS' && cd $GITHUB_WORKSPACE && ./gradlew internalClusterTest -Dbuild.snapshot=false"
-
-      - name: Run YAML REST tests
-        if: always()
-        run: |
-          su ci-runner -c "export JAVA_HOME=$JAVA_HOME && export GRADLE_OPTS='$GRADLE_OPTS' && cd $GITHUB_WORKSPACE && ./gradlew yamlRestTest -Dbuild.snapshot=false"
-
-      - name: Upload build artifacts
+      - name: Upload test reports
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: linux-JDK${{ matrix.jdk }}-build-reports
+          name: unit-test-reports-jdk${{ matrix.jdk }}
           path: |
             ./build/reports/
-            ./build/distributions/
+
+  integ-tests:
+    name: Integration Tests
+    needs: ["Get-CI-Image-Tag", "build"]
+    strategy:
+      fail-fast: false
+      matrix:
+        jdk: [21]
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      pull-requests: write
+      contents: read
+    container:
+      image: ${{ needs.Get-CI-Image-Tag.outputs.ci-image-version-linux }}
+      options: ${{ needs.Get-CI-Image-Tag.outputs.ci-image-start-options }}
+    
+    steps:
+      - name: Run start commands
+        run: ${{ needs.Get-CI-Image-Tag.outputs.ci-image-start-command }}
+      
+      - name: Set up JDK for build and test
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk }}
+      
+      - name: Checkout opensearch-storage-encryption
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts-jdk${{ matrix.jdk }}
+      
+      - name: Switch to ci-runner user and Run Internal Cluster tests
+        run: |
+          chown -R ci-runner:ci-runner $GITHUB_WORKSPACE
+          find $GITHUB_WORKSPACE -type d -exec chmod 755 {} \;
+          find $GITHUB_WORKSPACE -type f -exec chmod 644 {} \;
+          chmod +x $GITHUB_WORKSPACE/gradlew
+          su ci-runner -c "export JAVA_HOME=$JAVA_HOME && export GRADLE_OPTS='$GRADLE_OPTS' && cd $GITHUB_WORKSPACE && ./gradlew internalClusterTest -Dbuild.snapshot=false"
+
+      - name: Upload test reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integ-test-reports-jdk${{ matrix.jdk }}
+          path: |
+            ./build/reports/
+
+  yaml-rest-tests:
+    name: YAML REST Tests
+    needs: ["Get-CI-Image-Tag", "build"]
+    strategy:
+      fail-fast: false
+      matrix:
+        jdk: [21]
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      pull-requests: write
+      contents: read
+    container:
+      image: ${{ needs.Get-CI-Image-Tag.outputs.ci-image-version-linux }}
+      options: ${{ needs.Get-CI-Image-Tag.outputs.ci-image-start-options }}
+    
+    steps:
+      - name: Run start commands
+        run: ${{ needs.Get-CI-Image-Tag.outputs.ci-image-start-command }}
+      
+      - name: Set up JDK for build and test
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk }}
+      
+      - name: Checkout opensearch-storage-encryption
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts-jdk${{ matrix.jdk }}
+      
+      - name: Switch to ci-runner user and Run YAML REST tests
+        run: |
+          chown -R ci-runner:ci-runner $GITHUB_WORKSPACE
+          find $GITHUB_WORKSPACE -type d -exec chmod 755 {} \;
+          find $GITHUB_WORKSPACE -type f -exec chmod 644 {} \;
+          chmod +x $GITHUB_WORKSPACE/gradlew
+          su ci-runner -c "export JAVA_HOME=$JAVA_HOME && export GRADLE_OPTS='$GRADLE_OPTS' && cd $GITHUB_WORKSPACE && ./gradlew yamlRestTest -Dbuild.snapshot=false"
+
+      - name: Upload test reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: yaml-rest-test-reports-jdk${{ matrix.jdk }}
+          path: |
+            ./build/reports/
