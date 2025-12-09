@@ -120,7 +120,7 @@ jobs:
 
   integ-tests:
     name: Integration Tests
-    needs: ["Get-CI-Image-Tag", "build"]
+    needs: ["Get-CI-Image-Tag", "build", "unit-tests"]
     strategy:
       fail-fast: false
       matrix:
@@ -172,7 +172,7 @@ jobs:
 
   yaml-rest-tests:
     name: YAML REST Tests
-    needs: ["Get-CI-Image-Tag", "build"]
+    needs: ["Get-CI-Image-Tag", "build", "integ-tests"]
     strategy:
       fail-fast: false
       matrix:
