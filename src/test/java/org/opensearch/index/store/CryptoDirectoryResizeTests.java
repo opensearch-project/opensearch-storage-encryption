@@ -13,6 +13,7 @@ import static org.mockito.Mockito.when;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.security.Provider;
 import java.security.Security;
 
@@ -443,7 +444,7 @@ public class CryptoDirectoryResizeTests extends LuceneTestCase {
         try (var stream = Files.list(sourceIndexDir)) {
             for (String fileName : stream.map(p -> p.getFileName().toString()).toArray(String[]::new)) {
                 if (!fileName.equals("keyfile") && !fileName.equals("write.lock")) {
-                    Files.copy(sourceIndexDir.resolve(fileName), targetIndexDir.resolve(fileName));
+                    Files.copy(sourceIndexDir.resolve(fileName), targetIndexDir.resolve(fileName), StandardCopyOption.REPLACE_EXISTING);
                 }
             }
         }

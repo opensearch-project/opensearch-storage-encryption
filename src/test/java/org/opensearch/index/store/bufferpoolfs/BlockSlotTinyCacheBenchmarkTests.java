@@ -2,7 +2,7 @@
  * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.index.store.directio;
+package org.opensearch.index.store.bufferpoolfs;
 
 import java.io.IOException;
 import java.lang.foreign.Arena;
@@ -24,7 +24,6 @@ import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
-import org.opensearch.index.store.bufferpoolfs.BlockSlotTinyCache;
 
 /**
  * Benchmark for BlockSlotTinyCache comparing different synchronization strategies:
