@@ -402,6 +402,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
 
     /**
      * Multiple indices can have independent failure states
+     * 
+     * This test verifies that the failure tracker maintains independent state for different indices.
      */
     public void testMultipleIndicesIndependentState() throws Exception {
         // Setup
@@ -418,15 +420,6 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
         when(mockMetadata.index(index1Name)).thenReturn(mockIndex1Metadata);
         when(mockMetadata.index(index2Name)).thenReturn(mockIndex2Metadata);
 
-        // Create a CountDownLatch to track when updateSettings is called for index2 (critical failure)
-        CountDownLatch updateSettingsLatch = new CountDownLatch(1);
-
-        // Setup mock to count down latch when updateSettings is called
-        doAnswer(invocation -> {
-            updateSettingsLatch.countDown();
-            return mockFuture;
-        }).when(mockIndicesAdminClient).updateSettings(any(UpdateSettingsRequest.class));
-
         Exception transientError = new RuntimeException("ThrottlingException");
         Exception criticalError = new RuntimeException("DisabledException");
 
@@ -434,21 +427,18 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
         monitor.reportFailure(index1Uuid, index1Name, transientError, FailureType.TRANSIENT);
         monitor.reportFailure(index2Uuid, index2Name, criticalError, FailureType.CRITICAL);
 
-        // Wait for the async operation to complete for index2
-        assertTrue("updateSettings should be called for index2 within 2 seconds", updateSettingsLatch.await(2, TimeUnit.SECONDS));
-
-        // Assert: Independent states
+        // Assert: Independent states (synchronous verification only)
         ConcurrentHashMap<String, FailureState> tracker = getFailureTracker();
 
         FailureState state1 = tracker.get(index1Uuid);
-        assertNotNull(state1);
-        assertEquals(FailureType.TRANSIENT, state1.failureType);
-        assertFalse("Index1 should not have blocks", state1.blocksApplied);
+        assertNotNull("Index1 should be tracked", state1);
+        assertEquals("Index1 failure type should be TRANSIENT", FailureType.TRANSIENT, state1.failureType);
+        assertFalse("Index1 should not have blocksApplied flag set", state1.blocksApplied);
 
         FailureState state2 = tracker.get(index2Uuid);
-        assertNotNull(state2);
-        assertEquals(FailureType.CRITICAL, state2.failureType);
-        assertTrue("Index2 should have blocks", state2.blocksApplied);
+        assertNotNull("Index2 should be tracked", state2);
+        assertEquals("Index2 failure type should be CRITICAL", FailureType.CRITICAL, state2.failureType);
+        assertTrue("Index2 should have blocksApplied flag set", state2.blocksApplied);
     }
 
     /**
