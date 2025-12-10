@@ -1,0 +1,220 @@
+---
+"Test _cat/indices API with encrypted indices":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  - do:
+      indices.create:
+        index: test-crypto-cat-indices
+        body:
+          settings:
+            number_of_shards: 2
+            number_of_replicas: 0
+            index.store.type: cryptofs
+            index.store.crypto.key_provider: dummy
+
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index: { _index: test-crypto-cat-indices }
+          - { "field": "value1" }
+          - index: { _index: test-crypto-cat-indices }
+          - { "field": "value2" }
+          - index: { _index: test-crypto-cat-indices }
+          - { "field": "value3" }
+
+  # Just verify that _cat/indices returns a row for this index
+  - do:
+      cat.indices:
+        index: test-crypto-cat-indices
+        format: json
+
+  - is_true: $body
+
+  # Assert document count via count API (no dotted keys)
+  - do:
+      count:
+        index: test-crypto-cat-indices
+
+  - match: { count: 3 }
+
+  # Assert there is some store size via stats API (no _cat fields)
+  - do:
+      indices.stats:
+        index: test-crypto-cat-indices
+
+  - is_true: indices.test-crypto-cat-indices.primaries.store.size_in_bytes
+
+  - do:
+      indices.delete:
+        index: test-crypto-cat-indices
+
+---
+"Test _cat/recovery API with encrypted indices":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  - do:
+      indices.create:
+        index: test-crypto-cat-recovery
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: cryptofs
+            index.store.crypto.key_provider: dummy
+
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index: { _index: test-crypto-cat-recovery }
+          - { "recovery": "test1" }
+          - index: { _index: test-crypto-cat-recovery }
+          - { "recovery": "test2" }
+
+  - do:
+      indices.flush:
+        index: test-crypto-cat-recovery
+
+  - do:
+      cat.recovery:
+        index: test-crypto-cat-recovery
+        format: json
+
+  - match: { $body.0.index: "test-crypto-cat-recovery" }
+  # Newer OpenSearch returns lowercase "empty_store"
+  - match: { $body.0.type: "empty_store" }
+  - is_true: $body.0.files_percent
+
+  - do:
+      cat.recovery:
+        index: test-crypto-cat-recovery
+        active_only: true
+        format: json
+
+  - length: { $body: 0 }
+
+  - do:
+      indices.delete:
+        index: test-crypto-cat-recovery
+
+---
+"Test _cat/nodes API":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  - do:
+      cat.nodes:
+        format: json
+
+  - is_true: $body
+  - is_true: $body.0.name
+  - is_true: $body.0.ip
+
+---
+"Test _stats API with encrypted indices":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  - do:
+      indices.create:
+        index: test-crypto-stats
+        body:
+          settings:
+            index.store.type: cryptofs
+            index.store.crypto.key_provider: dummy
+
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index: { _index: test-crypto-stats }
+          - { "field": "value1" }
+          - index: { _index: test-crypto-stats }
+          - { "field": "value2" }
+          - index: { _index: test-crypto-stats }
+          - { "field": "value3" }
+
+  - do:
+      indices.stats:
+        index: test-crypto-stats
+
+  - match: { indices.test-crypto-stats.primaries.docs.count: 3 }
+  - gte: { indices.test-crypto-stats.primaries.store.size_in_bytes: 0 }
+
+  - do:
+      indices.delete:
+        index: test-crypto-stats
+
+---
+"Test _segments API with encrypted indices":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  - do:
+      indices.create:
+        index: test-crypto-segments
+        body:
+          settings:
+            index.store.type: cryptofs
+            index.store.crypto.key_provider: dummy
+
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index: { _index: test-crypto-segments }
+          - { "data": "segment test 1" }
+
+  - do:
+      indices.flush:
+        index: test-crypto-segments
+
+  - do:
+      indices.segments:
+        index: test-crypto-segments
+
+  - is_true: indices.test-crypto-segments
+
+  - do:
+      indices.delete:
+        index: test-crypto-segments
+
+---
+"Test _cluster/stats API with encrypted indices":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  - do:
+      indices.create:
+        index: test-crypto-cluster-stats
+        body:
+          settings:
+            index.store.type: cryptofs
+            index.store.crypto.key_provider: dummy
+
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index: { _index: test-crypto-cluster-stats }
+          - { "cluster": "test1" }
+
+  - do:
+      cluster.stats: {}
+
+  - gte: { indices.count: 1 }
+  - gte: { indices.docs.count: 1 }
+  - is_true: nodes.count
+
+  - do:
+      indices.delete:
+        index: test-crypto-cluster-stats

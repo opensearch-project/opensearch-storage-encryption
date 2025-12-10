@@ -1,0 +1,1827 @@
+---
+"Test encrypted index term query":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  - do:
+      indices.create:
+        index: test-crypto-term-query
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+
+  # Index documents with keyword fields
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-term-query
+              _id: "1"
+          - { "status": "active", "category": "electronics", "priority": 1 }
+          - index:
+              _index: test-crypto-term-query
+              _id: "2"
+          - { "status": "active", "category": "books", "priority": 2 }
+          - index:
+              _index: test-crypto-term-query
+              _id: "3"
+          - { "status": "inactive", "category": "electronics", "priority": 1 }
+          - index:
+              _index: test-crypto-term-query
+              _id: "4"
+          - { "status": "active", "category": "electronics", "priority": 3 }
+
+  # Term query for exact match
+  - do:
+      search:
+        index: test-crypto-term-query
+        body:
+          query:
+            term:
+              status.keyword: "active"
+
+  - match: { hits.total.value: 3 }
+
+  # Term query on category
+  - do:
+      search:
+        index: test-crypto-term-query
+        body:
+          query:
+            term:
+              category.keyword: "electronics"
+
+  - match: { hits.total.value: 3 }
+
+  # Terms query (multiple values)
+  - do:
+      search:
+        index: test-crypto-term-query
+        body:
+          query:
+            terms:
+              priority: [1, 2]
+
+  - match: { hits.total.value: 3 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-term-query
+
+---
+"Test encrypted index match query":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-match-query
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+
+  # Index documents with text fields
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-match-query
+              _id: "1"
+          - { "title": "OpenSearch encrypted storage", "description": "Storage encryption for OpenSearch indices" }
+          - index:
+              _index: test-crypto-match-query
+              _id: "2"
+          - { "title": "Lucene index encryption", "description": "Encrypting Lucene segments and translogs" }
+          - index:
+              _index: test-crypto-match-query
+              _id: "3"
+          - { "title": "Secure data storage", "description": "Best practices for encrypted data" }
+          - index:
+              _index: test-crypto-match-query
+              _id: "4"
+          - { "title": "Database security", "description": "Securing database with encryption" }
+
+  # Match query - single term ✅ FIXED
+  - do:
+      search:
+        index: test-crypto-match-query
+        body:
+          query:
+            match:
+              description: "encryption"
+
+  - match: { hits.total.value: 2 }
+
+  # Match query - multiple terms
+  - do:
+      search:
+        index: test-crypto-match-query
+        body:
+          query:
+            match:
+              title: "OpenSearch encryption"
+
+  - gte: { hits.total.value: 1 }
+
+  # Match phrase query
+  - do:
+      search:
+        index: test-crypto-match-query
+        body:
+          query:
+            match_phrase:
+              description: "encrypted data"
+
+  - match: { hits.total.value: 1 }
+  - match: { hits.hits.0._id: "3" }
+
+  # Multi-match query across fields
+  - do:
+      search:
+        index: test-crypto-match-query
+        body:
+          query:
+            multi_match:
+              query: "storage"
+              fields: ["title", "description"]
+
+  - gte: { hits.total.value: 2 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-match-query
+
+---
+"Test encrypted index bool query":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-bool-query
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+
+  # Index documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-bool-query
+              _id: "1"
+          - { "status": "active", "priority": 1, "type": "urgent", "score": 95 }
+          - index:
+              _index: test-crypto-bool-query
+              _id: "2"
+          - { "status": "active", "priority": 2, "type": "normal", "score": 85 }
+          - index:
+              _index: test-crypto-bool-query
+              _id: "3"
+          - { "status": "inactive", "priority": 1, "type": "urgent", "score": 75 }
+          - index:
+              _index: test-crypto-bool-query
+              _id: "4"
+          - { "status": "active", "priority": 3, "type": "low", "score": 65 }
+          - index:
+              _index: test-crypto-bool-query
+              _id: "5"
+          - { "status": "active", "priority": 1, "type": "urgent", "score": 90 }
+
+  # Bool query - must clauses (AND)
+  - do:
+      search:
+        index: test-crypto-bool-query
+        body:
+          query:
+            bool:
+              must:
+                - term:
+                    status.keyword: "active"
+                - term:
+                    priority: 1
+
+  - match: { hits.total.value: 2 }
+
+  # Bool query - should clauses (OR)
+  - do:
+      search:
+        index: test-crypto-bool-query
+        body:
+          query:
+            bool:
+              should:
+                - term:
+                    type.keyword: "urgent"
+                - term:
+                    type.keyword: "low"
+              minimum_should_match: 1
+
+  - match: { hits.total.value: 4 }
+
+  # Bool query - must_not clause
+  - do:
+      search:
+        index: test-crypto-bool-query
+        body:
+          query:
+            bool:
+              must:
+                - term:
+                    status.keyword: "active"
+              must_not:
+                - term:
+                    type.keyword: "low"
+
+  - match: { hits.total.value: 3 }
+
+  # Bool query - filter clause (no scoring)
+  - do:
+      search:
+        index: test-crypto-bool-query
+        body:
+          query:
+            bool:
+              filter:
+                - term:
+                    status.keyword: "active"
+                - range:
+                    score:
+                      gte: 85
+
+  - match: { hits.total.value: 3 }
+
+  # Complex bool query
+  - do:
+      search:
+        index: test-crypto-bool-query
+        body:
+          query:
+            bool:
+              must:
+                - term:
+                    status.keyword: "active"
+              should:
+                - term:
+                    type.keyword: "urgent"
+              must_not:
+                - range:
+                    score:
+                      lt: 80
+              filter:
+                - range:
+                    priority:
+                      lte: 2
+
+  - match: { hits.total.value: 3 }
+
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-bool-query
+
+---
+"Test encrypted index range query":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-range-query
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+          mappings:
+            properties:
+              amount:
+                type: long
+              price:
+                type: double
+              created_at:
+                type: date
+              temperature:
+                type: integer
+
+  # Index documents with various numeric and date types
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-range-query
+              _id: "1"
+          - { "amount": 100, "price": 19.99, "created_at": "2024-01-01T00:00:00Z", "temperature": 20 }
+          - index:
+              _index: test-crypto-range-query
+              _id: "2"
+          - { "amount": 250, "price": 49.99, "created_at": "2024-02-15T12:00:00Z", "temperature": 25 }
+          - index:
+              _index: test-crypto-range-query
+              _id: "3"
+          - { "amount": 500, "price": 99.99, "created_at": "2024-03-20T08:30:00Z", "temperature": 30 }
+          - index:
+              _index: test-crypto-range-query
+              _id: "4"
+          - { "amount": 1000, "price": 199.99, "created_at": "2024-04-10T16:45:00Z", "temperature": 35 }
+          - index:
+              _index: test-crypto-range-query
+              _id: "5"
+          - { "amount": 50, "price": 9.99, "created_at": "2024-05-01T20:15:00Z", "temperature": 15 }
+
+  # Range query - greater than or equal
+  - do:
+      search:
+        index: test-crypto-range-query
+        body:
+          query:
+            range:
+              amount:
+                gte: 250
+
+  - match: { hits.total.value: 3 }
+
+  # Range query - between values
+  - do:
+      search:
+        index: test-crypto-range-query
+        body:
+          query:
+            range:
+              price:
+                gte: 20.0
+                lte: 100.0
+
+  - match: { hits.total.value: 2 }
+
+  # Range query - date range
+  - do:
+      search:
+        index: test-crypto-range-query
+        body:
+          query:
+            range:
+              created_at:
+                gte: "2024-02-01"
+                lte: "2024-04-01"
+
+  - match: { hits.total.value: 2 }
+
+  # Range query - less than
+  - do:
+      search:
+        index: test-crypto-range-query
+        body:
+          query:
+            range:
+              temperature:
+                lt: 25
+
+  - match: { hits.total.value: 2 }
+
+  # Range query - greater than
+  - do:
+      search:
+        index: test-crypto-range-query
+        body:
+          query:
+            range:
+              amount:
+                gt: 100
+
+  - match: { hits.total.value: 3 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-range-query
+
+---
+"Test encrypted index pagination with from and size":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-pagination
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+
+  # Index 20 documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-pagination
+              _id: "1"
+          - { "seq": 1, "value": "doc 1" }
+          - index:
+              _index: test-crypto-pagination
+              _id: "2"
+          - { "seq": 2, "value": "doc 2" }
+          - index:
+              _index: test-crypto-pagination
+              _id: "3"
+          - { "seq": 3, "value": "doc 3" }
+          - index:
+              _index: test-crypto-pagination
+              _id: "4"
+          - { "seq": 4, "value": "doc 4" }
+          - index:
+              _index: test-crypto-pagination
+              _id: "5"
+          - { "seq": 5, "value": "doc 5" }
+          - index:
+              _index: test-crypto-pagination
+              _id: "6"
+          - { "seq": 6, "value": "doc 6" }
+          - index:
+              _index: test-crypto-pagination
+              _id: "7"
+          - { "seq": 7, "value": "doc 7" }
+          - index:
+              _index: test-crypto-pagination
+              _id: "8"
+          - { "seq": 8, "value": "doc 8" }
+          - index:
+              _index: test-crypto-pagination
+              _id: "9"
+          - { "seq": 9, "value": "doc 9" }
+          - index:
+              _index: test-crypto-pagination
+              _id: "10"
+          - { "seq": 10, "value": "doc 10" }
+          - index:
+              _index: test-crypto-pagination
+              _id: "11"
+          - { "seq": 11, "value": "doc 11" }
+          - index:
+              _index: test-crypto-pagination
+              _id: "12"
+          - { "seq": 12, "value": "doc 12" }
+          - index:
+              _index: test-crypto-pagination
+              _id: "13"
+          - { "seq": 13, "value": "doc 13" }
+          - index:
+              _index: test-crypto-pagination
+              _id: "14"
+          - { "seq": 14, "value": "doc 14" }
+          - index:
+              _index: test-crypto-pagination
+              _id: "15"
+          - { "seq": 15, "value": "doc 15" }
+
+  # First page - default size (10)
+  - do:
+      search:
+        index: test-crypto-pagination
+        body:
+          query:
+            match_all: {}
+          sort:
+            - seq: asc
+
+  - match: { hits.total.value: 15 }
+  - lte: { hits.hits.0._source.seq: 10 }
+
+  # First page - explicit size
+  - do:
+      search:
+        index: test-crypto-pagination
+        body:
+          from: 0
+          size: 5
+          query:
+            match_all: {}
+          sort:
+            - seq: asc
+
+  - match: { hits.total.value: 15 }
+  - length: { hits.hits: 5 }
+  - match: { hits.hits.0._source.seq: 1 }
+  - match: { hits.hits.4._source.seq: 5 }
+
+  # Second page
+  - do:
+      search:
+        index: test-crypto-pagination
+        body:
+          from: 5
+          size: 5
+          query:
+            match_all: {}
+          sort:
+            - seq: asc
+
+  - match: { hits.total.value: 15 }
+  - length: { hits.hits: 5 }
+  - match: { hits.hits.0._source.seq: 6 }
+  - match: { hits.hits.4._source.seq: 10 }
+
+  # Third page
+  - do:
+      search:
+        index: test-crypto-pagination
+        body:
+          from: 10
+          size: 5
+          query:
+            match_all: {}
+          sort:
+            - seq: asc
+
+  - match: { hits.total.value: 15 }
+  - length: { hits.hits: 5 }
+  - match: { hits.hits.0._source.seq: 11 }
+  - match: { hits.hits.4._source.seq: 15 }
+
+  # Last partial page
+  - do:
+      search:
+        index: test-crypto-pagination
+        body:
+          from: 12
+          size: 5
+          query:
+            match_all: {}
+          sort:
+            - seq: asc
+
+  - match: { hits.total.value: 15 }
+  - length: { hits.hits: 3 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-pagination
+
+---
+"Test encrypted index track_total_hits parameter":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-track-total
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+
+  # Index many documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-track-total
+          - { "group": "A", "value": 1 }
+          - index:
+              _index: test-crypto-track-total
+          - { "group": "A", "value": 2 }
+          - index:
+              _index: test-crypto-track-total
+          - { "group": "A", "value": 3 }
+          - index:
+              _index: test-crypto-track-total
+          - { "group": "A", "value": 4 }
+          - index:
+              _index: test-crypto-track-total
+          - { "group": "A", "value": 5 }
+          - index:
+              _index: test-crypto-track-total
+          - { "group": "B", "value": 6 }
+          - index:
+              _index: test-crypto-track-total
+          - { "group": "B", "value": 7 }
+          - index:
+              _index: test-crypto-track-total
+          - { "group": "B", "value": 8 }
+
+  # Default track_total_hits (exact count)
+  - do:
+      search:
+        index: test-crypto-track-total
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 8 }
+  - match: { hits.total.relation: "eq" }
+
+  # track_total_hits: false (don't track)
+  - do:
+      search:
+        index: test-crypto-track-total
+        body:
+          track_total_hits: false
+          query:
+            match_all: {}
+
+  # track_total_hits: true (exact count)
+  - do:
+      search:
+        index: test-crypto-track-total
+        body:
+          track_total_hits: true
+          query:
+            term:
+              group.keyword: "A"
+
+  - match: { hits.total.value: 5 }
+  - match: { hits.total.relation: "eq" }
+
+  # track_total_hits: number (threshold)
+  - do:
+      search:
+        index: test-crypto-track-total
+        body:
+          track_total_hits: 3
+          query:
+            term:
+              group.keyword: "A"
+
+  - match: { hits.total.value: 3 }
+  - match: { hits.total.relation: "gte" }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-track-total
+
+---
+"Test encrypted index keyword field sorting":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-sort-keyword
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+
+  # Index documents with keywords
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-sort-keyword
+              _id: "1"
+          - { "name": "Alice", "status": "active", "city": "Boston" }
+          - index:
+              _index: test-crypto-sort-keyword
+              _id: "2"
+          - { "name": "Charlie", "status": "inactive", "city": "Austin" }
+          - index:
+              _index: test-crypto-sort-keyword
+              _id: "3"
+          - { "name": "Bob", "status": "active", "city": "Denver" }
+          - index:
+              _index: test-crypto-sort-keyword
+              _id: "4"
+          - { "name": "David", "status": "pending", "city": "Chicago" }
+
+  # Sort by name ascending
+  - do:
+      search:
+        index: test-crypto-sort-keyword
+        body:
+          query:
+            match_all: {}
+          sort:
+            - name.keyword: asc
+
+  - match: { hits.hits.0._source.name: "Alice" }
+  - match: { hits.hits.1._source.name: "Bob" }
+  - match: { hits.hits.2._source.name: "Charlie" }
+  - match: { hits.hits.3._source.name: "David" }
+
+  # Sort by name descending
+  - do:
+      search:
+        index: test-crypto-sort-keyword
+        body:
+          query:
+            match_all: {}
+          sort:
+            - name.keyword: desc
+
+  - match: { hits.hits.0._source.name: "David" }
+  - match: { hits.hits.3._source.name: "Alice" }
+
+  # Sort by multiple fields
+  - do:
+      search:
+        index: test-crypto-sort-keyword
+        body:
+          query:
+            match_all: {}
+          sort:
+            - status.keyword: asc
+            - name.keyword: desc
+
+  - match: { hits.hits.0._source.status: "active" }
+  - match: { hits.hits.0._source.name: "Bob" }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-sort-keyword
+
+---
+"Test encrypted index numeric field sorting":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-sort-numeric
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+          mappings:
+            properties:
+              score:
+                type: long
+              rating:
+                type: double
+              count:
+                type: integer
+
+  # Index documents with numeric fields
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-sort-numeric
+              _id: "1"
+          - { "name": "Item A", "score": 150, "rating": 4.5, "count": 10 }
+          - index:
+              _index: test-crypto-sort-numeric
+              _id: "2"
+          - { "name": "Item B", "score": 200, "rating": 3.8, "count": 25 }
+          - index:
+              _index: test-crypto-sort-numeric
+              _id: "3"
+          - { "name": "Item C", "score": 100, "rating": 4.9, "count": 5 }
+          - index:
+              _index: test-crypto-sort-numeric
+              _id: "4"
+          - { "name": "Item D", "score": 175, "rating": 4.2, "count": 15 }
+
+  # Sort by score ascending
+  - do:
+      search:
+        index: test-crypto-sort-numeric
+        body:
+          query:
+            match_all: {}
+          sort:
+            - score: asc
+
+  - match: { hits.hits.0._source.score: 100 }
+  - match: { hits.hits.1._source.score: 150 }
+  - match: { hits.hits.2._source.score: 175 }
+  - match: { hits.hits.3._source.score: 200 }
+
+  # Sort by score descending
+  - do:
+      search:
+        index: test-crypto-sort-numeric
+        body:
+          query:
+            match_all: {}
+          sort:
+            - score: desc
+
+  - match: { hits.hits.0._source.score: 200 }
+  - match: { hits.hits.3._source.score: 100 }
+
+  # Sort by rating descending
+  - do:
+      search:
+        index: test-crypto-sort-numeric
+        body:
+          query:
+            match_all: {}
+          sort:
+            - rating: desc
+
+  - match: { hits.hits.0._source.rating: 4.9 }
+  - match: { hits.hits.0._source.name: "Item C" }
+
+  # Sort by multiple numeric fields
+  - do:
+      search:
+        index: test-crypto-sort-numeric
+        body:
+          query:
+            match_all: {}
+          sort:
+            - count: asc
+            - score: desc
+
+  - match: { hits.hits.0._source.count: 5 }
+  - match: { hits.hits.1._source.count: 10 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-sort-numeric
+
+---
+"Test encrypted index date field sorting":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-sort-date
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+          mappings:
+            properties:
+              created_at:
+                type: date
+              updated_at:
+                type: date
+
+  # Index documents with date fields
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-sort-date
+              _id: "1"
+          - { "event": "Event A", "created_at": "2024-01-15T10:00:00Z", "updated_at": "2024-01-20T14:30:00Z" }
+          - index:
+              _index: test-crypto-sort-date
+              _id: "2"
+          - { "event": "Event B", "created_at": "2024-03-10T08:15:00Z", "updated_at": "2024-03-12T09:00:00Z" }
+          - index:
+              _index: test-crypto-sort-date
+              _id: "3"
+          - { "event": "Event C", "created_at": "2024-02-01T12:30:00Z", "updated_at": "2024-02-05T16:45:00Z" }
+          - index:
+              _index: test-crypto-sort-date
+              _id: "4"
+          - { "event": "Event D", "created_at": "2024-01-01T00:00:00Z", "updated_at": "2024-01-10T11:20:00Z" }
+
+  # Sort by created_at ascending (oldest first)
+  - do:
+      search:
+        index: test-crypto-sort-date
+        body:
+          query:
+            match_all: {}
+          sort:
+            - created_at: asc
+
+  - match: { hits.hits.0._source.event: "Event D" }
+  - match: { hits.hits.1._source.event: "Event A" }
+  - match: { hits.hits.2._source.event: "Event C" }
+  - match: { hits.hits.3._source.event: "Event B" }
+
+  # Sort by created_at descending (newest first)
+  - do:
+      search:
+        index: test-crypto-sort-date
+        body:
+          query:
+            match_all: {}
+          sort:
+            - created_at: desc
+
+  - match: { hits.hits.0._source.event: "Event B" }
+  - match: { hits.hits.3._source.event: "Event D" }
+
+  # Sort by updated_at descending
+  - do:
+      search:
+        index: test-crypto-sort-date
+        body:
+          query:
+            match_all: {}
+          sort:
+            - updated_at: desc
+
+  - match: { hits.hits.0._source.event: "Event B" }
+
+  # Sort by date with query filter
+  - do:
+      search:
+        index: test-crypto-sort-date
+        body:
+          query:
+            range:
+              created_at:
+                gte: "2024-01-10"
+          sort:
+            - created_at: asc
+
+  - match: { hits.total.value: 3 }
+  - match: { hits.hits.0._source.event: "Event A" }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-sort-date
+
+---
+"Test encrypted index complex search with pagination and sorting":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-complex-search
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+          mappings:
+            properties:
+              title:
+                type: text
+              category:
+                type: keyword
+              price:
+                type: double
+              stock:
+                type: integer
+              created:
+                type: date
+
+  # Index product documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-complex-search
+          - { "title": "Laptop Pro", "category": "electronics", "price": 1299.99, "stock": 15, "created": "2024-01-01" }
+          - index:
+              _index: test-crypto-complex-search
+          - { "title": "Wireless Mouse", "category": "electronics", "price": 29.99, "stock": 100, "created": "2024-01-05" }
+          - index:
+              _index: test-crypto-complex-search
+          - { "title": "Office Chair", "category": "furniture", "price": 249.99, "stock": 25, "created": "2024-01-10" }
+          - index:
+              _index: test-crypto-complex-search
+          - { "title": "Desk Lamp", "category": "furniture", "price": 39.99, "stock": 50, "created": "2024-01-15" }
+          - index:
+              _index: test-crypto-complex-search
+          - { "title": "Keyboard Mechanical", "category": "electronics", "price": 149.99, "stock": 30, "created": "2024-01-20" }
+          - index:
+              _index: test-crypto-complex-search
+          - { "title": "Monitor 4K", "category": "electronics", "price": 599.99, "stock": 20, "created": "2024-01-25" }
+          - index:
+              _index: test-crypto-complex-search
+          - { "title": "Bookshelf", "category": "furniture", "price": 179.99, "stock": 10, "created": "2024-02-01" }
+          - index:
+              _index: test-crypto-complex-search
+          - { "title": "Webcam HD", "category": "electronics", "price": 79.99, "stock": 40, "created": "2024-02-05" }
+
+  # Complex query: bool + range + term, with sorting and pagination
+  - do:
+      search:
+        index: test-crypto-complex-search
+        body:
+          from: 0
+          size: 3
+          track_total_hits: true
+          query:
+            bool:
+              must:
+                - term:
+                    category: "electronics"
+              filter:
+                - range:
+                    price:
+                      gte: 50.0
+                      lte: 1000.0
+          sort:
+            - price: desc
+
+  - match: { hits.total.relation: "eq" }
+  - gte: { hits.total.value: 2 }
+  - length: { hits.hits: 3 }
+  - match: { hits.hits.0._source.category: "electronics" }
+  - gte: { hits.hits.0._source.price: 50.0 }
+
+  # Verify sorting by price descending
+  - gte: { hits.hits.0._source.price: 599.99 }
+
+  # Second page of results
+  - do:
+      search:
+        index: test-crypto-complex-search
+        body:
+          from: 3
+          size: 3
+          query:
+            bool:
+              must:
+                - term:
+                    category: "electronics"
+              filter:
+                - range:
+                    price:
+                      gte: 50.0
+                      lte: 1000.0
+          sort:
+            - price: desc
+
+  - length: { hits.hits: 0 }
+
+  # Complex query with multiple sort fields
+  - do:
+      search:
+        index: test-crypto-complex-search
+        body:
+          size: 5
+          query:
+            range:
+              stock:
+                gte: 20
+          sort:
+            - stock: desc
+            - price: asc
+
+  - gte: { hits.total.value: 4 }
+
+  # Match query with sorting and pagination
+  - do:
+      search:
+        index: test-crypto-complex-search
+        body:
+          from: 0
+          size: 2
+          query:
+            match:
+              title: "electronics"
+          sort:
+            - created: desc
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-complex-search
+
+---
+"Test encrypted index scroll API for large result sets":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-scroll
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+
+  # Index 25 documents for scrolling
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 1, "batch": "A", "value": "doc 1" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 2, "batch": "A", "value": "doc 2" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 3, "batch": "A", "value": "doc 3" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 4, "batch": "A", "value": "doc 4" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 5, "batch": "A", "value": "doc 5" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 6, "batch": "B", "value": "doc 6" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 7, "batch": "B", "value": "doc 7" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 8, "batch": "B", "value": "doc 8" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 9, "batch": "B", "value": "doc 9" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 10, "batch": "B", "value": "doc 10" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 11, "batch": "C", "value": "doc 11" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 12, "batch": "C", "value": "doc 12" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 13, "batch": "C", "value": "doc 13" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 14, "batch": "C", "value": "doc 14" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 15, "batch": "C", "value": "doc 15" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 16, "batch": "D", "value": "doc 16" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 17, "batch": "D", "value": "doc 17" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 18, "batch": "D", "value": "doc 18" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 19, "batch": "D", "value": "doc 19" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 20, "batch": "D", "value": "doc 20" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 21, "batch": "E", "value": "doc 21" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 22, "batch": "E", "value": "doc 22" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 23, "batch": "E", "value": "doc 23" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 24, "batch": "E", "value": "doc 24" }
+          - index:
+              _index: test-crypto-scroll
+          - { "seq": 25, "batch": "E", "value": "doc 25" }
+
+  # Initialize scroll with keep_alive
+  - do:
+      search:
+        index: test-crypto-scroll
+        scroll: 1m
+        body:
+          size: 5
+          query:
+            match_all: {}
+          sort:
+            - seq: asc
+
+  - match: { hits.total.value: 25 }
+  - length: { hits.hits: 5 }
+  - match: { hits.hits.0._source.seq: 1 }
+  - set: { _scroll_id: scroll_id }
+
+  # Scroll through second batch
+  - do:
+      scroll:
+        scroll: 1m
+        scroll_id: $scroll_id
+
+  - length: { hits.hits: 5 }
+  - match: { hits.hits.0._source.seq: 6 }
+  - set: { _scroll_id: scroll_id }
+
+  # Scroll through third batch
+  - do:
+      scroll:
+        scroll: 1m
+        scroll_id: $scroll_id
+
+  - length: { hits.hits: 5 }
+  - match: { hits.hits.0._source.seq: 11 }
+  - set: { _scroll_id: scroll_id }
+
+  # Scroll through fourth batch
+  - do:
+      scroll:
+        scroll: 1m
+        scroll_id: $scroll_id
+
+  - length: { hits.hits: 5 }
+  - match: { hits.hits.0._source.seq: 16 }
+  - set: { _scroll_id: scroll_id }
+
+  # Scroll through fifth batch
+  - do:
+      scroll:
+        scroll: 1m
+        scroll_id: $scroll_id
+
+  - length: { hits.hits: 5 }
+  - match: { hits.hits.0._source.seq: 21 }
+  - set: { _scroll_id: scroll_id }
+
+  # Final scroll should return empty
+  - do:
+      scroll:
+        scroll: 1m
+        scroll_id: $scroll_id
+
+  - length: { hits.hits: 0 }
+
+  # Clear scroll context
+  - do:
+      clear_scroll:
+        scroll_id: $scroll_id
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-scroll
+
+---
+"Test encrypted index Point in Time (PIT) API":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-pit
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+
+  # Index initial documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-pit
+              _id: "1"
+          - { "seq": 1, "type": "original", "data": "pit test 1" }
+          - index:
+              _index: test-crypto-pit
+              _id: "2"
+          - { "seq": 2, "type": "original", "data": "pit test 2" }
+          - index:
+              _index: test-crypto-pit
+              _id: "3"
+          - { "seq": 3, "type": "original", "data": "pit test 3" }
+          - index:
+              _index: test-crypto-pit
+              _id: "4"
+          - { "seq": 4, "type": "original", "data": "pit test 4" }
+          - index:
+              _index: test-crypto-pit
+              _id: "5"
+          - { "seq": 5, "type": "original", "data": "pit test 5" }
+
+  # Create Point in Time with keep_alive
+  - do:
+      create_pit:
+        index: test-crypto-pit
+        keep_alive: 1m
+
+  - set: { pit_id: pit_id }
+  - is_true: pit_id
+
+  # Search using PIT (first page)
+  - do:
+      search:
+        body:
+          size: 2
+          query:
+            match_all: {}
+          pit:
+            id: $pit_id
+            keep_alive: 1m
+          sort:
+            - seq: asc
+
+  - match: { hits.total.value: 5 }
+  - length: { hits.hits: 2 }
+  - match: { hits.hits.0._source.seq: 1 }
+  - match: { hits.hits.1._source.seq: 2 }
+
+  # Index more documents after PIT creation (should not appear in PIT results)
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-pit
+              _id: "6"
+          - { "seq": 6, "type": "added_after_pit", "data": "pit test 6" }
+          - index:
+              _index: test-crypto-pit
+              _id: "7"
+          - { "seq": 7, "type": "added_after_pit", "data": "pit test 7" }
+
+  # Search using PIT with search_after (second page)
+  - do:
+      search:
+        body:
+          size: 2
+          query:
+            match_all: {}
+          pit:
+            id: $pit_id
+            keep_alive: 1m
+          sort:
+            - seq: asc
+          search_after: [2]
+
+  - match: { hits.total.value: 5 }
+  - length: { hits.hits: 2 }
+  - match: { hits.hits.0._source.seq: 3 }
+  - match: { hits.hits.1._source.seq: 4 }
+
+  # Continue pagination with search_after (third page)
+  - do:
+      search:
+        body:
+          size: 2
+          query:
+            match_all: {}
+          pit:
+            id: $pit_id
+            keep_alive: 1m
+          sort:
+            - seq: asc
+          search_after: [4]
+
+  - match: { hits.total.value: 5 }
+  - length: { hits.hits: 1 }
+  - match: { hits.hits.0._source.seq: 5 }
+
+  # Verify PIT only sees original 5 documents
+  - do:
+      search:
+        body:
+          query:
+            match_all: {}
+          pit:
+            id: $pit_id
+            keep_alive: 1m
+
+  - match: { hits.total.value: 5 }
+
+  # Regular search should see all 7 documents
+  - do:
+      search:
+        index: test-crypto-pit
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 7 }
+
+  # Delete PIT
+  - do:
+      delete_pit:
+        body:
+          pit_id: [$pit_id]
+
+  - match: { pits.0.successful: true }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-pit
+
+---
+"Test encrypted index scroll with concurrent writes":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-scroll-concurrent
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+
+  # Index initial batch of documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-scroll-concurrent
+          - { "seq": 1, "phase": "initial", "value": 10 }
+          - index:
+              _index: test-crypto-scroll-concurrent
+          - { "seq": 2, "phase": "initial", "value": 20 }
+          - index:
+              _index: test-crypto-scroll-concurrent
+          - { "seq": 3, "phase": "initial", "value": 30 }
+          - index:
+              _index: test-crypto-scroll-concurrent
+          - { "seq": 4, "phase": "initial", "value": 40 }
+          - index:
+              _index: test-crypto-scroll-concurrent
+          - { "seq": 5, "phase": "initial", "value": 50 }
+          - index:
+              _index: test-crypto-scroll-concurrent
+          - { "seq": 6, "phase": "initial", "value": 60 }
+          - index:
+              _index: test-crypto-scroll-concurrent
+          - { "seq": 7, "phase": "initial", "value": 70 }
+          - index:
+              _index: test-crypto-scroll-concurrent
+          - { "seq": 8, "phase": "initial", "value": 80 }
+
+  # Start scroll
+  - do:
+      search:
+        index: test-crypto-scroll-concurrent
+        scroll: 2m
+        body:
+          size: 3
+          query:
+            match_all: {}
+          sort:
+            - seq: asc
+
+  - match: { hits.total.value: 8 }
+  - length: { hits.hits: 3 }
+  - match: { hits.hits.0._source.seq: 1 }
+  - set: { _scroll_id: scroll_id }
+
+  # Concurrent write: Add documents during scroll
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-scroll-concurrent
+          - { "seq": 9, "phase": "concurrent", "value": 90 }
+          - index:
+              _index: test-crypto-scroll-concurrent
+          - { "seq": 10, "phase": "concurrent", "value": 100 }
+
+  # Continue scroll - should not see concurrent writes (snapshot isolation)
+  - do:
+      scroll:
+        scroll: 2m
+        scroll_id: $scroll_id
+
+  - length: { hits.hits: 3 }
+  - match: { hits.hits.0._source.seq: 4 }
+  - set: { _scroll_id: scroll_id }
+
+  # Concurrent write: Update existing document
+  - do:
+      update:
+        index: test-crypto-scroll-concurrent
+        id: $body.hits.hits.0._id
+        refresh: true
+        body:
+          doc:
+            updated: true
+
+  # Continue scroll - remaining original documents
+  - do:
+      scroll:
+        scroll: 2m
+        scroll_id: $scroll_id
+
+  - length: { hits.hits: 2 }
+  - match: { hits.hits.0._source.seq: 7 }
+  - set: { _scroll_id: scroll_id }
+
+  # Final scroll batch
+  - do:
+      scroll:
+        scroll: 2m
+        scroll_id: $scroll_id
+
+  - length: { hits.hits: 0 }
+
+  # Clear scroll
+  - do:
+      clear_scroll:
+        scroll_id: $scroll_id
+
+  # New search should see all documents including concurrent writes
+  - do:
+      search:
+        index: test-crypto-scroll-concurrent
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 10 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-scroll-concurrent
+
+---
+"Test encrypted index PIT with concurrent writes":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-pit-concurrent
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+
+  # Index initial documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-pit-concurrent
+              _id: "doc1"
+          - { "id": 1, "status": "original", "score": 100 }
+          - index:
+              _index: test-crypto-pit-concurrent
+              _id: "doc2"
+          - { "id": 2, "status": "original", "score": 200 }
+          - index:
+              _index: test-crypto-pit-concurrent
+              _id: "doc3"
+          - { "id": 3, "status": "original", "score": 300 }
+          - index:
+              _index: test-crypto-pit-concurrent
+              _id: "doc4"
+          - { "id": 4, "status": "original", "score": 400 }
+
+  # Create PIT
+  - do:
+      create_pit:
+        index: test-crypto-pit-concurrent
+        keep_alive: 2m
+
+  - set: { pit_id: pit_id }
+
+  # First PIT search
+  - do:
+      search:
+        body:
+          size: 2
+          query:
+            match_all: {}
+          pit:
+            id: $pit_id
+            keep_alive: 2m
+          sort:
+            - id: asc
+
+  - match: { hits.total.value: 4 }
+  - length: { hits.hits: 2 }
+  - match: { hits.hits.0._source.id: 1 }
+
+  # Concurrent writes: Add new documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-pit-concurrent
+              _id: "doc5"
+          - { "id": 5, "status": "added_during_pit", "score": 500 }
+          - index:
+              _index: test-crypto-pit-concurrent
+              _id: "doc6"
+          - { "id": 6, "status": "added_during_pit", "score": 600 }
+
+  # Concurrent writes: Update existing document
+  - do:
+      update:
+        index: test-crypto-pit-concurrent
+        id: "doc2"
+        refresh: true
+        body:
+          doc:
+            status: "updated_during_pit"
+            score: 250
+
+  # Concurrent writes: Delete document
+  - do:
+      delete:
+        index: test-crypto-pit-concurrent
+        id: "doc4"
+        refresh: true
+
+  # Continue PIT search - should still see original snapshot (4 docs)
+  - do:
+      search:
+        body:
+          size: 2
+          query:
+            match_all: {}
+          pit:
+            id: $pit_id
+            keep_alive: 2m
+          sort:
+            - id: asc
+          search_after: [2]
+
+  - match: { hits.total.value: 4 }
+  - length: { hits.hits: 2 }
+  - match: { hits.hits.0._source.id: 3 }
+  - match: { hits.hits.1._source.id: 4 }
+
+  # Verify PIT sees original doc2 value (not updated)
+  - do:
+      search:
+        body:
+          query:
+            term:
+              id: 2
+          pit:
+            id: $pit_id
+            keep_alive: 2m
+
+  - match: { hits.total.value: 1 }
+  - match: { hits.hits.0._source.status: "original" }
+  - match: { hits.hits.0._source.score: 200 }
+
+  # Regular search sees current state (5 docs, updated values)
+  - do:
+      search:
+        index: test-crypto-pit-concurrent
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 5 }
+
+  # Regular search sees updated doc2
+  - do:
+      search:
+        index: test-crypto-pit-concurrent
+        body:
+          query:
+            term:
+              id: 2
+
+  - match: { hits.hits.0._source.status: "updated_during_pit" }
+  - match: { hits.hits.0._source.score: 250 }
+
+  # Delete PIT
+  - do:
+      delete_pit:
+        body:
+          pit_id: [$pit_id]
+
+  - match: { pits.0.successful: true }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-pit-concurrent
+
+---
+"Test encrypted index scroll with keep_alive extension":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-scroll-keepalive
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+
+  # Index documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-scroll-keepalive
+          - { "seq": 1, "data": "scroll keepalive test 1" }
+          - index:
+              _index: test-crypto-scroll-keepalive
+          - { "seq": 2, "data": "scroll keepalive test 2" }
+          - index:
+              _index: test-crypto-scroll-keepalive
+          - { "seq": 3, "data": "scroll keepalive test 3" }
+          - index:
+              _index: test-crypto-scroll-keepalive
+          - { "seq": 4, "data": "scroll keepalive test 4" }
+
+  # Start scroll with short keep_alive
+  - do:
+      search:
+        index: test-crypto-scroll-keepalive
+        scroll: 30s
+        body:
+          size: 2
+          query:
+            match_all: {}
+          sort:
+            - seq: asc
+
+  - match: { hits.total.value: 4 }
+  - length: { hits.hits: 2 }
+  - set: { _scroll_id: scroll_id }
+
+  # Continue scroll and extend keep_alive
+  - do:
+      scroll:
+        scroll: 1m
+        scroll_id: $scroll_id
+
+  - length: { hits.hits: 2 }
+  - match: { hits.hits.0._source.seq: 3 }
+
+  # Clear scroll
+  - do:
+      clear_scroll:
+        scroll_id: $scroll_id
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-scroll-keepalive

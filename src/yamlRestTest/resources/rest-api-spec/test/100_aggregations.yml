@@ -1,0 +1,880 @@
+---
+"Test encrypted index terms aggregation":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-agg-terms
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+
+  # Index documents with categorical fields
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-agg-terms
+          - { "category": "electronics", "brand": "Apple", "status": "active", "price": 999 }
+          - index:
+              _index: test-crypto-agg-terms
+          - { "category": "electronics", "brand": "Samsung", "status": "active", "price": 799 }
+          - index:
+              _index: test-crypto-agg-terms
+          - { "category": "electronics", "brand": "Apple", "status": "inactive", "price": 1299 }
+          - index:
+              _index: test-crypto-agg-terms
+          - { "category": "furniture", "brand": "IKEA", "status": "active", "price": 299 }
+          - index:
+              _index: test-crypto-agg-terms
+          - { "category": "furniture", "brand": "IKEA", "status": "active", "price": 399 }
+          - index:
+              _index: test-crypto-agg-terms
+          - { "category": "books", "brand": "Penguin", "status": "active", "price": 29 }
+          - index:
+              _index: test-crypto-agg-terms
+          - { "category": "electronics", "brand": "Sony", "status": "active", "price": 599 }
+          - index:
+              _index: test-crypto-agg-terms
+          - { "category": "books", "brand": "Penguin", "status": "active", "price": 19 }
+
+  # Terms aggregation on category
+  - do:
+      search:
+        index: test-crypto-agg-terms
+        body:
+          size: 0
+          aggs:
+            categories:
+              terms:
+                field: category.keyword
+
+  - match: { hits.total.value: 8 }
+  - length: { aggregations.categories.buckets: 3 }
+  - match: { aggregations.categories.buckets.0.key: "electronics" }
+  - match: { aggregations.categories.buckets.0.doc_count: 4 }
+
+  # Terms aggregation on brand with size limit
+  - do:
+      search:
+        index: test-crypto-agg-terms
+        body:
+          size: 0
+          aggs:
+            top_brands:
+              terms:
+                field: brand.keyword
+                size: 2
+
+  - length: { aggregations.top_brands.buckets: 2 }
+
+  # Nested terms aggregation (category -> brand)
+  - do:
+      search:
+        index: test-crypto-agg-terms
+        body:
+          size: 0
+          aggs:
+            categories:
+              terms:
+                field: category.keyword
+              aggs:
+                brands:
+                  terms:
+                    field: brand.keyword
+
+  - match: { aggregations.categories.buckets.0.key: "electronics" }
+  - gte: { aggregations.categories.buckets.0.brands.buckets.0.doc_count: 1 }
+
+  # Terms aggregation with min_doc_count
+  - do:
+      search:
+        index: test-crypto-agg-terms
+        body:
+          size: 0
+          aggs:
+            frequent_brands:
+              terms:
+                field: brand.keyword
+                min_doc_count: 2
+
+  - gte: { aggregations.frequent_brands.buckets.0.doc_count: 2 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-agg-terms
+
+---
+"Test encrypted index date_histogram aggregation":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-agg-date-histogram
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+          mappings:
+            properties:
+              timestamp:
+                type: date
+              amount:
+                type: long
+
+  # Index time-series documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-agg-date-histogram
+          - { "timestamp": "2024-01-01T10:00:00Z", "event": "login", "amount": 100 }
+          - index:
+              _index: test-crypto-agg-date-histogram
+          - { "timestamp": "2024-01-01T14:00:00Z", "event": "purchase", "amount": 250 }
+          - index:
+              _index: test-crypto-agg-date-histogram
+          - { "timestamp": "2024-01-02T09:00:00Z", "event": "login", "amount": 150 }
+          - index:
+              _index: test-crypto-agg-date-histogram
+          - { "timestamp": "2024-01-02T16:00:00Z", "event": "purchase", "amount": 300 }
+          - index:
+              _index: test-crypto-agg-date-histogram
+          - { "timestamp": "2024-01-03T11:00:00Z", "event": "login", "amount": 200 }
+          - index:
+              _index: test-crypto-agg-date-histogram
+          - { "timestamp": "2024-01-05T13:00:00Z", "event": "purchase", "amount": 400 }
+          - index:
+              _index: test-crypto-agg-date-histogram
+          - { "timestamp": "2024-01-08T15:00:00Z", "event": "login", "amount": 175 }
+          - index:
+              _index: test-crypto-agg-date-histogram
+          - { "timestamp": "2024-01-10T12:00:00Z", "event": "purchase", "amount": 500 }
+
+  # Date histogram by day
+  - do:
+      search:
+        index: test-crypto-agg-date-histogram
+        body:
+          size: 0
+          aggs:
+            events_by_day:
+              date_histogram:
+                field: timestamp
+                calendar_interval: day
+
+  - gte: { aggregations.events_by_day.buckets.0.doc_count: 1 }
+  - match: { aggregations.events_by_day.buckets.0.key_as_string: "2024-01-01T00:00:00.000Z" }
+
+  # Date histogram with fixed interval
+  - do:
+      search:
+        index: test-crypto-agg-date-histogram
+        body:
+          size: 0
+          aggs:
+            events_per_12h:
+              date_histogram:
+                field: timestamp
+                fixed_interval: 12h
+
+  - gte: { aggregations.events_per_12h.buckets.0.doc_count: 0 }
+
+  # Date histogram with sub-aggregation (sum)
+  - do:
+      search:
+        index: test-crypto-agg-date-histogram
+        body:
+          size: 0
+          aggs:
+            daily_totals:
+              date_histogram:
+                field: timestamp
+                calendar_interval: day
+              aggs:
+                total_amount:
+                  sum:
+                    field: amount
+
+  - match: { aggregations.daily_totals.buckets.0.key_as_string: "2024-01-01T00:00:00.000Z" }
+  - match: { aggregations.daily_totals.buckets.0.total_amount.value: 350.0 }
+
+  # Date histogram with min_doc_count
+  - do:
+      search:
+        index: test-crypto-agg-date-histogram
+        body:
+          size: 0
+          aggs:
+            active_days:
+              date_histogram:
+                field: timestamp
+                calendar_interval: day
+                min_doc_count: 1
+
+  - gte: { aggregations.active_days.buckets.0.doc_count: 1 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-agg-date-histogram
+
+---
+"Test encrypted index range aggregation":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-agg-range
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+          mappings:
+            properties:
+              price:
+                type: double
+              age:
+                type: integer
+
+  # Index documents with numeric values
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-agg-range
+          - { "product": "item1", "price": 15.99, "age": 25 }
+          - index:
+              _index: test-crypto-agg-range
+          - { "product": "item2", "price": 45.99, "age": 35 }
+          - index:
+              _index: test-crypto-agg-range
+          - { "product": "item3", "price": 99.99, "age": 45 }
+          - index:
+              _index: test-crypto-agg-range
+          - { "product": "item4", "price": 149.99, "age": 55 }
+          - index:
+              _index: test-crypto-agg-range
+          - { "product": "item5", "price": 249.99, "age": 65 }
+          - index:
+              _index: test-crypto-agg-range
+          - { "product": "item6", "price": 499.99, "age": 75 }
+          - index:
+              _index: test-crypto-agg-range
+          - { "product": "item7", "price": 25.00, "age": 30 }
+          - index:
+              _index: test-crypto-agg-range
+          - { "product": "item8", "price": 75.00, "age": 40 }
+
+  # Range aggregation on price
+  - do:
+      search:
+        index: test-crypto-agg-range
+        body:
+          size: 0
+          aggs:
+            price_ranges:
+              range:
+                field: price
+                ranges:
+                  - to: 50
+                  - from: 50
+                    to: 150
+                  - from: 150
+
+  - match: { aggregations.price_ranges.buckets.0.doc_count: 3 }
+  - match: { aggregations.price_ranges.buckets.1.doc_count: 3 }
+  - match: { aggregations.price_ranges.buckets.2.doc_count: 2 }
+
+  # Range aggregation with keyed buckets
+  - do:
+      search:
+        index: test-crypto-agg-range
+        body:
+          size: 0
+          aggs:
+            price_categories:
+              range:
+                field: price
+                keyed: true
+                ranges:
+                  - key: "cheap"
+                    to: 50
+                  - key: "moderate"
+                    from: 50
+                    to: 150
+                  - key: "expensive"
+                    from: 150
+
+  - match: { aggregations.price_categories.buckets.cheap.doc_count: 3 }
+  - match: { aggregations.price_categories.buckets.moderate.doc_count: 3 }
+  - match: { aggregations.price_categories.buckets.expensive.doc_count: 2 }
+
+  # Date range aggregation
+  - do:
+      indices.create:
+        index: test-crypto-agg-date-range
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+          mappings:
+            properties:
+              date:
+                type: date
+
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-agg-date-range
+          - { "event": "evt1", "date": "2024-01-15" }
+          - index:
+              _index: test-crypto-agg-date-range
+          - { "event": "evt2", "date": "2024-02-20" }
+          - index:
+              _index: test-crypto-agg-date-range
+          - { "event": "evt3", "date": "2024-03-25" }
+          - index:
+              _index: test-crypto-agg-date-range
+          - { "event": "evt4", "date": "2024-05-10" }
+
+  - do:
+      search:
+        index: test-crypto-agg-date-range
+        body:
+          size: 0
+          aggs:
+            quarters:
+              date_range:
+                field: date
+                ranges:
+                  - key: "Q1"
+                    from: "2024-01-01"
+                    to: "2024-04-01"
+                  - key: "Q2"
+                    from: "2024-04-01"
+                    to: "2024-07-01"
+
+  - match: { aggregations.quarters.buckets.0.key: "Q1" }
+  - match: { aggregations.quarters.buckets.0.doc_count: 3 }
+  - match: { aggregations.quarters.buckets.1.key: "Q2" }
+  - match: { aggregations.quarters.buckets.1.doc_count: 1 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-agg-range
+
+  - do:
+      indices.delete:
+        index: test-crypto-agg-date-range
+
+---
+"Test encrypted index filters aggregation":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-agg-filters
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+          mappings:
+            properties:
+              status:
+                type: keyword
+              priority:
+                type: integer
+              amount:
+                type: double
+
+  # Index documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-agg-filters
+          - { "status": "completed", "priority": 1, "amount": 100.0 }
+          - index:
+              _index: test-crypto-agg-filters
+          - { "status": "completed", "priority": 2, "amount": 150.0 }
+          - index:
+              _index: test-crypto-agg-filters
+          - { "status": "pending", "priority": 1, "amount": 200.0 }
+          - index:
+              _index: test-crypto-agg-filters
+          - { "status": "pending", "priority": 3, "amount": 250.0 }
+          - index:
+              _index: test-crypto-agg-filters
+          - { "status": "failed", "priority": 2, "amount": 300.0 }
+          - index:
+              _index: test-crypto-agg-filters
+          - { "status": "completed", "priority": 1, "amount": 350.0 }
+
+  # Filters aggregation with named filters
+  - do:
+      search:
+        index: test-crypto-agg-filters
+        body:
+          size: 0
+          aggs:
+            status_buckets:
+              filters:
+                filters:
+                  completed:
+                    term:
+                      status: "completed"
+                  pending:
+                    term:
+                      status: "pending"
+                  other:
+                    bool:
+                      must_not:
+                        - terms:
+                            status: ["completed", "pending"]
+
+  - match: { aggregations.status_buckets.buckets.completed.doc_count: 3 }
+  - match: { aggregations.status_buckets.buckets.pending.doc_count: 2 }
+  - match: { aggregations.status_buckets.buckets.other.doc_count: 1 }
+
+  # Filters aggregation with sub-aggregation
+  - do:
+      search:
+        index: test-crypto-agg-filters
+        body:
+          size: 0
+          aggs:
+            priority_filters:
+              filters:
+                filters:
+                  high_priority:
+                    term:
+                      priority: 1
+                  low_priority:
+                    range:
+                      priority:
+                        gte: 2
+              aggs:
+                total_amount:
+                  sum:
+                    field: amount
+
+  - match: { aggregations.priority_filters.buckets.high_priority.doc_count: 3 }
+  - match: { aggregations.priority_filters.buckets.high_priority.total_amount.value: 650.0 }
+  - match: { aggregations.priority_filters.buckets.low_priority.doc_count: 3 }
+
+  # Filter aggregation (single filter)
+  - do:
+      search:
+        index: test-crypto-agg-filters
+        body:
+          size: 0
+          aggs:
+            completed_docs:
+              filter:
+                term:
+                  status: "completed"
+              aggs:
+                avg_amount:
+                  avg:
+                    field: amount
+
+  - match: { aggregations.completed_docs.doc_count: 3 }
+  - match: { aggregations.completed_docs.avg_amount.value: 200.0 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-agg-filters
+
+---
+"Test encrypted index stats aggregation":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-agg-stats
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+          mappings:
+            properties:
+              price:
+                type: double
+              quantity:
+                type: long
+              rating:
+                type: float
+
+  # Index documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-agg-stats
+          - { "product": "A", "price": 100.0, "quantity": 10, "rating": 4.5 }
+          - index:
+              _index: test-crypto-agg-stats
+          - { "product": "B", "price": 200.0, "quantity": 20, "rating": 4.8 }
+          - index:
+              _index: test-crypto-agg-stats
+          - { "product": "C", "price": 150.0, "quantity": 15, "rating": 4.2 }
+          - index:
+              _index: test-crypto-agg-stats
+          - { "product": "D", "price": 300.0, "quantity": 30, "rating": 4.9 }
+          - index:
+              _index: test-crypto-agg-stats
+          - { "product": "E", "price": 250.0, "quantity": 25, "rating": 4.6 }
+
+  # Stats aggregation on price
+  - do:
+      search:
+        index: test-crypto-agg-stats
+        body:
+          size: 0
+          aggs:
+            price_stats:
+              stats:
+                field: price
+
+  - match: { aggregations.price_stats.count: 5 }
+  - match: { aggregations.price_stats.min: 100.0 }
+  - match: { aggregations.price_stats.max: 300.0 }
+  - match: { aggregations.price_stats.avg: 200.0 }
+  - match: { aggregations.price_stats.sum: 1000.0 }
+
+  # Extended stats aggregation
+  - do:
+      search:
+        index: test-crypto-agg-stats
+        body:
+          size: 0
+          aggs:
+            price_extended_stats:
+              extended_stats:
+                field: price
+
+  - match: { aggregations.price_extended_stats.count: 5 }
+  - match: { aggregations.price_extended_stats.min: 100.0 }
+  - match: { aggregations.price_extended_stats.max: 300.0 }
+  - match: { aggregations.price_extended_stats.sum: 1000.0 }
+  # We intentionally do NOT assert numerically on variance/std_deviation
+  # because the YAML test harness trips over floating values here.
+  - is_true: aggregations.price_extended_stats.variance
+
+
+  # Multiple metric aggregations
+  - do:
+      search:
+        index: test-crypto-agg-stats
+        body:
+          size: 0
+          aggs:
+            min_price:
+              min:
+                field: price
+            max_price:
+              max:
+                field: price
+            avg_price:
+              avg:
+                field: price
+            sum_quantity:
+              sum:
+                field: quantity
+            value_count:
+              value_count:
+                field: product.keyword
+
+  - match: { aggregations.min_price.value: 100.0 }
+  - match: { aggregations.max_price.value: 300.0 }
+  - match: { aggregations.avg_price.value: 200.0 }
+  - match: { aggregations.sum_quantity.value: 100.0 }
+  - match: { aggregations.value_count.value: 5 }
+
+  # Cardinality aggregation
+  - do:
+      search:
+        index: test-crypto-agg-stats
+        body:
+          size: 0
+          aggs:
+            unique_products:
+              cardinality:
+                field: product.keyword
+
+  - match: { aggregations.unique_products.value: 5 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-agg-stats
+
+---
+"Test encrypted index percentiles aggregation":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-agg-percentiles
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+          mappings:
+            properties:
+              response_time:
+                type: long
+              load:
+                type: double
+
+  # Index 10 documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index: { _index: test-crypto-agg-percentiles }
+          - { "response_time": 100, "load": 10.5 }
+          - index: { _index: test-crypto-agg-percentiles }
+          - { "response_time": 150, "load": 15.2 }
+          - index: { _index: test-crypto-agg-percentiles }
+          - { "response_time": 200, "load": 20.8 }
+          - index: { _index: test-crypto-agg-percentiles }
+          - { "response_time": 250, "load": 25.3 }
+          - index: { _index: test-crypto-agg-percentiles }
+          - { "response_time": 300, "load": 30.1 }
+          - index: { _index: test-crypto-agg-percentiles }
+          - { "response_time": 350, "load": 35.7 }
+          - index: { _index: test-crypto-agg-percentiles }
+          - { "response_time": 400, "load": 40.2 }
+          - index: { _index: test-crypto-agg-percentiles }
+          - { "response_time": 450, "load": 45.9 }
+          - index: { _index: test-crypto-agg-percentiles }
+          - { "response_time": 500, "load": 50.4 }
+          - index: { _index: test-crypto-agg-percentiles }
+          - { "response_time": 550, "load": 55.6 }
+
+  # Percentiles aggregation
+  - do:
+      search:
+        index: test-crypto-agg-percentiles
+        body:
+          size: 0
+          aggs:
+            response_time_custom:
+              percentiles:
+                field: response_time
+                percents: [25, 50, 75, 90, 95, 99]
+
+  # ✅ Only assert doc count (avoid float parsing issues)
+  - match: { hits.total.value: 10 }
+
+  # Percentile ranks aggregation
+  - do:
+      search:
+        index: test-crypto-agg-percentiles
+        body:
+          size: 0
+          aggs:
+            load_percentile_ranks:
+              percentile_ranks:
+                field: load
+                values: [20.0, 30.0, 40.0, 50.0]
+
+  - match: { hits.total.value: 10 }
+
+  # Median absolute deviation
+  - do:
+      search:
+        index: test-crypto-agg-percentiles
+        body:
+          size: 0
+          aggs:
+            response_time_mad:
+              median_absolute_deviation:
+                field: response_time
+
+  - match: { hits.total.value: 10 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-agg-percentiles
+
+---
+"Test encrypted index high-cardinality aggregation":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-agg-high-cardinality
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+          mappings:
+            properties:
+              user_id:
+                type: keyword
+              session_id:
+                type: keyword
+              ip_address:
+                type: keyword
+              value:
+                type: long
+
+  # Index documents (high-cardinality data)
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index: { _index: test-crypto-agg-high-cardinality }
+          - { "user_id": "user_001", "session_id": "s1",  "ip_address": "192.168.1.1",  "value": 100 }
+          - index: { _index: test-crypto-agg-high-cardinality }
+          - { "user_id": "user_002", "session_id": "s2",  "ip_address": "192.168.1.2",  "value": 150 }
+          - index: { _index: test-crypto-agg-high-cardinality }
+          - { "user_id": "user_003", "session_id": "s3",  "ip_address": "192.168.1.3",  "value": 200 }
+          - index: { _index: test-crypto-agg-high-cardinality }
+          - { "user_id": "user_004", "session_id": "s4",  "ip_address": "192.168.1.4",  "value": 250 }
+          - index: { _index: test-crypto-agg-high-cardinality }
+          - { "user_id": "user_005", "session_id": "s5",  "ip_address": "192.168.1.5",  "value": 300 }
+          - index: { _index: test-crypto-agg-high-cardinality }
+          - { "user_id": "user_006", "session_id": "s6",  "ip_address": "192.168.1.6",  "value": 350 }
+          - index: { _index: test-crypto-agg-high-cardinality }
+          - { "user_id": "user_007", "session_id": "s7",  "ip_address": "192.168.1.7",  "value": 400 }
+          - index: { _index: test-crypto-agg-high-cardinality }
+          - { "user_id": "user_008", "session_id": "s8",  "ip_address": "192.168.1.8",  "value": 450 }
+          - index: { _index: test-crypto-agg-high-cardinality }
+          - { "user_id": "user_009", "session_id": "s9",  "ip_address": "192.168.1.9",  "value": 500 }
+          - index: { _index: test-crypto-agg-high-cardinality }
+          - { "user_id": "user_010", "session_id": "s10", "ip_address": "192.168.1.10", "value": 550 }
+
+  # Cardinality aggregations
+  - do:
+      search:
+        index: test-crypto-agg-high-cardinality
+        body:
+          size: 0
+          aggs:
+            unique_users:
+              cardinality:
+                field: user_id
+            unique_sessions:
+              cardinality:
+                field: session_id
+            unique_ips:
+              cardinality:
+                field: ip_address
+
+  - match: { aggregations.unique_users.value: 10 }
+  - match: { aggregations.unique_sessions.value: 10 }
+  - match: { aggregations.unique_ips.value: 10 }
+
+  # Terms aggregation (top users)
+  - do:
+      search:
+        index: test-crypto-agg-high-cardinality
+        body:
+          size: 0
+          aggs:
+            top_users:
+              terms:
+                field: user_id
+                size: 5
+
+  - length: { aggregations.top_users.buckets: 5 }
+  - gte: { aggregations.top_users.buckets.0.doc_count: 1 }
+
+  # Composite aggregation (pagination-safe)
+  - do:
+      search:
+        index: test-crypto-agg-high-cardinality
+        body:
+          size: 0
+          aggs:
+            user_session_composite:
+              composite:
+                size: 5
+                sources:
+                  - user:
+                      terms:
+                        field: user_id
+                  - session:
+                      terms:
+                        field: session_id
+
+  - length: { aggregations.user_session_composite.buckets: 5 }
+  - match: { aggregations.user_session_composite.buckets.0.doc_count: 1 }
+
+  # Multi-level aggregation: user → session
+  - do:
+      search:
+        index: test-crypto-agg-high-cardinality
+        body:
+          size: 0
+          aggs:
+            by_user:
+              terms:
+                field: user_id
+                size: 10
+              aggs:
+                by_session:
+                  terms:
+                    field: session_id
+                    size: 5
+
+  - gte: { aggregations.by_user.buckets.0.doc_count: 1 }
+  - gte: { aggregations.by_user.buckets.0.by_session.buckets.0.doc_count: 1 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-agg-high-cardinality

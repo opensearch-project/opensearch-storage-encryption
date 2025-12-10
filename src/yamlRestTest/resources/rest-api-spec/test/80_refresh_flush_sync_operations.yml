@@ -1,0 +1,775 @@
+---
+"Test refresh parameter on index operations":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-refresh
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+            refresh_interval: -1  # Disable automatic refresh
+
+  # Index document with refresh=true
+  - do:
+      index:
+        index: test-crypto-refresh
+        id: "1"
+        refresh: true
+        body: { "status": "immediate", "value": 100 }
+
+  - match: { result: created }
+
+  # Document should be immediately searchable
+  - do:
+      search:
+        index: test-crypto-refresh
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 1 }
+
+  # Index document without refresh
+  - do:
+      index:
+        index: test-crypto-refresh
+        id: "2"
+        body: { "status": "delayed", "value": 200 }
+
+  # Should not be searchable yet (only 1 doc visible)
+  - do:
+      search:
+        index: test-crypto-refresh
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 1 }
+
+  # Manual refresh
+  - do:
+      indices.refresh:
+        index: test-crypto-refresh
+
+  # Now both documents visible
+  - do:
+      search:
+        index: test-crypto-refresh
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 2 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-refresh
+
+---
+"Test flush operation and Lucene commit points":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-flush-commit
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+
+  # Index documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-flush-commit
+              _id: "1"
+          - { "gen": 1, "data": "commit point test 1" }
+          - index:
+              _index: test-crypto-flush-commit
+              _id: "2"
+          - { "gen": 1, "data": "commit point test 2" }
+
+  # Check initial translog state
+  - do:
+      indices.stats:
+        index: test-crypto-flush-commit
+        metric: translog
+
+  - gte: { indices.test-crypto-flush-commit.total.translog.operations: 0 }
+
+  # Perform flush to create Lucene commit point
+  - do:
+      indices.flush:
+        index: test-crypto-flush-commit
+
+  - match: { _shards.successful: 1 }
+  - match: { _shards.failed: 0 }
+
+  # Verify translog cleared after flush
+  - do:
+      indices.stats:
+        index: test-crypto-flush-commit
+        metric: translog
+
+  - gte: { indices.test-crypto-flush-commit.total.translog.operations: 0 }
+  - match: { indices.test-crypto-flush-commit.total.translog.uncommitted_operations: 0 }
+
+  # Index more documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-flush-commit
+              _id: "3"
+          - { "gen": 2, "data": "commit point test 3" }
+          - index:
+              _index: test-crypto-flush-commit
+              _id: "4"
+          - { "gen": 2, "data": "commit point test 4" }
+
+  # Translog should have new operations
+  - do:
+      indices.stats:
+        index: test-crypto-flush-commit
+        metric: translog
+
+  - gt: { indices.test-crypto-flush-commit.total.translog.uncommitted_operations: 0 }
+
+  # Force flush with force flag
+  - do:
+      indices.flush:
+        index: test-crypto-flush-commit
+        force: true
+
+  # Verify translog cleared again
+  - do:
+      indices.stats:
+        index: test-crypto-flush-commit
+        metric: translog
+
+  - match: { indices.test-crypto-flush-commit.total.translog.uncommitted_operations: 0 }
+
+  # Verify all data persisted correctly
+  - do:
+      search:
+        index: test-crypto-flush-commit
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 4 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-flush-commit
+
+---
+"Test synced flush deprecation handling":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-synced-flush
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+
+  # Index documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-synced-flush
+              _id: "1"
+          - { "sync": true, "data": "synced flush test" }
+
+  # Regular flush (synced flush deprecated in recent versions)
+  - do:
+      indices.flush:
+        index: test-crypto-synced-flush
+
+  - match: { _shards.successful: 1 }
+
+  # Verify data accessible after flush
+  - do:
+      get:
+        index: test-crypto-synced-flush
+        id: "1"
+
+  - match: { _source.data: "synced flush test" }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-synced-flush
+
+---
+"Test translog not stuck after multiple flush cycles":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-translog-advance
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+            index.translog.flush_threshold_size: "512kb"
+
+  # Cycle 1: Index, flush, verify
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-translog-advance
+              _id: "cycle1_1"
+          - { "cycle": 1, "data": "first cycle document 1" }
+          - index:
+              _index: test-crypto-translog-advance
+              _id: "cycle1_2"
+          - { "cycle": 1, "data": "first cycle document 2" }
+
+  - do:
+      indices.flush:
+        index: test-crypto-translog-advance
+
+  - do:
+      indices.stats:
+        index: test-crypto-translog-advance
+        metric: translog
+
+  - match: { indices.test-crypto-translog-advance.total.translog.uncommitted_operations: 0 }
+
+  # Cycle 2: More documents, flush, verify
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-translog-advance
+              _id: "cycle2_1"
+          - { "cycle": 2, "data": "second cycle document 1" }
+          - index:
+              _index: test-crypto-translog-advance
+              _id: "cycle2_2"
+          - { "cycle": 2, "data": "second cycle document 2" }
+
+  - do:
+      indices.flush:
+        index: test-crypto-translog-advance
+
+  - do:
+      indices.stats:
+        index: test-crypto-translog-advance
+        metric: translog
+
+  - match: { indices.test-crypto-translog-advance.total.translog.uncommitted_operations: 0 }
+
+  # Cycle 3: More documents, flush, verify
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-translog-advance
+              _id: "cycle3_1"
+          - { "cycle": 3, "data": "third cycle document 1" }
+          - index:
+              _index: test-crypto-translog-advance
+              _id: "cycle3_2"
+          - { "cycle": 3, "data": "third cycle document 2" }
+
+  - do:
+      indices.flush:
+        index: test-crypto-translog-advance
+
+  - do:
+      indices.stats:
+        index: test-crypto-translog-advance
+        metric: translog
+
+  - match: { indices.test-crypto-translog-advance.total.translog.uncommitted_operations: 0 }
+
+  # Verify all documents from all cycles present
+  - do:
+      search:
+        index: test-crypto-translog-advance
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 6 }
+
+  # Verify specific documents from each cycle
+  - do:
+      get:
+        index: test-crypto-translog-advance
+        id: "cycle1_1"
+
+  - match: { _source.cycle: 1 }
+
+  - do:
+      get:
+        index: test-crypto-translog-advance
+        id: "cycle3_2"
+
+  - match: { _source.cycle: 3 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-translog-advance
+
+---
+"Test Lucene commit points advance properly":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-commit-advance
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+
+  # Initial documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-commit-advance
+              _id: "1"
+          - { "gen": 0, "value": 1 }
+
+  # Get initial segment info
+  - do:
+      indices.stats:
+        index: test-crypto-commit-advance
+        metric: segments
+
+  - gte: { indices.test-crypto-commit-advance.total.segments.count: 0 }
+
+  # Flush to create first commit point
+  - do:
+      indices.flush:
+        index: test-crypto-commit-advance
+
+  # Add more documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-commit-advance
+              _id: "2"
+          - { "gen": 1, "value": 2 }
+          - index:
+              _index: test-crypto-commit-advance
+              _id: "3"
+          - { "gen": 1, "value": 3 }
+
+  # Flush to create second commit point
+  - do:
+      indices.flush:
+        index: test-crypto-commit-advance
+
+  # Add even more documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-commit-advance
+              _id: "4"
+          - { "gen": 2, "value": 4 }
+          - index:
+              _index: test-crypto-commit-advance
+              _id: "5"
+          - { "gen": 2, "value": 5 }
+
+  # Flush to create third commit point
+  - do:
+      indices.flush:
+        index: test-crypto-commit-advance
+        force: true
+
+  # Verify all data visible (commit points advanced properly)
+  - do:
+      search:
+        index: test-crypto-commit-advance
+        body:
+          query:
+            match_all: {}
+          sort:
+            - value: asc
+
+  - match: { hits.total.value: 5 }
+  - match: { hits.hits.0._id: "1" }
+  - match: { hits.hits.4._id: "5" }
+
+  # Close and reopen to verify commit points valid
+  - do:
+      indices.close:
+        index: test-crypto-commit-advance
+
+  - do:
+      indices.open:
+        index: test-crypto-commit-advance
+
+  - do:
+      cluster.health:
+        index: test-crypto-commit-advance
+        wait_for_status: green
+        timeout: 30s
+
+  # Verify data recovered correctly from commit points
+  - do:
+      search:
+        index: test-crypto-commit-advance
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 5 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-commit-advance
+
+---
+"Test refresh and flush interaction with search":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index with disabled auto-refresh
+  - do:
+      indices.create:
+        index: test-crypto-refresh-flush-search
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+            refresh_interval: -1
+
+  # Index documents without refresh
+  - do:
+      bulk:
+        body:
+          - index:
+              _index: test-crypto-refresh-flush-search
+              _id: "1"
+          - { "state": "indexed", "value": 100 }
+          - index:
+              _index: test-crypto-refresh-flush-search
+              _id: "2"
+          - { "state": "indexed", "value": 200 }
+
+  # Documents not searchable yet
+  - do:
+      search:
+        index: test-crypto-refresh-flush-search
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 0 }
+
+  # Flush without refresh - still not searchable
+  - do:
+      indices.flush:
+        index: test-crypto-refresh-flush-search
+
+  - do:
+      search:
+        index: test-crypto-refresh-flush-search
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 0 }
+
+  # Now refresh - documents become searchable
+  - do:
+      indices.refresh:
+        index: test-crypto-refresh-flush-search
+
+  - do:
+      search:
+        index: test-crypto-refresh-flush-search
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 2 }
+
+  # Index more documents with refresh=true
+  - do:
+      index:
+        index: test-crypto-refresh-flush-search
+        id: "3"
+        refresh: true
+        body: { "state": "refreshed", "value": 300 }
+
+  # New document immediately searchable
+  - do:
+      search:
+        index: test-crypto-refresh-flush-search
+        body:
+          query:
+            match:
+              state: "refreshed"
+
+  - match: { hits.total.value: 1 }
+
+  # Total count correct
+  - do:
+      count:
+        index: test-crypto-refresh-flush-search
+
+  - match: { count: 3 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-refresh-flush-search
+
+---
+"Test translog durability with flush and refresh":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index with request durability
+  - do:
+      indices.create:
+        index: test-crypto-durability
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+            index.translog.durability: "request"
+
+  # Index with refresh=true
+  - do:
+      index:
+        index: test-crypto-durability
+        id: "1"
+        refresh: true
+        body: { "durability": "request", "value": 1 }
+
+  # Check translog synced
+  - do:
+      indices.stats:
+        index: test-crypto-durability
+        metric: translog
+
+  - gte: { indices.test-crypto-durability.total.translog.operations: 1 }
+
+  # Document immediately searchable
+  - do:
+      get:
+        index: test-crypto-durability
+        id: "1"
+
+  - match: { found: true }
+
+  # Index more documents
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-durability
+              _id: "2"
+          - { "durability": "request", "value": 2 }
+          - index:
+              _index: test-crypto-durability
+              _id: "3"
+          - { "durability": "request", "value": 3 }
+
+  # Translog operations increased
+  - do:
+      indices.stats:
+        index: test-crypto-durability
+        metric: translog
+
+  - gte: { indices.test-crypto-durability.total.translog.operations: 0 }
+  - gt: { indices.test-crypto-durability.total.translog.uncommitted_operations: 0 }
+
+  # Flush to commit
+  - do:
+      indices.flush:
+        index: test-crypto-durability
+
+  # Translog cleared
+  - do:
+      indices.stats:
+        index: test-crypto-durability
+        metric: translog
+
+  - match: { indices.test-crypto-durability.total.translog.uncommitted_operations: 0 }
+
+  # All documents still accessible
+  - do:
+      search:
+        index: test-crypto-durability
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 3 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-durability
+
+---
+"Test no stuck translogs after recovery":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index
+  - do:
+      indices.create:
+        index: test-crypto-no-stuck-translog
+        body:
+          settings:
+            number_of_shards: 1
+            number_of_replicas: 0
+            index.store.type: "cryptofs"
+            index.store.crypto.key_provider: "dummy"
+
+  # Index and flush several times
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-no-stuck-translog
+              _id: "batch1"
+          - { "batch": 1, "data": "test data 1" }
+
+  - do:
+      indices.flush:
+        index: test-crypto-no-stuck-translog
+
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-no-stuck-translog
+              _id: "batch2"
+          - { "batch": 2, "data": "test data 2" }
+
+  - do:
+      indices.flush:
+        index: test-crypto-no-stuck-translog
+
+  # Close and reopen
+  - do:
+      indices.close:
+        index: test-crypto-no-stuck-translog
+
+  - do:
+      indices.open:
+        index: test-crypto-no-stuck-translog
+
+  - do:
+      cluster.health:
+        index: test-crypto-no-stuck-translog
+        wait_for_status: green
+        timeout: 30s
+
+  # Index more after recovery
+  - do:
+      bulk:
+        refresh: true
+        body:
+          - index:
+              _index: test-crypto-no-stuck-translog
+              _id: "batch3"
+          - { "batch": 3, "data": "test data 3" }
+
+  # Check translog not stuck
+  - do:
+      indices.stats:
+        index: test-crypto-no-stuck-translog
+        metric: translog
+
+  - gte: { indices.test-crypto-no-stuck-translog.total.translog.operations: 0 }
+  - gte: { indices.test-crypto-no-stuck-translog.total.translog.uncommitted_operations: 0 }
+
+  # Flush should work fine
+  - do:
+      indices.flush:
+        index: test-crypto-no-stuck-translog
+
+  - match: { _shards.successful: 1 }
+
+  # Translog cleared properly
+  - do:
+      indices.stats:
+        index: test-crypto-no-stuck-translog
+        metric: translog
+
+  - match: { indices.test-crypto-no-stuck-translog.total.translog.uncommitted_operations: 0 }
+
+  # All data accessible
+  - do:
+      search:
+        index: test-crypto-no-stuck-translog
+        body:
+          query:
+            match_all: {}
+
+  - match: { hits.total.value: 3 }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-crypto-no-stuck-translog
