@@ -410,7 +410,13 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
         String index2Uuid = "index2-uuid";
         String index2Name = "index2";
 
-        when(mockIndexMetadata.getSettings()).thenReturn(Settings.EMPTY);
+        // Mock metadata for both indices
+        IndexMetadata mockIndex1Metadata = mock(IndexMetadata.class);
+        IndexMetadata mockIndex2Metadata = mock(IndexMetadata.class);
+        when(mockIndex1Metadata.getSettings()).thenReturn(Settings.EMPTY);
+        when(mockIndex2Metadata.getSettings()).thenReturn(Settings.EMPTY);
+        when(mockMetadata.index(index1Name)).thenReturn(mockIndex1Metadata);
+        when(mockMetadata.index(index2Name)).thenReturn(mockIndex2Metadata);
 
         // Create a CountDownLatch to track when updateSettings is called for index2 (critical failure)
         CountDownLatch updateSettingsLatch = new CountDownLatch(1);
