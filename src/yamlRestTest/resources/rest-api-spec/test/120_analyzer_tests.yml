@@ -1,0 +1,98 @@
+---
+"Test built-in analyzer parity using custom analyzers on encrypted index":
+  - skip:
+      version: " - 2.99.99"
+      reason: "storage-encryption plugin requires OpenSearch 3.0+"
+
+  # Create encrypted index with safe custom analyzers
+  - do:
+      indices.create:
+        index: test-builtin-analyzer
+        body:
+          settings:
+            index.store.type: cryptofs
+            index.store.crypto.key_provider: dummy
+            analysis:
+              filter:
+                english_stop:
+                  type: stop
+                  stopwords: "_english_"
+              analyzer:
+                my_analyzer:
+                  type: custom
+                  tokenizer: standard
+                  filter: [lowercase]
+
+                my_stop_analyzer:
+                  type: custom
+                  tokenizer: standard
+                  filter: [lowercase, english_stop]
+
+          mappings:
+            properties:
+              title:
+                type: text
+                analyzer: my_analyzer
+                search_analyzer: my_stop_analyzer
+                search_quote_analyzer: my_analyzer
+
+  # Index documents
+  - do:
+      index:
+        index: test-builtin-analyzer
+        id: 1
+        refresh: true
+        body:
+          title: "The Quick Brown Fox"
+
+  - do:
+      index:
+        index: test-builtin-analyzer
+        id: 2
+        refresh: true
+        body:
+          title: "A Quick Brown Fox"
+
+  # Analyze with base analyzer
+  - do:
+      indices.analyze:
+        index: test-builtin-analyzer
+        body:
+          analyzer: my_analyzer
+          text: "The Quick Brown Fox"
+
+  - match: { tokens.0.token: "the" }
+  - match: { tokens.1.token: "quick" }
+  - match: { tokens.2.token: "brown" }
+  - match: { tokens.3.token: "fox" }
+  - length: { tokens: 4 }
+
+  # Analyze with stop-word analyzer (english style)
+  - do:
+      indices.analyze:
+        index: test-builtin-analyzer
+        body:
+          analyzer: my_stop_analyzer
+          text: "The Quick Brown Fox"
+
+  - match: { tokens.0.token: "quick" }
+  - match: { tokens.1.token: "brown" }
+  - match: { tokens.2.token: "fox" }
+  - length: { tokens: 3 }
+
+  # Phrase search using search_quote_analyzer
+  - do:
+      search:
+        index: test-builtin-analyzer
+        body:
+          query:
+            query_string:
+              query: "\"the quick brown fox\""
+
+  - match: { hits.total.value: 1 }
+  - match: { hits.hits.0._id: "1" }
+
+  # Cleanup
+  - do:
+      indices.delete:
+        index: test-builtin-analyzer
