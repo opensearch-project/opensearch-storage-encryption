@@ -486,7 +486,7 @@ public class MemorySegmentPoolTests extends OpenSearchTestCase {
     }
 
     /**
-     * Test 18: AvailableMemoryAccurate under contention
+     * Test 18: Available memory reporting
      */
     public void testAvailableMemoryAccurate() throws Exception {
         long totalMemory = 5120;  // 5 segments
@@ -498,12 +498,11 @@ public class MemorySegmentPoolTests extends OpenSearchTestCase {
         RefCountedMemorySegment seg1 = pool.acquire();
         RefCountedMemorySegment seg2 = pool.acquire();
 
-        // Get accurate available memory
-        long accurateAvailable = pool.availableMemoryAccurate();
-        long cachedAvailable = pool.availableMemory();
+        // Get available memory
+        long available = pool.availableMemory();
 
-        // Both should report same value in this simple scenario
-        assertEquals("Accurate and cached available memory should match", accurateAvailable, cachedAvailable);
+        // Should have 3 segments available (5 total - 2 acquired)
+        assertEquals("Available memory should be 3 * segmentSize", 3L * segmentSize, available);
 
         // Cleanup
         seg1.decRef();
