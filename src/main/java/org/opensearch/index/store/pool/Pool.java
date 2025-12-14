@@ -30,10 +30,11 @@ public interface Pool<T> {
      *
      * @param timeout maximum time to wait for a resource
      * @param unit time unit for the timeout
-     * @return a pooled resource if available within timeout, null otherwise
+     * @return a pooled resource if available within timeout
      * @throws InterruptedException if the thread is interrupted while waiting
+     * @throws Exception if acquisition fails due to timeout, pool closure, or allocation errors
      */
-    T tryAcquire(long timeout, TimeUnit unit) throws InterruptedException;
+    T tryAcquire(long timeout, TimeUnit unit) throws Exception;
 
     /**
      * Returns a resource to the pool for reuse.

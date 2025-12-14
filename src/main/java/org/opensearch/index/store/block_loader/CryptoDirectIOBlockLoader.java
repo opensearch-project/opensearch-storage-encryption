@@ -122,7 +122,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
                 );
 
             if (bytesRead == 0) {
-                throw new RuntimeException("EOF or empty read at offset " + startOffset);
+                throw new java.io.EOFException("Unexpected EOF or empty read at offset " + startOffset + " for file " + filePath);
             }
 
             int blockIndex = 0;
@@ -130,10 +130,9 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
 
             try {
                 while (blockIndex < blockCount && bytesCopied < bytesRead) {
-                    RefCountedMemorySegment handle = segmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
-                    if (handle == null) {
-                        throw new RuntimeException("Failed to acquire a block");
-                    }
+                    // Wait up to 5 seconds to allow cache eviction to free segments
+                    // This is a critical I/O path - we need the segment to load index data
+                    RefCountedMemorySegment handle = segmentPool.tryAcquire(5, TimeUnit.SECONDS);
 
                     MemorySegment pooled = handle.segment();
 
@@ -150,7 +149,11 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
 
             } catch (InterruptedException e) {
                 releaseHandles(result, blockIndex);
-                throw new RuntimeException("Failed to load blocks", e);
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while acquiring pool segment", e);
+            } catch (IOException e) {
+                releaseHandles(result, blockIndex);
+                throw e;
             }
 
             return result;

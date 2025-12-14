@@ -98,7 +98,7 @@ public class MemorySegmentPoolTests extends OpenSearchTestCase {
     }
 
     /**
-     * Test 4: Pool exhaustion - should throw exception
+     * Test 4: Pool exhaustion - tryAcquire should timeout
      */
     public void testPoolExhaustion() throws Exception {
         long totalMemory = 2048;  // Only 2 segments
@@ -113,14 +113,14 @@ public class MemorySegmentPoolTests extends OpenSearchTestCase {
         assertNotNull(seg1);
         assertNotNull(seg2);
 
-        // Third acquire should throw exception (pool exhausted)
+        // Third tryAcquire should timeout (pool exhausted)
         try {
-            pool.acquire();
-            fail("Should have thrown exception when pool exhausted");
-        } catch (RuntimeException e) {
+            pool.tryAcquire(100, java.util.concurrent.TimeUnit.MILLISECONDS);
+            fail("Should have thrown IOException when pool exhausted and timed out");
+        } catch (java.io.IOException e) {
             assertTrue(
-                "Exception should mention pool exhaustion",
-                e.getMessage().contains("Pool exhausted") || e.getMessage().contains("Pool limit")
+                "Exception should mention pool timeout",
+                e.getMessage().contains("timed out") || e.getMessage().contains("Pool acquisition")
             );
         }
 

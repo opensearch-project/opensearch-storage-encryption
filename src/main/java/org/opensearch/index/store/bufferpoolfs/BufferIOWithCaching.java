@@ -261,26 +261,22 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             if (blockOffset == 0 && chunkLen == CACHE_BLOCK_SIZE) {
                 try {
                     final RefCountedMemorySegment refSegment = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
-                    if (refSegment != null) {
-                        final MemorySegment pooled = refSegment.segment();
-                        final MemorySegment pooledSlice = pooled.asSlice(0, CACHE_BLOCK_SIZE);
-                        // Cache plaintext data
-                        MemorySegment.copy(sourceData, sourceOffset, pooledSlice, 0, CACHE_BLOCK_SIZE);
+                    final MemorySegment pooled = refSegment.segment();
+                    final MemorySegment pooledSlice = pooled.asSlice(0, CACHE_BLOCK_SIZE);
+                    // Cache plaintext data
+                    MemorySegment.copy(sourceData, sourceOffset, pooledSlice, 0, CACHE_BLOCK_SIZE);
 
-                        BlockCacheKey cacheKey = new FileBlockCacheKey(path, blockAlignedOffset);
-                        blockCache.put(cacheKey, refSegment);
+                    BlockCacheKey cacheKey = new FileBlockCacheKey(path, blockAlignedOffset);
+                    blockCache.put(cacheKey, refSegment);
 
-                        // Track this as last cached block
-                        lastCachedBlockOffset = blockAlignedOffset;
-                        partialBlockLength = 0; // Reset partial tracking
-                    } else {
-                        LOGGER.debug("Failed to acquire from pool within specified timeout path={} {} ms", path, 5);
-                    }
+                    // Track this as last cached block
+                    lastCachedBlockOffset = blockAlignedOffset;
+                    partialBlockLength = 0; // Reset partial tracking
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     LOGGER.warn("Interrupted while acquiring segment for cache.");
-                } catch (IllegalStateException e) {
-                    LOGGER.debug("Failed to acquire segment from pool; skipping cache.");
+                } catch (Exception e) {
+                    LOGGER.debug("Failed to acquire segment from pool; skipping cache: {}", e.getMessage());
                 }
             } else {
                 // Partial block - accumulate for potential final block caching
@@ -432,20 +428,16 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             // Safe to cache - this is definitely the file's final partial block
             try {
                 RefCountedMemorySegment refSegment = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
-                if (refSegment != null) {
-                    MemorySegment pooled = refSegment.segment().asSlice(0, CACHE_BLOCK_SIZE);
-                    MemorySegment.copy(MemorySegment.ofArray(partialBlockBuffer), 0, pooled, 0, partialBlockLength);
+                MemorySegment pooled = refSegment.segment().asSlice(0, CACHE_BLOCK_SIZE);
+                MemorySegment.copy(MemorySegment.ofArray(partialBlockBuffer), 0, pooled, 0, partialBlockLength);
 
-                    BlockCacheKey cacheKey = new FileBlockCacheKey(path, lastCachedBlockOffset);
-                    blockCache.put(cacheKey, refSegment);
-                } else {
-                    LOGGER.debug("Failed to acquire segment for final partial block caching path={}", path);
-                }
+                BlockCacheKey cacheKey = new FileBlockCacheKey(path, lastCachedBlockOffset);
+                blockCache.put(cacheKey, refSegment);
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
                 LOGGER.warn("Interrupted while caching final partial block for path={}", path);
-            } catch (IllegalStateException e) {
-                LOGGER.debug("Failed to acquire segment from pool for final partial block; skipping cache.");
+            } catch (Exception e) {
+                LOGGER.debug("Failed to acquire segment from pool for final partial block; skipping cache: {}", e.getMessage());
             }
         }
 

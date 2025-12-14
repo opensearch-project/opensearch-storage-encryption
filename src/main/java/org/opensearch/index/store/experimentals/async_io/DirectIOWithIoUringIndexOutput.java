@@ -264,10 +264,6 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
     private void tryCachePlaintextSegment(MemorySegment cacheSegment, int size, long offset) {
         try {
             final RefCountedMemorySegment refSegment = memorySegmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
-            if (refSegment == null) {
-                LOGGER.debug("Memory pool segment not available within timeout; skipping cache for {}", path);
-                return;
-            }
 
             final MemorySegment pooledSlice = refSegment.segment().asSlice(0, size);
             MemorySegment.copy(cacheSegment, 0, pooledSlice, 0, size);
@@ -278,8 +274,8 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
             LOGGER.warn("Interrupted while acquiring segment for cache.");
-        } catch (IllegalStateException e) {
-            LOGGER.debug("Failed to acquire segment from pool; skipping cache.");
+        } catch (Exception e) {
+            LOGGER.debug("Failed to acquire segment from pool; skipping cache: {}", e.getMessage());
         }
     }
 
