@@ -102,7 +102,7 @@ public class BlockSlotTinyCacheBenchmarkTests {
         }
 
         @Override
-        public Map<org.opensearch.index.store.block_cache.BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> loadBulk(
+        public Map<org.opensearch.index.store.block_cache.BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> loadForPrefetch(
             Path filePath,
             long startOffset,
             long blockCount

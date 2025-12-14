@@ -408,8 +408,11 @@ public class BlockSlotTinyCacheIntegrationTests extends OpenSearchTestCase {
         }
 
         @Override
-        public Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> loadBulk(Path filePath, long startOffset, long blockCount)
-            throws IOException {
+        public Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> loadForPrefetch(
+            Path filePath,
+            long startOffset,
+            long blockCount
+        ) throws IOException {
             // Simple implementation for test
             Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> result = new ConcurrentHashMap<>();
             for (long i = 0; i < blockCount; i++) {

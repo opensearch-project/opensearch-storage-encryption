@@ -178,13 +178,14 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      * @throws IOException if loading fails (including specific BlockLoader exceptions)
      */
     @Override
-    public Map<BlockCacheKey, BlockCacheValue<T>> loadBulk(Path filePath, long startOffset, long blockCount) throws IOException {
+    public Map<BlockCacheKey, BlockCacheValue<T>> loadForPrefetch(Path filePath, long startOffset, long blockCount) throws IOException {
         Map<BlockCacheKey, BlockCacheValue<T>> loaded = new LinkedHashMap<>();
 
         V[] loadedBlocks;
 
         try {
-            loadedBlocks = blockLoader.load(filePath, startOffset, blockCount);
+            // Use 50ms timeout for prefetch - fail fast when pool is under pressure
+            loadedBlocks = blockLoader.load(filePath, startOffset, blockCount, 50);
 
             for (int i = 0; i < loadedBlocks.length; i++) {
                 V block = loadedBlocks[i];

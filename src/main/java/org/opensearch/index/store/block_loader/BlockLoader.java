@@ -94,15 +94,30 @@ public interface BlockLoader<T> {
     }
 
     /**
-     * Load one or more blocks efficiently, returning raw memory segments.
-     * 
+     * Load one or more blocks efficiently with specified pool acquisition timeout.
+     *
+     * @param filePath file to read from
+     * @param startOffset starting file offset (should be block-aligned)
+     * @param blockCount number of blocks to read
+     * @param poolTimeoutMs timeout in milliseconds for acquiring pool segments
+     *                      (use 50ms for prefetch, 5000ms for on-demand loads)
+     * @return array of loaded memory segments (length equals blockCount)
+     * @throws Exception if loading fails due to I/O errors, pool pressure, or other issues
+     */
+    T[] load(Path filePath, long startOffset, long blockCount, long poolTimeoutMs) throws Exception;
+
+    /**
+     * Load one or more blocks efficiently with default timeout (5 seconds for critical loads).
+     *
      * @param filePath file to read from
      * @param startOffset starting file offset (should be block-aligned)
      * @param blockCount number of blocks to read
      * @return array of loaded memory segments (length equals blockCount)
      * @throws Exception if loading fails due to I/O errors, pool pressure, or other issues
      */
-    T[] load(Path filePath, long startOffset, long blockCount) throws Exception;
+    default T[] load(Path filePath, long startOffset, long blockCount) throws Exception {
+        return load(filePath, startOffset, blockCount, 5000); // 5 seconds for critical on-demand loads
+    }
 
     /**
      * Loads a single block using the provided cache key.

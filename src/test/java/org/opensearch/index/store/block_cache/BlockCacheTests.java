@@ -9,6 +9,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -270,9 +271,9 @@ public class BlockCacheTests extends OpenSearchTestCase {
 
         @SuppressWarnings("unchecked")
         RefCountedMemorySegment[] segments = new RefCountedMemorySegment[] { refSegment1, refSegment2, refSegment3 };
-        when(mockLoader.load(any(Path.class), any(Long.class), any(Long.class))).thenReturn(segments);
+        when(mockLoader.load(any(Path.class), any(Long.class), any(Long.class), anyLong())).thenReturn(segments);
 
-        Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> result = blockCache.loadBulk(filePath, startOffset, blockCount);
+        Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> result = blockCache.loadForPrefetch(filePath, startOffset, blockCount);
 
         assertNotNull(result);
         assertEquals(3, result.size());

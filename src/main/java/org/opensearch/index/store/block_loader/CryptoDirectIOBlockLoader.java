@@ -73,7 +73,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
     }
 
     @Override
-    public RefCountedMemorySegment[] load(Path filePath, long startOffset, long blockCount) throws Exception {
+    public RefCountedMemorySegment[] load(Path filePath, long startOffset, long blockCount, long poolTimeoutMs) throws Exception {
         if (!Files.exists(filePath)) {
             throw new NoSuchFileException(filePath.toString());
         }
@@ -130,9 +130,8 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
 
             try {
                 while (blockIndex < blockCount && bytesCopied < bytesRead) {
-                    // Wait up to 5 seconds to allow cache eviction to free segments
-                    // This is a critical I/O path - we need the segment to load index data
-                    RefCountedMemorySegment handle = segmentPool.tryAcquire(5, TimeUnit.SECONDS);
+                    // Use caller-specified timeout (5s for critical loads, 50ms for prefetch)
+                    RefCountedMemorySegment handle = segmentPool.tryAcquire(poolTimeoutMs, TimeUnit.MILLISECONDS);
 
                     MemorySegment pooled = handle.segment();
 

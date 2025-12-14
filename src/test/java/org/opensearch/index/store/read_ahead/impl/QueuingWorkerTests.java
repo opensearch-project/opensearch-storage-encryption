@@ -100,14 +100,14 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         worker = new QueuingWorker(100, 2, executor, mockBlockCache);
 
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> mockResult = Map.of();
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenReturn(mockResult);
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenReturn(mockResult);
 
         boolean accepted = worker.schedule(TEST_PATH, 0, 10);
 
         assertTrue("Worker should accept request", accepted);
         Thread.sleep(100); // Allow processing
 
-        verify(mockBlockCache, times(1)).loadBulk(eq(TEST_PATH), eq(0L), eq(10L));
+        verify(mockBlockCache, times(1)).loadForPrefetch(eq(TEST_PATH), eq(0L), eq(10L));
     }
 
     /**
@@ -118,7 +118,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
 
         CountDownLatch loadLatch = new CountDownLatch(3);
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> mockResult = Map.of();
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
             loadLatch.countDown();
             return mockResult;
         });
@@ -130,7 +130,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         assertTrue("All requests should be accepted", accepted1 && accepted2 && accepted3);
         assertTrue("All requests should be processed", loadLatch.await(2, TimeUnit.SECONDS));
 
-        verify(mockBlockCache, times(3)).loadBulk(eq(TEST_PATH), anyLong(), eq(10L));
+        verify(mockBlockCache, times(3)).loadForPrefetch(eq(TEST_PATH), anyLong(), eq(10L));
     }
 
     /**
@@ -142,7 +142,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
 
         CountDownLatch loadLatch = new CountDownLatch(2);
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> mockResult = Map.of();
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
             loadLatch.countDown();
             return mockResult;
         });
@@ -156,8 +156,8 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         // Should see 2 loadBulk calls, each with 128 blocks
         // Chunk 1: offset=0, count=128
         // Chunk 2: offset=128*8192, count=128
-        verify(mockBlockCache, times(1)).loadBulk(eq(TEST_PATH), eq(0L), eq(128L));
-        verify(mockBlockCache, times(1)).loadBulk(eq(TEST_PATH), eq(128L * CACHE_BLOCK_SIZE), eq(128L));
+        verify(mockBlockCache, times(1)).loadForPrefetch(eq(TEST_PATH), eq(0L), eq(128L));
+        verify(mockBlockCache, times(1)).loadForPrefetch(eq(TEST_PATH), eq(128L * CACHE_BLOCK_SIZE), eq(128L));
     }
 
     /**
@@ -168,7 +168,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
 
         CountDownLatch loadLatch = new CountDownLatch(2);
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> mockResult = Map.of();
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
             loadLatch.countDown();
             return mockResult;
         });
@@ -179,8 +179,8 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         assertTrue("Request should be accepted", accepted);
         assertTrue("All chunks should be processed", loadLatch.await(2, TimeUnit.SECONDS));
 
-        verify(mockBlockCache, times(1)).loadBulk(eq(TEST_PATH), eq(0L), eq(128L));
-        verify(mockBlockCache, times(1)).loadBulk(eq(TEST_PATH), eq(128L * CACHE_BLOCK_SIZE), eq(72L));
+        verify(mockBlockCache, times(1)).loadForPrefetch(eq(TEST_PATH), eq(0L), eq(128L));
+        verify(mockBlockCache, times(1)).loadForPrefetch(eq(TEST_PATH), eq(128L * CACHE_BLOCK_SIZE), eq(72L));
     }
 
     /**
@@ -191,7 +191,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
 
         CountDownLatch loadLatch = new CountDownLatch(4);
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> mockResult = Map.of();
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
             loadLatch.countDown();
             return mockResult;
         });
@@ -203,7 +203,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         assertTrue("All chunks should be processed", loadLatch.await(2, TimeUnit.SECONDS));
 
         // Should see 4 loadBulk calls, each with 128 blocks
-        verify(mockBlockCache, times(4)).loadBulk(eq(TEST_PATH), anyLong(), eq(128L));
+        verify(mockBlockCache, times(4)).loadForPrefetch(eq(TEST_PATH), anyLong(), eq(128L));
     }
 
     /**
@@ -214,7 +214,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
 
         CountDownLatch loadLatch = new CountDownLatch(1);
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> mockResult = Map.of();
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
             loadLatch.countDown();
             return mockResult;
         });
@@ -225,7 +225,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         assertTrue("Request at boundary should be accepted", accepted);
         assertTrue("Request should be processed", loadLatch.await(2, TimeUnit.SECONDS));
 
-        verify(mockBlockCache, times(1)).loadBulk(eq(TEST_PATH), eq(0L), eq(128L));
+        verify(mockBlockCache, times(1)).loadForPrefetch(eq(TEST_PATH), eq(0L), eq(128L));
     }
 
     /**
@@ -236,7 +236,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
 
         CountDownLatch loadLatch = new CountDownLatch(2);
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> mockResult = Map.of();
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
             loadLatch.countDown();
             return mockResult;
         });
@@ -247,8 +247,8 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         assertTrue("Request should be accepted", accepted);
         assertTrue("All chunks should be processed", loadLatch.await(2, TimeUnit.SECONDS));
 
-        verify(mockBlockCache, times(1)).loadBulk(eq(TEST_PATH), eq(0L), eq(128L));
-        verify(mockBlockCache, times(1)).loadBulk(eq(TEST_PATH), eq(128L * CACHE_BLOCK_SIZE), eq(1L));
+        verify(mockBlockCache, times(1)).loadForPrefetch(eq(TEST_PATH), eq(0L), eq(128L));
+        verify(mockBlockCache, times(1)).loadForPrefetch(eq(TEST_PATH), eq(128L * CACHE_BLOCK_SIZE), eq(1L));
     }
 
     /**
@@ -260,7 +260,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         // Make loadBulk slow to ensure overlap
         CountDownLatch loadLatch = new CountDownLatch(1);
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> mockResult = Map.of();
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
             loadLatch.await(2, TimeUnit.SECONDS);
             return mockResult;
         });
@@ -277,7 +277,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         Thread.sleep(200);
 
         // Should only see 1 loadBulk call (second was skipped)
-        verify(mockBlockCache, times(1)).loadBulk(eq(TEST_PATH), anyLong(), anyLong());
+        verify(mockBlockCache, times(1)).loadForPrefetch(eq(TEST_PATH), anyLong(), anyLong());
     }
 
     /**
@@ -287,7 +287,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         worker = new QueuingWorker(100, 2, executor, mockBlockCache);
 
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> mockResult = Map.of();
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenReturn(mockResult);
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenReturn(mockResult);
 
         // Schedule non-overlapping requests
         boolean accepted1 = worker.schedule(TEST_PATH, 0, 10);
@@ -296,7 +296,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         assertTrue("Both requests should be accepted", accepted1 && accepted2);
         Thread.sleep(300);
 
-        verify(mockBlockCache, times(2)).loadBulk(eq(TEST_PATH), anyLong(), anyLong());
+        verify(mockBlockCache, times(2)).loadForPrefetch(eq(TEST_PATH), anyLong(), anyLong());
     }
 
     /**
@@ -306,7 +306,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         worker = new QueuingWorker(100, 2, executor, mockBlockCache);
 
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> mockResult = Map.of();
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenReturn(mockResult);
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenReturn(mockResult);
 
         // Same offsets but different files - should both be processed
         boolean accepted1 = worker.schedule(TEST_PATH, 0, 10);
@@ -315,8 +315,8 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         assertTrue("Requests for different files should both be accepted", accepted1 && accepted2);
         Thread.sleep(300);
 
-        verify(mockBlockCache, times(1)).loadBulk(eq(TEST_PATH), eq(0L), eq(10L));
-        verify(mockBlockCache, times(1)).loadBulk(eq(TEST_PATH_2), eq(0L), eq(10L));
+        verify(mockBlockCache, times(1)).loadForPrefetch(eq(TEST_PATH), eq(0L), eq(10L));
+        verify(mockBlockCache, times(1)).loadForPrefetch(eq(TEST_PATH_2), eq(0L), eq(10L));
     }
 
     /**
@@ -328,7 +328,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         // Block loadBulk to fill up queue
         CountDownLatch blockLatch = new CountDownLatch(1);
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> mockResult = Map.of();
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
             blockLatch.await(5, TimeUnit.SECONDS);
             return mockResult;
         });
@@ -355,7 +355,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         worker = new QueuingWorker(100, 2, executor, mockBlockCache);
 
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> mockResult = Map.of();
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenReturn(mockResult);
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenReturn(mockResult);
 
         // Schedule requests
         for (int i = 0; i < 10; i++) {
@@ -378,7 +378,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         // Block loadBulk to keep items in queue
         CountDownLatch blockLatch = new CountDownLatch(1);
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> mockResult = Map.of();
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
             blockLatch.await(5, TimeUnit.SECONDS);
             return mockResult;
         });
@@ -407,7 +407,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         worker = new QueuingWorker(100, 2, executor, mockBlockCache);
 
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> mockResult = Map.of();
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenReturn(mockResult);
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenReturn(mockResult);
 
         // Schedule for both files
         worker.schedule(TEST_PATH, 0, 10);
@@ -419,7 +419,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         Thread.sleep(200);
 
         // TEST_PATH_2 should still be processed
-        verify(mockBlockCache, times(1)).loadBulk(eq(TEST_PATH_2), eq(0L), eq(10L));
+        verify(mockBlockCache, times(1)).loadForPrefetch(eq(TEST_PATH_2), eq(0L), eq(10L));
     }
 
     /**
@@ -428,7 +428,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
     public void testIOExceptionHandling() throws Exception {
         worker = new QueuingWorker(100, 2, executor, mockBlockCache);
 
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenThrow(new IOException("Test IO error"));
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenThrow(new IOException("Test IO error"));
 
         boolean accepted = worker.schedule(TEST_PATH, 0, 10);
 
@@ -445,7 +445,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
     public void testNoSuchFileExceptionHandling() throws Exception {
         worker = new QueuingWorker(100, 2, executor, mockBlockCache);
 
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenThrow(new NoSuchFileException("Test file"));
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenThrow(new NoSuchFileException("Test file"));
 
         boolean accepted = worker.schedule(TEST_PATH, 0, 10);
 
@@ -461,7 +461,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
     public void testRuntimeExceptionHandling() throws Exception {
         worker = new QueuingWorker(100, 2, executor, mockBlockCache);
 
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenThrow(new RuntimeException("Test runtime error"));
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenThrow(new RuntimeException("Test runtime error"));
 
         boolean accepted = worker.schedule(TEST_PATH, 0, 10);
 
@@ -479,7 +479,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         worker = new QueuingWorker(500, 4, executor, mockBlockCache);
 
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> mockResult = Map.of();
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenReturn(mockResult);
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenReturn(mockResult);
 
         int threadCount = 4;
         int requestsPerThread = 25;
@@ -524,7 +524,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
 
         CountDownLatch loadLatch = new CountDownLatch(10);
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> mockResult = Map.of();
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
             loadLatch.countDown();
             return mockResult;
         });
@@ -539,7 +539,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         assertTrue("All requests should be processed", loadLatch.await(3, TimeUnit.SECONDS));
 
         // Verify all calls were made
-        verify(mockBlockCache, times(10)).loadBulk(eq(TEST_PATH), anyLong(), eq(10L));
+        verify(mockBlockCache, times(10)).loadForPrefetch(eq(TEST_PATH), anyLong(), eq(10L));
     }
 
     // ========== Lifecycle Tests ==========
@@ -601,7 +601,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         // Block to keep items in queue
         CountDownLatch blockLatch = new CountDownLatch(1);
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> mockResult = Map.of();
-        when(mockBlockCache.loadBulk(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(mockBlockCache.loadForPrefetch(any(Path.class), anyLong(), anyLong())).thenAnswer(invocation -> {
             blockLatch.await(5, TimeUnit.SECONDS);
             return mockResult;
         });

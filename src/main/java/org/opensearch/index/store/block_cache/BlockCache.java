@@ -82,16 +82,16 @@ public interface BlockCache<T> {
     void clear();
 
     /**
-     * Bulk load multiple blocks efficiently using a single I/O operation.
-     * Similar to getOrLoad() but for a contiguous range of blocks.
-     * 
+     * Load multiple blocks for prefetch/readahead with a short timeout to fail fast when pool is under pressure.
+     * Uses a 50ms timeout for pool segment acquisition - prefetch should not block critical I/O.
+     *
      * @param filePath file to read from
      * @param startOffset starting file offset (should be block-aligned)
      * @param blockCount number of blocks to read
      * @return map of cache keys to cache values for blocks that were successfully loaded into the cache
-     * @throws IOException if loading fails (including specific BlockLoader exceptions)
+     * @throws IOException if loading fails (including pool timeout, which is expected under pressure)
      */
-    Map<BlockCacheKey, BlockCacheValue<T>> loadBulk(Path filePath, long startOffset, long blockCount) throws IOException;
+    Map<BlockCacheKey, BlockCacheValue<T>> loadForPrefetch(Path filePath, long startOffset, long blockCount) throws IOException;
 
     /**
      * Returns cache statistics as a formatted string.

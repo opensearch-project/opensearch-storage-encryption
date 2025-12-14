@@ -330,12 +330,12 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
             createMockValue("block1"),
             createMockValue("block2") };
 
-        when(mockLoader.load(eq(path), eq(startOffset), eq(blockCount))).thenReturn(loadedValues);
+        when(mockLoader.load(eq(path), eq(startOffset), eq(blockCount), anyLong())).thenReturn(loadedValues);
 
-        Map<BlockCacheKey, BlockCacheValue<String>> result = blockCache.loadBulk(path, startOffset, blockCount);
+        Map<BlockCacheKey, BlockCacheValue<String>> result = blockCache.loadForPrefetch(path, startOffset, blockCount);
 
         assertEquals("Should load 3 blocks", 3, result.size());
-        verify(mockLoader, times(1)).load(path, startOffset, blockCount);
+        verify(mockLoader, times(1)).load(eq(path), eq(startOffset), eq(blockCount), anyLong());
     }
 
     /**
@@ -348,9 +348,9 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
 
         BlockCacheValue<String>[] loadedValues = new BlockCacheValue[] { createMockValue("block0"), createMockValue("block1") };
 
-        when(mockLoader.load(eq(path), eq(startOffset), eq(blockCount))).thenReturn(loadedValues);
+        when(mockLoader.load(eq(path), eq(startOffset), eq(blockCount), anyLong())).thenReturn(loadedValues);
 
-        blockCache.loadBulk(path, startOffset, blockCount);
+        blockCache.loadForPrefetch(path, startOffset, blockCount);
 
         BlockCacheKey key0 = new FileBlockCacheKey(path, 0L);
         BlockCacheKey key1 = new FileBlockCacheKey(path, 8192L); // CACHE_BLOCK_SIZE = 8192
@@ -372,9 +372,9 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
 
         BlockCacheValue<String>[] loadedValues = new BlockCacheValue[] { createMockValue("new"), createMockValue("block1") };
 
-        when(mockLoader.load(eq(path), eq(0L), eq(2L))).thenReturn(loadedValues);
+        when(mockLoader.load(eq(path), eq(0L), eq(2L), anyLong())).thenReturn(loadedValues);
 
-        blockCache.loadBulk(path, 0L, 2L);
+        blockCache.loadForPrefetch(path, 0L, 2L);
 
         // Should still have existing value
         BlockCacheValue<String> cached = blockCache.get(key0);
@@ -395,34 +395,35 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
 
         BlockCacheValue<String>[] loadedValues = new BlockCacheValue[] { newValue };
 
-        when(mockLoader.load(eq(path), eq(0L), eq(1L))).thenReturn(loadedValues);
+        when(mockLoader.load(eq(path), eq(0L), eq(1L), anyLong())).thenReturn(loadedValues);
 
-        blockCache.loadBulk(path, 0L, 1L);
+        blockCache.loadForPrefetch(path, 0L, 1L);
 
         // Verify decRef was called on the unused segment
         verify(newValue, times(1)).decRef();
     }
 
     /**
-     * Tests loadBulk throws IOException when loader fails.
+     * Tests loadForPrefetch throws IOException when loader fails.
      */
     public void testLoadBulkThrowsIOExceptionOnFailure() throws Exception {
         Path path = Paths.get("/test/file.dat");
 
-        when(mockLoader.load(any(Path.class), anyLong(), anyLong())).thenThrow(new IOException("Bulk load failed"));
+        when(mockLoader.load(any(Path.class), anyLong(), anyLong(), anyLong())).thenThrow(new IOException("Bulk load failed"));
 
-        expectThrows(IOException.class, () -> blockCache.loadBulk(path, 0L, 3L));
+        expectThrows(IOException.class, () -> blockCache.loadForPrefetch(path, 0L, 3L));
     }
 
     /**
-     * Tests loadBulk handles PoolPressureException.
+     * Tests loadForPrefetch handles PoolPressureException.
      */
     public void testLoadBulkHandlesPoolPressureException() throws Exception {
         Path path = Paths.get("/test/file.dat");
 
-        when(mockLoader.load(any(Path.class), anyLong(), anyLong())).thenThrow(new BlockLoader.PoolPressureException("Pool exhausted"));
+        when(mockLoader.load(any(Path.class), anyLong(), anyLong(), anyLong()))
+            .thenThrow(new BlockLoader.PoolPressureException("Pool exhausted"));
 
-        expectThrows(IOException.class, () -> blockCache.loadBulk(path, 0L, 3L));
+        expectThrows(IOException.class, () -> blockCache.loadForPrefetch(path, 0L, 3L));
     }
 
     /**
