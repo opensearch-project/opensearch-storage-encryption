@@ -171,8 +171,9 @@ public final class QueuingWorker implements Worker {
         final boolean accepted = queue.offerLast(task);
         if (!accepted) {
             inFlight.remove(task);
+            // todo: add a metric here.
             LOGGER
-                .warn(
+                .trace(
                     "Readahead queue full, dropping task path={} off={} blocks={} qsz={}/{}",
                     path,
                     offset,

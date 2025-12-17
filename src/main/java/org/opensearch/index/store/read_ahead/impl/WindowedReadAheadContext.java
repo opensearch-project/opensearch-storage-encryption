@@ -36,9 +36,10 @@ public class WindowedReadAheadContext implements ReadaheadContext {
     private static final int HIT_NOP_THRESHOLD_MAX = 512;
     private int hitNopThreshold = HIT_NOP_THRESHOLD_BASE;
 
-    private static final int MISS_BATCH = 3;                     // batch N misses before triggering
+    private static final int MISS_BATCH = 4;                     // batch N misses before triggering
     private static final long MIN_SIGNAL_INTERVAL_NS = 300_000L; // 300µs min signal interval
     private static final long MERGE_SPIN_NS = 60_000L;           // 60µs worker spin to coalesce
+    private static final int MAX_REJECTIONS_BEFORE_PAUSE = 4;    // pause read-ahead after N consecutive queue rejections
 
     private volatile long desiredEndBlock = 0;
     private volatile long lastScheduledEndBlock = 0;
@@ -46,6 +47,7 @@ public class WindowedReadAheadContext implements ReadaheadContext {
     private int consecutiveHits = 0;
     private int missCount = 0;
     private long missMaxBlock = -1;
+    private int consecutiveRejections = 0;
 
     private volatile long lastSignalNanos = 0;
     private volatile boolean signalPending = false;
@@ -195,20 +197,38 @@ public class WindowedReadAheadContext implements ReadaheadContext {
 
         final long anchorOffset = startSeg << CACHE_BLOCK_SIZE_POWER;
         boolean accepted = worker.schedule(path, anchorOffset, blockCount);
-        if (accepted)
+
+        if (accepted) {
             lastScheduledEndBlock = endExclusive;
+            consecutiveRejections = 0; // Reset on successful schedule
+        } else {
+            // Queue is full - back off read-ahead to avoid wasting CPU cycles
+            consecutiveRejections++;
+            if (consecutiveRejections >= MAX_REJECTIONS_BEFORE_PAUSE) {
+                // Queue is saturated - pause read-ahead temporarily by:
+                // 1. Resetting miss tracking to avoid immediate re-trigger
+                // 2. Increasing hit threshold to reduce scheduling attempts
+                missCount = 0;
+                hitNopThreshold = Math.min(HIT_NOP_THRESHOLD_MAX, hitNopThreshold << 1);
+
+                if (LOGGER.isDebugEnabled()) {
+                    LOGGER.debug("RA_PAUSED path={} rejections={} - queue saturated, backing off", path, consecutiveRejections);
+                }
+            }
+        }
 
         if (LOGGER.isDebugEnabled()) {
             LOGGER
                 .debug(
-                    "RA_TRIGGER path={} startSeg={} endExclusive={} blocks={} accepted={} desired={} watermark={}",
+                    "RA_TRIGGER path={} startSeg={} endExclusive={} blocks={} accepted={} desired={} watermark={} rejections={}",
                     path,
                     startSeg,
                     endExclusive,
                     blockCount,
                     accepted,
                     desired,
-                    lastScheduledEndBlock
+                    lastScheduledEndBlock,
+                    consecutiveRejections
                 );
         }
         return accepted;

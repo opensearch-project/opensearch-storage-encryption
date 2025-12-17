@@ -4,8 +4,6 @@
  */
 package org.opensearch.index.store;
 
-import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.READ_AHEAD_QUEUE_SIZE;
-
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -498,9 +496,12 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         );
 
         // Create per-shard worker with isolated queue but shared executor threads
-        // Limit concurrent drainers per shard to prevent overwhelming the shared pool
-        int maxRunners = Math.max(2, Runtime.getRuntime().availableProcessors() / 8);
-        Worker readaheadWorker = new QueuingWorker(READ_AHEAD_QUEUE_SIZE, maxRunners, poolResources.getReadAheadExecutor(), directoryCache);
+        // Calculate maxRunners based on queue drain time: we want to drain the full queue
+        // in ~1 second for responsiveness. Assuming ~4ms per block load (batched), we derive:
+        // maxRunners = (queueSize × 4ms) / 1000ms.
+        int queueSize = resources.getReadAheadQueueSize();
+        int maxRunners = Math.max(2, (queueSize * 4) / 1000); // minimum 2 for constant work.
+        Worker readaheadWorker = new QueuingWorker(queueSize, maxRunners, poolResources.getReadAheadExecutor(), directoryCache);
 
         return new BufferPoolDirectory(
             location,

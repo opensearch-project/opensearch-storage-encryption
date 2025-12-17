@@ -45,6 +45,7 @@ public final class PoolBuilder {
         private final Pool<RefCountedMemorySegment> segmentPool;
         private final BlockCache<RefCountedMemorySegment> blockCache;
         private final long maxCacheBlocks;
+        private final int readAheadQueueSize;
         private final TelemetryThread telemetry;
         private final java.util.concurrent.ThreadPoolExecutor removalExecutor;
         private final ExecutorService readAheadExecutor;
@@ -53,6 +54,7 @@ public final class PoolBuilder {
             Pool<RefCountedMemorySegment> segmentPool,
             BlockCache<RefCountedMemorySegment> blockCache,
             long maxCacheBlocks,
+            int readAheadQueueSize,
             TelemetryThread telemetry,
             java.util.concurrent.ThreadPoolExecutor removalExecutor,
             ExecutorService readAheadExecutor
@@ -60,6 +62,7 @@ public final class PoolBuilder {
             this.segmentPool = segmentPool;
             this.blockCache = blockCache;
             this.maxCacheBlocks = maxCacheBlocks;
+            this.readAheadQueueSize = readAheadQueueSize;
             this.telemetry = telemetry;
             this.removalExecutor = removalExecutor;
             this.readAheadExecutor = readAheadExecutor;
@@ -90,6 +93,15 @@ public final class PoolBuilder {
          */
         public long getMaxCacheBlocks() {
             return maxCacheBlocks;
+        }
+
+        /**
+         * Returns the calculated read-ahead queue size.
+         *
+         * @return the read-ahead queue size
+         */
+        public int getReadAheadQueueSize() {
+            return readAheadQueueSize;
         }
 
         /**
@@ -224,6 +236,10 @@ public final class PoolBuilder {
         segmentPool.warmUp(warmupBlocks);
         LOGGER.info("Warmed up {} blocks ({}% of {} cache blocks)", warmupBlocks, warmupPercentage * 100, maxCacheBlocks);
 
+        // Calculate read-ahead queue size based on cache capacity
+        int readAheadQueueSize = PoolSizeCalculator.calculateReadAheadQueueSize(maxCacheBlocks);
+        LOGGER.info("Calculated read-ahead queue size={}", readAheadQueueSize, maxCacheBlocks);
+
         // Initialize shared cache with removal listener and get its executor
         BlockCacheBuilder.CacheWithExecutor<RefCountedMemorySegment, RefCountedMemorySegment> cacheWithExecutor = BlockCacheBuilder
             .build(CACHE_INITIAL_SIZE, maxCacheBlocks);
@@ -233,7 +249,14 @@ public final class PoolBuilder {
 
         // Create shared read-ahead executor service
         // Each per-shard worker will have its own queue but share these threads
-        int threads = Math.max(8, Runtime.getRuntime().availableProcessors() / 4);
+
+        // Scale with queue size, but respect CPU bounds
+        int queueBasedThreads = readAheadQueueSize / 128;
+        int cpuBasedThreads = Runtime.getRuntime().availableProcessors() / 4;
+
+        // Take minimum of queue-based and CPU-based, but ensure at least 8
+        int threads = Math.max(8, Math.min(queueBasedThreads, cpuBasedThreads));
+
         AtomicInteger threadId = new AtomicInteger();
         ExecutorService readAheadExecutor = Executors.newFixedThreadPool(threads, r -> {
             Thread t = new Thread(r, "readahead-worker-" + threadId.incrementAndGet());
@@ -245,6 +268,14 @@ public final class PoolBuilder {
         // Start telemetry
         TelemetryThread telemetry = new TelemetryThread(segmentPool, blockCache);
 
-        return new PoolResources(segmentPool, blockCache, maxCacheBlocks, telemetry, removalExecutor, readAheadExecutor);
+        return new PoolResources(
+            segmentPool,
+            blockCache,
+            maxCacheBlocks,
+            readAheadQueueSize,
+            telemetry,
+            removalExecutor,
+            readAheadExecutor
+        );
     }
 }

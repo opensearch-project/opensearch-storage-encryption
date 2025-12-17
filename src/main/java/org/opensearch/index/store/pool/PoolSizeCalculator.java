@@ -108,6 +108,27 @@ public final class PoolSizeCalculator {
     }
 
     /**
+     * Calculates the read-ahead queue size based on cache capacity.
+     *
+     * Uses a very small capacity of cache, bounded to max 4096.
+     * This ensures read-ahead doesn't dominate the cache while providing
+     * sufficient prefetching for sequential access patterns. On small instance 
+     * types, we saw read-ahead causing a huge amount of churn to cache which 
+     * was not useful and only wasted I/O.
+     *
+     * Similar to Linux's adaptive read-ahead, this scales the prefetch queue
+     * based on available buffer pool capacity rather than using a static size.
+     *
+     * @param maxCacheBlocks the maximum number of blocks in the cache
+     * @return the calculated read-ahead queue size
+     */
+    public static int calculateReadAheadQueueSize(long maxCacheBlocks) {
+        long queueSize = maxCacheBlocks / 1024; // on smallest instance types like t3.medium, this is 32.
+
+        return (int) Math.max(16, Math.min(4096, queueSize));
+    }
+
+    /**
      * Calculates the pool size based on off-heap memory.
      *
      * pool_size = (totalPhysicalMemory - maxHeap) * pool_size_percentage
