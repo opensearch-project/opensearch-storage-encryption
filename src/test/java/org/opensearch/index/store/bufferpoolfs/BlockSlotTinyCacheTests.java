@@ -78,7 +78,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
         assertEquals(1, refSegment.getRefCount());
 
         // Acquire the block - should return with refCount incremented (pinned)
-        BlockCacheValue<RefCountedMemorySegment> result = cache.acquireRefCountedValue(0).value();
+        BlockCacheValue<RefCountedMemorySegment> result = cache.acquireRefCountedValue(0);
         assertNotNull(result);
 
         // RefCount should now be 2 (cache + our pin)
@@ -117,15 +117,15 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
         assertEquals(1, refSegment.getRefCount());
 
         // First acquisition
-        BlockCacheValue<RefCountedMemorySegment> result1 = cache.acquireRefCountedValue(0).value();
+        BlockCacheValue<RefCountedMemorySegment> result1 = cache.acquireRefCountedValue(0);
         assertEquals(2, refSegment.getRefCount());
 
         // Second acquisition (same block) - should hit thread-local cache and pin again
-        BlockCacheValue<RefCountedMemorySegment> result2 = cache.acquireRefCountedValue(0).value();
+        BlockCacheValue<RefCountedMemorySegment> result2 = cache.acquireRefCountedValue(0);
         assertEquals(3, refSegment.getRefCount());
 
         // Third acquisition
-        BlockCacheValue<RefCountedMemorySegment> result3 = cache.acquireRefCountedValue(0).value();
+        BlockCacheValue<RefCountedMemorySegment> result3 = cache.acquireRefCountedValue(0);
         assertEquals(4, refSegment.getRefCount());
 
         // Unpin all three
@@ -164,7 +164,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
         when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(cacheValue);
 
         // Acquire and unpin
-        BlockCacheValue<RefCountedMemorySegment> result = cache.acquireRefCountedValue(0).value();
+        BlockCacheValue<RefCountedMemorySegment> result = cache.acquireRefCountedValue(0);
         assertEquals(2, refSegment.getRefCount());
 
         result.unpin();
@@ -209,7 +209,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
         int initialGeneration = refSegment1.getGeneration();
         assertEquals(0, initialGeneration);
 
-        BlockCacheValue<RefCountedMemorySegment> result1 = cache.acquireRefCountedValue(0).value();
+        BlockCacheValue<RefCountedMemorySegment> result1 = cache.acquireRefCountedValue(0);
         assertEquals(refSegment1, result1.value());
         result1.unpin();
 
@@ -239,7 +239,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
         when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(cacheValue2);
 
         // Next acquisition should detect stale generation and reload from L2
-        BlockCacheValue<RefCountedMemorySegment> result2 = cache.acquireRefCountedValue(0).value();
+        BlockCacheValue<RefCountedMemorySegment> result2 = cache.acquireRefCountedValue(0);
 
         // Should get the new segment (generation check should have failed tryPin on old segment)
         assertEquals(refSegment2, result2.value());
@@ -279,7 +279,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
                 try {
                     barrier.await(); // Synchronize start
                     for (int j = 0; j < acquisitionsPerThread; j++) {
-                        BlockCacheValue<RefCountedMemorySegment> result = cache.acquireRefCountedValue(0).value();
+                        BlockCacheValue<RefCountedMemorySegment> result = cache.acquireRefCountedValue(0);
                         assertNotNull(result);
                         // Block is pinned - refCount should be > 1
                         assertTrue(result.value().getRefCount() > 1);
@@ -342,9 +342,9 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
         });
 
         // Acquire all three blocks
-        BlockCacheValue<RefCountedMemorySegment> result0 = cache.acquireRefCountedValue(0).value();
-        BlockCacheValue<RefCountedMemorySegment> result1 = cache.acquireRefCountedValue(BLOCK_SIZE).value();
-        BlockCacheValue<RefCountedMemorySegment> result2 = cache.acquireRefCountedValue(BLOCK_SIZE * 2L).value();
+        BlockCacheValue<RefCountedMemorySegment> result0 = cache.acquireRefCountedValue(0);
+        BlockCacheValue<RefCountedMemorySegment> result1 = cache.acquireRefCountedValue(BLOCK_SIZE);
+        BlockCacheValue<RefCountedMemorySegment> result2 = cache.acquireRefCountedValue(BLOCK_SIZE * 2L);
 
         // Each should be pinned (refCount = 2)
         assertEquals(2, segments.get(0).getRefCount());
@@ -399,7 +399,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
         when(mockCache.getOrLoad(any(FileBlockCacheKey.class))).thenReturn(cacheValue);
 
         // Should succeed after retries
-        BlockCacheValue<RefCountedMemorySegment> result = cache.acquireRefCountedValue(0).value();
+        BlockCacheValue<RefCountedMemorySegment> result = cache.acquireRefCountedValue(0);
         assertNotNull(result);
         assertEquals(2, refSegment.getRefCount()); // Successfully pinned
 
@@ -454,7 +454,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
         when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(cacheValue1);
 
         // Populate cache
-        BlockCacheValue<RefCountedMemorySegment> result1 = cache.acquireRefCountedValue(0).value();
+        BlockCacheValue<RefCountedMemorySegment> result1 = cache.acquireRefCountedValue(0);
         result1.unpin();
 
         // Clear cache
@@ -475,7 +475,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
         when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(cacheValue2);
 
         // Next acquisition should get the new segment (not stale cached one)
-        BlockCacheValue<RefCountedMemorySegment> result2 = cache.acquireRefCountedValue(0).value();
+        BlockCacheValue<RefCountedMemorySegment> result2 = cache.acquireRefCountedValue(0);
         assertEquals(refSegment2, result2.value());
         result2.unpin();
     }
@@ -500,11 +500,11 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
         when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(cacheValue);
 
         // First acquisition
-        BlockCacheValue<RefCountedMemorySegment> result1 = cache.acquireRefCountedValue(0).value();
+        BlockCacheValue<RefCountedMemorySegment> result1 = cache.acquireRefCountedValue(0);
         assertEquals(2, refSegment.getRefCount());
 
         // Second acquisition on same thread - should hit thread-local cache but still pin
-        BlockCacheValue<RefCountedMemorySegment> result2 = cache.acquireRefCountedValue(0).value();
+        BlockCacheValue<RefCountedMemorySegment> result2 = cache.acquireRefCountedValue(0);
         assertEquals(3, refSegment.getRefCount());
 
         // Verify tryPin was called at least twice (once per acquisition)

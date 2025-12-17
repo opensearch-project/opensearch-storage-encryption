@@ -285,7 +285,7 @@ public class BlockSlotTinyCacheBenchmarkTests {
                     OffsetGenerator generator = new OffsetGenerator(scenario.pattern, scenario.uniqueBlocks, threadSeed);
                     for (int i = 0; i < opsPerThread; i++) {
                         long offset = generator.nextOffset();
-                        BlockCacheValue<RefCountedMemorySegment> val = cache.acquireRefCountedValue(offset).value();
+                        BlockCacheValue<RefCountedMemorySegment> val = cache.acquireRefCountedValue(offset, null);
                         val.unpin();
                     }
                 } catch (Exception e) {

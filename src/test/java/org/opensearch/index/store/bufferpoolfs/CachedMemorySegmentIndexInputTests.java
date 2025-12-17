@@ -1416,9 +1416,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         when(value.value()).thenReturn(refSegment);
         when(value.tryPin()).thenReturn(true);
 
-        // Wrap in LookupResult for the new API
-        BlockSlotTinyCache.LookupResult lookupResult = new BlockSlotTinyCache.LookupResult(value, true);
-        when(mockTinyCache.acquireRefCountedValue(eq(offset))).thenReturn(lookupResult);
+        when(mockTinyCache.acquireRefCountedValue(eq(offset), any())).thenReturn(value);
+        when(mockTinyCache.acquireRefCountedValue(eq(offset))).thenReturn(value);
         when(mockCache.getOrLoad(any(FileBlockCacheKey.class))).thenReturn(value);
     }
 

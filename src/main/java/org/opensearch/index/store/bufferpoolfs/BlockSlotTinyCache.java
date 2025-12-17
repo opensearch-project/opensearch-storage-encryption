@@ -73,24 +73,23 @@ import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 public class BlockSlotTinyCache {
 
     /**
-     * Result of a cache lookup operation, containing both the value and hit/miss information.
-     * This allows the read-ahead manager to track cache effectiveness.
+     * Mutable holder for cache hit/miss status to avoid allocation on hot path.
+     * Reuse a single instance index-input to track whether
+     * the last acquired value call hit cache or loaded from disk.
      */
-    public static final class LookupResult {
-        private final BlockCacheValue<RefCountedMemorySegment> value;
-        private final boolean cacheHit;
+    public static final class CacheHitHolder {
+        private boolean wasCacheHit;
 
-        public LookupResult(BlockCacheValue<RefCountedMemorySegment> value, boolean cacheHit) {
-            this.value = value;
-            this.cacheHit = cacheHit;
-        }
-
-        public BlockCacheValue<RefCountedMemorySegment> value() {
-            return value;
+        public void reset() {
+            wasCacheHit = false;
         }
 
         public boolean wasCacheHit() {
-            return cacheHit;
+            return wasCacheHit;
+        }
+
+        void setWasCacheHit(boolean hit) {
+            this.wasCacheHit = hit;
         }
     }
 
@@ -169,21 +168,42 @@ public class BlockSlotTinyCache {
     }
 
     /**
-     * Returns an already-pinned block with hit/miss information. Caller "must" unpin() when done.
+     * Returns an already-pinned block. Caller "must" unpin() when done.
+     *
+     * @param blockOff the block offset to acquire
+     * @return the pinned block cache value
+     * @throws IOException if unable to acquire the block
      */
-    public LookupResult acquireRefCountedValue(long blockOff) throws IOException {
+    public BlockCacheValue<RefCountedMemorySegment> acquireRefCountedValue(long blockOff) throws IOException {
+        return acquireRefCountedValue(blockOff, null);
+    }
+
+    /**
+     * Returns an already-pinned block with hit/miss tracking. Caller "must" unpin() when done.
+     *
+     * @param blockOff the block offset to acquire
+     * @param hitHolder optional holder to record cache hit status (null to skip tracking)
+     * @return the pinned block cache value
+     * @throws IOException if unable to acquire the block
+     */
+    public BlockCacheValue<RefCountedMemorySegment> acquireRefCountedValue(long blockOff, CacheHitHolder hitHolder) throws IOException {
 
         final long blockIdx = blockOff >>> CACHE_BLOCK_SIZE_POWER;
 
+        // TIER 1: Thread-local MRU check (fastest path - zero synchronization)
         LastAccessed last = lastAccessed.get();
         if (last.blockIdx == blockIdx) {
             BlockCacheValue<RefCountedMemorySegment> v = last.val;
             // Generation check ensures the pooled segment wasn't recycled and reused.
             if (v != null && v.value().getGeneration() == last.generation && v.tryPin()) {
-                return new LookupResult(v, true); // Thread-local MRU hit
+                if (hitHolder != null) {
+                    hitHolder.setWasCacheHit(true); // L1 hit
+                }
+                return v;
             }
         }
 
+        // TIER 2: Shared slot array check (fast path - plain reads with cache-line padding)
         // Apply a small XOR fold to mix high bits into the low bits before masking.
         // Without this mixing, sequential block indices alias every SLOT_COUNT blocks,
         // causing predictable collisions. The fold spreads access patterns more evenly.
@@ -202,7 +222,10 @@ public class BlockSlotTinyCache {
                     last.blockIdx = blockIdx;
                     last.val = v;
                     last.generation = currentGen;
-                    return new LookupResult(v, true); // Slot cache hit
+                    if (hitHolder != null) {
+                        hitHolder.setWasCacheHit(true); // L1 slot hit
+                    }
+                    return v;
                 }
             }
         }
@@ -250,7 +273,11 @@ public class BlockSlotTinyCache {
                 last.val = val;
                 last.generation = gen;
 
-                return new LookupResult(val, wasInCache);
+                if (hitHolder != null) {
+                    hitHolder.setWasCacheHit(wasInCache); // L2 cache or disk load
+                }
+
+                return val;
             }
 
             // todo: we can also use thread-spin-wait

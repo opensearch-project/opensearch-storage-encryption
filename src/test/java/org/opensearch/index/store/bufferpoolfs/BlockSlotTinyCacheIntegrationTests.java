@@ -79,16 +79,16 @@ public class BlockSlotTinyCacheIntegrationTests extends OpenSearchTestCase {
             for (int i = 0; i < numBlocks; i++) {
                 long offset = i * BLOCK_SIZE;
 
-                BlockSlotTinyCache.LookupResult result = tinyCache.acquireRefCountedValue(offset);
+                BlockCacheValue<RefCountedMemorySegment> result = tinyCache.acquireRefCountedValue(offset);
                 assertNotNull("Should get value for offset " + offset, result.value());
 
                 // Verify segment contains correct data
-                RefCountedMemorySegment segment = result.value().value();
+                RefCountedMemorySegment segment = result.value();
                 assertNotNull("Segment should not be null", segment);
                 assertTrue("Segment should be pinned", segment.getRefCount() >= 2);
 
                 // Unpin when done
-                result.value().unpin();
+                result.unpin();
             }
         }
 
@@ -116,24 +116,24 @@ public class BlockSlotTinyCacheIntegrationTests extends OpenSearchTestCase {
         long block0Offset = 0;
 
         // Step 1: Access block 0, it gets cached in slot
-        BlockSlotTinyCache.LookupResult result1 = tinyCache.acquireRefCountedValue(block0Offset);
-        RefCountedMemorySegment segment1 = result1.value().value();
+        BlockCacheValue<RefCountedMemorySegment> result1 = tinyCache.acquireRefCountedValue(block0Offset, null);
+        RefCountedMemorySegment segment1 = result1.value();
         int gen1 = segment1.getGeneration();
-        result1.value().unpin();
+        result1.unpin();
 
         // Step 2: Fill cache to evict block 0 (cache has capacity of 10)
         for (int i = 1; i <= 15; i++) {
             long offset = i * BLOCK_SIZE;
-            BlockSlotTinyCache.LookupResult result = tinyCache.acquireRefCountedValue(offset);
-            result.value().unpin();
+            BlockCacheValue<RefCountedMemorySegment> result = tinyCache.acquireRefCountedValue(offset, null);
+            result.unpin();
         }
 
         // Step 3: Block 0 should have been evicted and segment recycled
         // Access block 0 again - should reload from cache
-        BlockSlotTinyCache.LookupResult result2 = tinyCache.acquireRefCountedValue(block0Offset);
-        RefCountedMemorySegment segment2 = result2.value().value();
+        BlockCacheValue<RefCountedMemorySegment> result2 = tinyCache.acquireRefCountedValue(block0Offset, null);
+        RefCountedMemorySegment segment2 = result2.value();
         int gen2 = segment2.getGeneration();
-        result2.value().unpin();
+        result2.unpin();
 
         // If same segment object was recycled, generation should have changed
         // If different segment, they're just different objects (both valid)
@@ -170,13 +170,13 @@ public class BlockSlotTinyCacheIntegrationTests extends OpenSearchTestCase {
                             // Each thread accesses its own range of blocks
                             long offset = (tid * blocksPerThread + block) * BLOCK_SIZE;
 
-                            BlockSlotTinyCache.LookupResult result = tinyCache.acquireRefCountedValue(offset);
+                            BlockCacheValue<RefCountedMemorySegment> result = tinyCache.acquireRefCountedValue(offset);
                             assertNotNull("Thread " + tid + " should get value for offset " + offset, result.value());
 
                             // Verify pinned
-                            assertTrue("Segment should be pinned", result.value().value().getRefCount() >= 2);
+                            assertTrue("Segment should be pinned", result.value().getRefCount() >= 2);
 
-                            result.value().unpin();
+                            result.unpin();
                         }
                     }
                 } catch (Throwable t) {
@@ -218,10 +218,10 @@ public class BlockSlotTinyCacheIntegrationTests extends OpenSearchTestCase {
                     startLatch.await();
 
                     for (int iter = 0; iter < iterations; iter++) {
-                        BlockSlotTinyCache.LookupResult result = tinyCache.acquireRefCountedValue(sharedOffset);
+                        BlockCacheValue<RefCountedMemorySegment> result = tinyCache.acquireRefCountedValue(sharedOffset);
 
                         // Track max concurrent pins
-                        int currentRefCount = result.value().value().getRefCount();
+                        int currentRefCount = result.value().getRefCount();
                         maxRefCount.updateAndGet(max -> Math.max(max, currentRefCount));
 
                         // Small delay to increase chance of concurrent access
@@ -229,7 +229,7 @@ public class BlockSlotTinyCacheIntegrationTests extends OpenSearchTestCase {
                             Thread.sleep(0, 100);
                         }
 
-                        result.value().unpin();
+                        result.unpin();
                     }
                 } catch (Throwable t) {
                     error.set(t);
@@ -267,16 +267,16 @@ public class BlockSlotTinyCacheIntegrationTests extends OpenSearchTestCase {
         long[] offsets = { 0, 32 * BLOCK_SIZE, 64 * BLOCK_SIZE };
 
         for (long offset : offsets) {
-            BlockSlotTinyCache.LookupResult result = tinyCache.acquireRefCountedValue(offset);
+            BlockCacheValue<RefCountedMemorySegment> result = tinyCache.acquireRefCountedValue(offset);
             assertNotNull("Should get value for offset " + offset, result.value());
-            result.value().unpin();
+            result.unpin();
         }
 
         // Accessing same offsets again should still work (generation checks protect)
         for (long offset : offsets) {
-            BlockSlotTinyCache.LookupResult result = tinyCache.acquireRefCountedValue(offset);
+            BlockCacheValue<RefCountedMemorySegment> result = tinyCache.acquireRefCountedValue(offset);
             assertNotNull("Should get value for offset " + offset, result.value());
-            result.value().unpin();
+            result.unpin();
         }
     }
 
