@@ -47,7 +47,6 @@ import org.opensearch.index.store.kms_encryption_context.EncryptionContextResolv
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 import org.opensearch.index.store.pool.PoolBuilder;
 import org.opensearch.index.store.read_ahead.Worker;
-import org.opensearch.index.store.read_ahead.impl.QueuingWorker;
 import org.opensearch.plugins.IndexStorePlugin;
 
 /**

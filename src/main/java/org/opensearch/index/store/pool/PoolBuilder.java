@@ -293,11 +293,8 @@ public final class PoolBuilder {
 
         // Create shared read-ahead worker (node-wide, single queue)
         // Executor thread pool naturally limits concurrency - no need for separate maxRunners cap
-        Worker sharedReadaheadWorker = new QueuingWorker(
-            readAheadQueueSize,
-            readAheadExecutor,
-            blockCache
-        );
+        // BlockCache is passed per-request to support directory-specific loaders
+        Worker sharedReadaheadWorker = new QueuingWorker(readAheadQueueSize, readAheadExecutor);
         LOGGER.info("Created shared read-ahead worker: queueSize={} executorThreads={}", readAheadQueueSize, threads);
 
         // Start telemetry

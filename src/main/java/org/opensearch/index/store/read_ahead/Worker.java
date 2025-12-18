@@ -18,12 +18,19 @@ public interface Worker extends Closeable {
     /**
      * Schedule a prefetch request for blocks if not already in flight.
      *
+     * @param <T> the type of cached block values
+     * @param blockCache the directory-specific block cache to use for loading
      * @param path       file path to prefetch
      * @param offset     aligned block offset (in bytes)
      * @param blockCount number of blocks to prefetch
      * @return true if successfully scheduled or already in flight
      */
-    boolean schedule(Path path, long offset, long blockCount);
+    <T extends AutoCloseable> boolean schedule(
+        org.opensearch.index.store.block_cache.BlockCache<T> blockCache,
+        Path path,
+        long offset,
+        long blockCount
+    );
 
     /**
      * Checks if the worker is currently active and processing readahead requests.

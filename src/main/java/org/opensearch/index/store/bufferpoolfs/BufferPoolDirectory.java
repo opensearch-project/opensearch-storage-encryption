@@ -126,7 +126,7 @@ public class BufferPoolDirectory extends FSDirectory {
         // Calculate content length with OSEF validation
         long contentLength = calculateContentLengthWithValidation(file, rawFileSize);
 
-        ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker);
+        ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker, blockCache);
         ReadaheadContext readAheadContext = readAheadManager.register(file, contentLength);
         BlockSlotTinyCache pinRegistry = new BlockSlotTinyCache(blockCache, file, contentLength);
 

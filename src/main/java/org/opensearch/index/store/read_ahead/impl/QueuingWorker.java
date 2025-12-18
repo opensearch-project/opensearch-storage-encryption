@@ -20,8 +20,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
-import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.read_ahead.Worker;
 
 /**
@@ -40,6 +38,7 @@ public final class QueuingWorker implements Worker {
 
     /** Represents a queued readahead request. */
     private static final class Task {
+        final org.opensearch.index.store.block_cache.BlockCache<?> blockCache;
         final Path path;
         final long offset;     // byte offset
         final long blockCount; // number of blocks
@@ -47,7 +46,8 @@ public final class QueuingWorker implements Worker {
         long startNanos;
         long doneNanos;
 
-        Task(Path path, long offset, long blockCount) {
+        Task(org.opensearch.index.store.block_cache.BlockCache<?> blockCache, Path path, long offset, long blockCount) {
+            this.blockCache = blockCache;
             this.path = path;
             this.offset = offset;
             this.blockCount = blockCount;
@@ -79,7 +79,6 @@ public final class QueuingWorker implements Worker {
     private final int capacity;
     private final ExecutorService executor;
     private final Set<Task> inFlight;
-    private final BlockCache<RefCountedMemorySegment> blockCache;
 
     private static final int LARGE_WINDOW_THRESHOLD = 512;
     private static final int DUP_WARN_THRESHOLD = 10;
@@ -92,22 +91,26 @@ public final class QueuingWorker implements Worker {
     /**
      * Creates a readahead worker with a bounded queue.
      * Executor thread pool size naturally limits concurrency.
+     * BlockCache is passed per-request to support directory-specific loaders.
      *
      * @param capacity   maximum queue size
      * @param executor   shared executor service for running worker threads
-     * @param blockCache block cache for loading blocks
      */
-    public QueuingWorker(int capacity, ExecutorService executor, BlockCache<RefCountedMemorySegment> blockCache) {
+    public QueuingWorker(int capacity, ExecutorService executor) {
         this.queue = new LinkedBlockingDeque<>(capacity);
         this.capacity = capacity;
         this.executor = executor;
-        this.blockCache = blockCache;
         this.inFlight = ConcurrentHashMap.newKeySet();
         LOGGER.debug("Readahead worker initialized capacity={}", capacity);
     }
 
     @Override
-    public boolean schedule(Path path, long offset, long blockCount) {
+    public <T extends AutoCloseable> boolean schedule(
+        org.opensearch.index.store.block_cache.BlockCache<T> blockCache,
+        Path path,
+        long offset,
+        long blockCount
+    ) {
         if (closed) {
             LOGGER.debug("Attempted schedule on closed worker path={} off={} blocks={}", path, offset, blockCount);
             return false;
@@ -119,20 +122,25 @@ public final class QueuingWorker implements Worker {
             for (long i = 0; i < blockCount; i += MAX_BULK_SIZE) {
                 long chunkSize = Math.min(MAX_BULK_SIZE, blockCount - i);
                 long chunkOffset = offset + (i << CACHE_BLOCK_SIZE_POWER);
-                if (!scheduleChunk(path, chunkOffset, chunkSize)) {
+                if (!scheduleChunk(blockCache, path, chunkOffset, chunkSize)) {
                     allAccepted = false;
                 }
             }
             return allAccepted;
         }
 
-        return scheduleChunk(path, offset, blockCount);
+        return scheduleChunk(blockCache, path, offset, blockCount);
     }
 
     /**
      * Internal method to schedule a single chunk (not exceeding MAX_BULK_SIZE).
      */
-    private boolean scheduleChunk(Path path, long offset, long blockCount) {
+    private <T extends AutoCloseable> boolean scheduleChunk(
+        org.opensearch.index.store.block_cache.BlockCache<T> blockCache,
+        Path path,
+        long offset,
+        long blockCount
+    ) {
         final long blockStart = offset >>> CACHE_BLOCK_SIZE_POWER;
         final long blockEnd = blockStart + blockCount;
 
@@ -160,7 +168,7 @@ public final class QueuingWorker implements Worker {
             }
         }
 
-        final Task task = new Task(path, offset, blockCount);
+        final Task task = new Task(blockCache, path, offset, blockCount);
         if (!inFlight.add(task)) {
             LOGGER.trace("Task already in flight path={} off={} blocks={}", path, offset, blockCount);
             return true;
@@ -242,7 +250,7 @@ public final class QueuingWorker implements Worker {
                     );
             }
 
-            blockCache.loadForPrefetch(task.path, task.offset, task.blockCount);
+            task.blockCache.loadForPrefetch(task.path, task.offset, task.blockCount);
 
             task.doneNanos = System.nanoTime();
             inFlight.remove(task);

@@ -29,6 +29,7 @@ public class WindowedReadAheadContext implements ReadaheadContext {
     private final Path path;
     private final long lastFileSeg;
     private final Worker worker;
+    private final org.opensearch.index.store.block_cache.BlockCache<? extends AutoCloseable> blockCache;
     private final WindowedReadaheadPolicy policy;
     private final Runnable signalCallback;
 
@@ -61,9 +62,17 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         }
     }
 
-    private WindowedReadAheadContext(Path path, long fileLength, Worker worker, WindowedReadaheadPolicy policy, Runnable signalCallback) {
+    private WindowedReadAheadContext(
+        Path path,
+        long fileLength,
+        Worker worker,
+        org.opensearch.index.store.block_cache.BlockCache<? extends AutoCloseable> blockCache,
+        WindowedReadaheadPolicy policy,
+        Runnable signalCallback
+    ) {
         this.path = path;
         this.worker = worker;
+        this.blockCache = blockCache;
         this.policy = policy;
         this.signalCallback = signalCallback;
         this.lastFileSeg = Math.max(0L, (fileLength - 1) >>> CACHE_BLOCK_SIZE_POWER);
@@ -75,6 +84,7 @@ public class WindowedReadAheadContext implements ReadaheadContext {
      * @param path the file path for this context
      * @param fileLength the length of the file
      * @param worker the worker thread pool for scheduling readahead tasks
+     * @param blockCache the directory-specific block cache to use for prefetching
      * @param config the readahead configuration
      * @param signalCallback callback to invoke when readahead work is available
      * @return a new WindowedReadAheadContext instance
@@ -83,11 +93,12 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         Path path,
         long fileLength,
         Worker worker,
+        org.opensearch.index.store.block_cache.BlockCache<? extends AutoCloseable> blockCache,
         WindowedReadAheadConfig config,
         Runnable signalCallback
     ) {
         var policy = new WindowedReadaheadPolicy(path, config.initialWindow(), config.maxWindowSegments(), config.randomAccessThreshold());
-        return new WindowedReadAheadContext(path, fileLength, worker, policy, signalCallback);
+        return new WindowedReadAheadContext(path, fileLength, worker, blockCache, policy, signalCallback);
     }
 
     // hot path. keep it always optimized and fast
@@ -156,7 +167,14 @@ public class WindowedReadAheadContext implements ReadaheadContext {
             missCount = 0;
             missMaxBlock = -1;
             if (LOGGER.isDebugEnabled()) {
-                LOGGER.debug("RA_CONGESTION_SKIP path={} qsize={}/{} window={} - preemptively skipping", path, queueSize, queueCapacity, policy.currentWindow());
+                LOGGER
+                    .debug(
+                        "RA_CONGESTION_SKIP path={} qsize={}/{} window={} - preemptively skipping",
+                        path,
+                        queueSize,
+                        queueCapacity,
+                        policy.currentWindow()
+                    );
             }
             return;
         }
@@ -217,7 +235,7 @@ public class WindowedReadAheadContext implements ReadaheadContext {
             return false;
 
         final long anchorOffset = startSeg << CACHE_BLOCK_SIZE_POWER;
-        boolean accepted = worker.schedule(path, anchorOffset, blockCount);
+        boolean accepted = worker.schedule(blockCache, path, anchorOffset, blockCount);
 
         if (accepted) {
             lastScheduledEndBlock = endExclusive;
@@ -232,12 +250,13 @@ public class WindowedReadAheadContext implements ReadaheadContext {
             policy.onQueueSaturated();
 
             if (LOGGER.isDebugEnabled()) {
-                LOGGER.debug(
-                    "RA_THROTTLE path={} throttleSkip={} window={} - queue rejected, backing off and shrinking window",
-                    path,
-                    throttleSkipCount,
-                    policy.currentWindow()
-                );
+                LOGGER
+                    .debug(
+                        "RA_THROTTLE path={} throttleSkip={} window={} - queue rejected, backing off and shrinking window",
+                        path,
+                        throttleSkipCount,
+                        policy.currentWindow()
+                    );
             }
         }
 
