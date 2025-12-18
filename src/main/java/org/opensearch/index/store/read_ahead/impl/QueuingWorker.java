@@ -87,25 +87,23 @@ public final class QueuingWorker implements Worker {
 
     private final AtomicInteger duplicateCounter = new AtomicInteger();
     private final AtomicInteger activeRunners = new AtomicInteger(0);
-    private final int maxRunners;
     private volatile boolean closed = false;
 
     /**
-     * Creates a readahead worker with a bounded queue and limited parallel drainers.
+     * Creates a readahead worker with a bounded queue.
+     * Executor thread pool size naturally limits concurrency.
      *
      * @param capacity   maximum queue size
-     * @param maxRunners maximum concurrent drain threads
      * @param executor   shared executor service for running worker threads
      * @param blockCache block cache for loading blocks
      */
-    public QueuingWorker(int capacity, int maxRunners, ExecutorService executor, BlockCache<RefCountedMemorySegment> blockCache) {
+    public QueuingWorker(int capacity, ExecutorService executor, BlockCache<RefCountedMemorySegment> blockCache) {
         this.queue = new LinkedBlockingDeque<>(capacity);
         this.capacity = capacity;
         this.executor = executor;
         this.blockCache = blockCache;
         this.inFlight = ConcurrentHashMap.newKeySet();
-        this.maxRunners = Math.max(1, maxRunners);
-        LOGGER.debug("Readahead worker initialized capacity={} maxRunners={}", capacity, maxRunners);
+        LOGGER.debug("Readahead worker initialized capacity={}", capacity);
     }
 
     @Override
@@ -184,13 +182,9 @@ public final class QueuingWorker implements Worker {
             return false;
         }
 
-        // Start drainer if below concurrency cap
-        if (activeRunners.get() < maxRunners && activeRunners.incrementAndGet() <= maxRunners) {
-            executor.submit(this::drainLoop);
-        } else {
-            // if we raced over cap, undo increment
-            activeRunners.decrementAndGet();
-        }
+        // Start drainer - executor thread pool naturally limits concurrency
+        activeRunners.incrementAndGet();
+        executor.submit(this::drainLoop);
 
         if (LOGGER.isDebugEnabled()) {
             LOGGER
@@ -223,10 +217,10 @@ public final class QueuingWorker implements Worker {
             Thread.currentThread().interrupt();
         } finally {
             activeRunners.decrementAndGet();
-            if (!closed && !queue.isEmpty() && activeRunners.get() < maxRunners) {
-                if (activeRunners.incrementAndGet() <= maxRunners) {
-                    executor.submit(this::drainLoop);
-                }
+            // If queue still has work and we're not closed, submit another drainer
+            if (!closed && !queue.isEmpty()) {
+                activeRunners.incrementAndGet();
+                executor.submit(this::drainLoop);
             }
         }
     }
@@ -311,6 +305,16 @@ public final class QueuingWorker implements Worker {
     @Override
     public boolean isRunning() {
         return !closed;
+    }
+
+    @Override
+    public int getQueueSize() {
+        return queue.size();
+    }
+
+    @Override
+    public int getQueueCapacity() {
+        return capacity;
     }
 
     @Override

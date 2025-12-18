@@ -33,6 +33,20 @@ public interface Worker extends Closeable {
     boolean isRunning();
 
     /**
+     * Returns the current queue size (number of pending tasks).
+     *
+     * @return number of tasks in the queue
+     */
+    int getQueueSize();
+
+    /**
+     * Returns the queue capacity.
+     *
+     * @return maximum queue capacity
+     */
+    int getQueueCapacity();
+
+    /**
      * Cancel all pending requests for a specific file path.
      *
      * @param path file path whose pending readahead should be canceled

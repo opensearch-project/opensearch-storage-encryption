@@ -18,6 +18,8 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheBuilder;
+import org.opensearch.index.store.read_ahead.Worker;
+import org.opensearch.index.store.read_ahead.impl.QueuingWorker;
 
 /**
  * Builder for creating shared pool and cache resources with proper lifecycle management.
@@ -46,6 +48,7 @@ public final class PoolBuilder {
         private final BlockCache<RefCountedMemorySegment> blockCache;
         private final long maxCacheBlocks;
         private final int readAheadQueueSize;
+        private final Worker sharedReadaheadWorker;
         private final TelemetryThread telemetry;
         private final java.util.concurrent.ThreadPoolExecutor removalExecutor;
         private final ExecutorService readAheadExecutor;
@@ -55,6 +58,7 @@ public final class PoolBuilder {
             BlockCache<RefCountedMemorySegment> blockCache,
             long maxCacheBlocks,
             int readAheadQueueSize,
+            Worker sharedReadaheadWorker,
             TelemetryThread telemetry,
             java.util.concurrent.ThreadPoolExecutor removalExecutor,
             ExecutorService readAheadExecutor
@@ -63,6 +67,7 @@ public final class PoolBuilder {
             this.blockCache = blockCache;
             this.maxCacheBlocks = maxCacheBlocks;
             this.readAheadQueueSize = readAheadQueueSize;
+            this.sharedReadaheadWorker = sharedReadaheadWorker;
             this.telemetry = telemetry;
             this.removalExecutor = removalExecutor;
             this.readAheadExecutor = readAheadExecutor;
@@ -105,6 +110,16 @@ public final class PoolBuilder {
         }
 
         /**
+         * Returns the shared read-ahead worker.
+         * This worker is shared across all shards/directories with a single queue and executor pool.
+         *
+         * @return the shared read-ahead worker
+         */
+        public Worker getSharedReadaheadWorker() {
+            return sharedReadaheadWorker;
+        }
+
+        /**
          * Returns the shared read-ahead executor service.
          * This executor is shared across all per-shard workers for thread reuse while maintaining queue isolation.
          *
@@ -121,6 +136,13 @@ public final class PoolBuilder {
         public void close() {
             if (telemetry != null) {
                 telemetry.close();
+            }
+            if (sharedReadaheadWorker != null) {
+                try {
+                    sharedReadaheadWorker.close();
+                } catch (Exception e) {
+                    LOGGER.warn("Error closing shared readahead worker", e);
+                }
             }
             if (removalExecutor != null) {
                 removalExecutor.shutdown();
@@ -248,14 +270,18 @@ public final class PoolBuilder {
         LOGGER.info("Creating shared block cache with blocks={}", maxCacheBlocks);
 
         // Create shared read-ahead executor service
-        // Each per-shard worker will have its own queue but share these threads
+        // The node has ONE shared queue and executor pool for all shards
 
-        // Scale with queue size, but respect CPU bounds
-        int queueBasedThreads = readAheadQueueSize / 128;
+        // Calculate threads based on queue drain time:
+        // Target: drain full queue in ~1 second for responsiveness
+        // Assumption: ~4ms per block load (batched I/O)
+        // Formula: threads = (queueSize × 4ms) / 1000ms
+        // Also respect CPU bounds to avoid oversubscription
+        int queueBasedThreads = (readAheadQueueSize * 4) / 1000;
         int cpuBasedThreads = Runtime.getRuntime().availableProcessors() / 4;
 
-        // Take minimum of queue-based and CPU-based, but ensure at least 8
-        int threads = Math.max(8, Math.min(queueBasedThreads, cpuBasedThreads));
+        // Take minimum of queue-based and CPU-based, bounded [8, 64]
+        int threads = Math.max(8, Math.min(64, Math.min(queueBasedThreads, cpuBasedThreads)));
 
         AtomicInteger threadId = new AtomicInteger();
         ExecutorService readAheadExecutor = Executors.newFixedThreadPool(threads, r -> {
@@ -265,6 +291,15 @@ public final class PoolBuilder {
         });
         LOGGER.info("Creating shared read-ahead executor with threads={}", threads);
 
+        // Create shared read-ahead worker (node-wide, single queue)
+        // Executor thread pool naturally limits concurrency - no need for separate maxRunners cap
+        Worker sharedReadaheadWorker = new QueuingWorker(
+            readAheadQueueSize,
+            readAheadExecutor,
+            blockCache
+        );
+        LOGGER.info("Created shared read-ahead worker: queueSize={} executorThreads={}", readAheadQueueSize, threads);
+
         // Start telemetry
         TelemetryThread telemetry = new TelemetryThread(segmentPool, blockCache);
 
@@ -273,6 +308,7 @@ public final class PoolBuilder {
             blockCache,
             maxCacheBlocks,
             readAheadQueueSize,
+            sharedReadaheadWorker,
             telemetry,
             removalExecutor,
             readAheadExecutor

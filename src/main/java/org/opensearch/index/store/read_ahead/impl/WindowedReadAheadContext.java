@@ -39,7 +39,6 @@ public class WindowedReadAheadContext implements ReadaheadContext {
     private static final int MISS_BATCH = 4;                     // batch N misses before triggering
     private static final long MIN_SIGNAL_INTERVAL_NS = 300_000L; // 300µs min signal interval
     private static final long MERGE_SPIN_NS = 60_000L;           // 60µs worker spin to coalesce
-    private static final int MAX_REJECTIONS_BEFORE_PAUSE = 4;    // pause read-ahead after N consecutive queue rejections
 
     private volatile long desiredEndBlock = 0;
     private volatile long lastScheduledEndBlock = 0;
@@ -47,7 +46,7 @@ public class WindowedReadAheadContext implements ReadaheadContext {
     private int consecutiveHits = 0;
     private int missCount = 0;
     private long missMaxBlock = -1;
-    private int consecutiveRejections = 0;
+    private int throttleSkipCount = 0;  // AIMD: skip next N schedule attempts after rejection
 
     private volatile long lastSignalNanos = 0;
     private volatile boolean signalPending = false;
@@ -140,6 +139,28 @@ public class WindowedReadAheadContext implements ReadaheadContext {
 
     /** Sequential miss: extend readahead window and schedule */
     private void handleSequentialMiss() {
+        // AIMD throttling: skip scheduling if we're backing off from queue rejections
+        if (throttleSkipCount > 0) {
+            throttleSkipCount--;
+            missCount = 0;
+            missMaxBlock = -1;
+            return;
+        }
+
+        // Proactive congestion check: if queue is >75% full, skip scheduling and shrink window
+        int queueSize = worker.getQueueSize();
+        int queueCapacity = worker.getQueueCapacity();
+        if (queueSize > (queueCapacity * 3) / 4) {
+            // Queue is congested - shrink window and skip this scheduling attempt
+            policy.onQueuePressureMedium();
+            missCount = 0;
+            missMaxBlock = -1;
+            if (LOGGER.isDebugEnabled()) {
+                LOGGER.debug("RA_CONGESTION_SKIP path={} qsize={}/{} window={} - preemptively skipping", path, queueSize, queueCapacity, policy.currentWindow());
+            }
+            return;
+        }
+
         final long target = Math.min(missMaxBlock + policy.leadBlocks(), lastFileSeg + 1);
         extendDesiredTo(target);
         missCount = 0;
@@ -200,27 +221,30 @@ public class WindowedReadAheadContext implements ReadaheadContext {
 
         if (accepted) {
             lastScheduledEndBlock = endExclusive;
-            consecutiveRejections = 0; // Reset on successful schedule
+            // AIMD: Additive decrease on success - reduce throttle gradually
+            if (throttleSkipCount > 0) {
+                throttleSkipCount = Math.max(0, throttleSkipCount - 1);
+            }
         } else {
-            // Queue is full - back off read-ahead to avoid wasting CPU cycles
-            consecutiveRejections++;
-            if (consecutiveRejections >= MAX_REJECTIONS_BEFORE_PAUSE) {
-                // Queue is saturated - pause read-ahead temporarily by:
-                // 1. Resetting miss tracking to avoid immediate re-trigger
-                // 2. Increasing hit threshold to reduce scheduling attempts
-                missCount = 0;
-                hitNopThreshold = Math.min(HIT_NOP_THRESHOLD_MAX, hitNopThreshold << 1);
+            // AIMD: Multiplicative increase on rejection - exponentially back off
+            // Also shrink window like Linux kernel does under congestion
+            throttleSkipCount = Math.min(64, Math.max(4, throttleSkipCount * 2));
+            policy.onQueueSaturated();
 
-                if (LOGGER.isDebugEnabled()) {
-                    LOGGER.debug("RA_PAUSED path={} rejections={} - queue saturated, backing off", path, consecutiveRejections);
-                }
+            if (LOGGER.isDebugEnabled()) {
+                LOGGER.debug(
+                    "RA_THROTTLE path={} throttleSkip={} window={} - queue rejected, backing off and shrinking window",
+                    path,
+                    throttleSkipCount,
+                    policy.currentWindow()
+                );
             }
         }
 
         if (LOGGER.isDebugEnabled()) {
             LOGGER
                 .debug(
-                    "RA_TRIGGER path={} startSeg={} endExclusive={} blocks={} accepted={} desired={} watermark={} rejections={}",
+                    "RA_TRIGGER path={} startSeg={} endExclusive={} blocks={} accepted={} desired={} watermark={} throttleSkip={}",
                     path,
                     startSeg,
                     endExclusive,
@@ -228,7 +252,7 @@ public class WindowedReadAheadContext implements ReadaheadContext {
                     accepted,
                     desired,
                     lastScheduledEndBlock,
-                    consecutiveRejections
+                    throttleSkipCount
                 );
         }
         return accepted;

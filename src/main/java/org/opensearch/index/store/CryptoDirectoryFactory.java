@@ -495,13 +495,9 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             resources.getMaxCacheBlocks()
         );
 
-        // Create per-shard worker with isolated queue but shared executor threads
-        // Calculate maxRunners based on queue drain time: we want to drain the full queue
-        // in ~1 second for responsiveness. Assuming ~4ms per block load (batched), we derive:
-        // maxRunners = (queueSize × 4ms) / 1000ms.
-        int queueSize = resources.getReadAheadQueueSize();
-        int maxRunners = Math.max(2, (queueSize * 4) / 1000); // minimum 2 for constant work.
-        Worker readaheadWorker = new QueuingWorker(queueSize, maxRunners, poolResources.getReadAheadExecutor(), directoryCache);
+        // Use the shared node-wide read-ahead worker
+        // All shards/directories share a single queue and executor pool for better resource utilization
+        Worker readaheadWorker = resources.getSharedReadaheadWorker();
 
         return new BufferPoolDirectory(
             location,
