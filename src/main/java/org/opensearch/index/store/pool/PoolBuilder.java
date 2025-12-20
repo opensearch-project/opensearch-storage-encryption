@@ -20,6 +20,7 @@ import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheBuilder;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.index.store.read_ahead.impl.QueuingWorker;
+import org.opensearch.index.store.read_ahead.impl.ReadAheadSizingPolicy;
 
 /**
  * Builder for creating shared pool and cache resources with proper lifecycle management.
@@ -259,8 +260,9 @@ public final class PoolBuilder {
         LOGGER.info("Warmed up {} blocks ({}% of {} cache blocks)", warmupBlocks, warmupPercentage * 100, maxCacheBlocks);
 
         // Calculate read-ahead queue size based on cache capacity
-        int readAheadQueueSize = PoolSizeCalculator.calculateReadAheadQueueSize(maxCacheBlocks);
-        LOGGER.info("Calculated read-ahead queue size={}", readAheadQueueSize, maxCacheBlocks);
+        // Pool constraint not needed since cache evictions automatically release pool memory
+        int readAheadQueueSize = ReadAheadSizingPolicy.calculateQueueSize(maxCacheBlocks);
+        LOGGER.info("Calculated read-ahead queue size={} (cache={} blocks)", readAheadQueueSize, maxCacheBlocks);
 
         // Initialize shared cache with removal listener and get its executor
         BlockCacheBuilder.CacheWithExecutor<RefCountedMemorySegment, RefCountedMemorySegment> cacheWithExecutor = BlockCacheBuilder
@@ -269,19 +271,8 @@ public final class PoolBuilder {
         java.util.concurrent.ThreadPoolExecutor removalExecutor = cacheWithExecutor.getExecutor();
         LOGGER.info("Creating shared block cache with blocks={}", maxCacheBlocks);
 
-        // Create shared read-ahead executor service
-        // The node has ONE shared queue and executor pool for all shards
-
-        // Calculate threads based on queue drain time:
-        // Target: drain full queue in ~1 second for responsiveness
-        // Assumption: ~4ms per block load (batched I/O)
-        // Formula: threads = (queueSize × 4ms) / 1000ms
-        // Also respect CPU bounds to avoid oversubscription
-        int queueBasedThreads = (readAheadQueueSize * 4) / 1000;
-        int cpuBasedThreads = Runtime.getRuntime().availableProcessors() / 4;
-
-        // Take minimum of queue-based and CPU-based, bounded [8, 64]
-        int threads = Math.max(8, Math.min(64, Math.min(queueBasedThreads, cpuBasedThreads)));
+        // Calculate worker threads using principled drain-time approach
+        int threads = ReadAheadSizingPolicy.calculateWorkerThreads(readAheadQueueSize);
 
         AtomicInteger threadId = new AtomicInteger();
         ExecutorService readAheadExecutor = Executors.newFixedThreadPool(threads, r -> {
@@ -289,7 +280,7 @@ public final class PoolBuilder {
             t.setDaemon(true);
             return t;
         });
-        LOGGER.info("Creating shared read-ahead executor with threads={}", threads);
+        LOGGER.info("Creating shared read-ahead executor with threads={} (queue={})", threads, readAheadQueueSize);
 
         // Create shared read-ahead worker (node-wide, single queue)
         // Executor thread pool naturally limits concurrency - no need for separate maxRunners cap

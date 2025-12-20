@@ -9,7 +9,6 @@ import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.nio.file.Path;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -18,10 +17,16 @@ import org.opensearch.index.store.read_ahead.ReadaheadPolicy;
 import org.opensearch.index.store.read_ahead.Worker;
 
 /**
- * Handles cache hits/misses, batches readahead requests, rate-limits signals.
+ * Best-effort readahead context. The priciples are very much stolen ideas from 
+ * kernel and rocks-db.
  *
- * Hot path: no atomics, best-effort counters.
- * Delegates pattern tracking to Policy, manages I/O scheduling.
+ * Principles:
+ *  - onAccess() must be extremely cheap (no nanoTime, no queue introspection, no CAS loops for max updates, no logging)
+ *  - miss-driven: if there are no cache misses, we do essentially nothing
+ *  - bail early if scheduling is not possible (throttle / pause) without building backlog
+ *  - skip-and-forget: if scheduling is rejected, drop pending speculative work and move forward
+ *  - bounded submissions: never submit huge bursts
+ *  - idempotent wakeups: never storm the worker callback from search threads
  */
 public class WindowedReadAheadContext implements ReadaheadContext {
     private static final Logger LOGGER = LogManager.getLogger(WindowedReadAheadContext.class);
@@ -33,30 +38,68 @@ public class WindowedReadAheadContext implements ReadaheadContext {
     private final WindowedReadaheadPolicy policy;
     private final Runnable signalCallback;
 
-    private static final int HIT_NOP_THRESHOLD_BASE = 8;
-    private static final int HIT_NOP_THRESHOLD_MAX = 512;
-    private int hitNopThreshold = HIT_NOP_THRESHOLD_BASE;
+    /**
+     * Miss-driven batching: only "act" once per N misses.
+     * Larger values reduce onAccess overhead at the cost of slower readahead ramp-up.
+     */
+    private static final int MISS_BATCH = 8;
 
-    private static final int MISS_BATCH = 4;                     // batch N misses before triggering
-    private static final long MIN_SIGNAL_INTERVAL_NS = 300_000L; // 300µs min signal interval
-    private static final long MERGE_SPIN_NS = 60_000L;           // 60µs worker spin to coalesce
+    /**
+     * Time-free pause: if we see a long streak of consecutive misses, assume cache is cold/churning or access is random-ish.
+     * Pause briefly to avoid speculative churn.
+     */
+    private static final int MISS_STREAK_PAUSE_THRESHOLD = 64;
+    private static final int MISS_STREAK_PAUSE_SKIPS = 8;
+
+    /**
+     * Never burst. Even if desiredEndBlock gets far ahead, cap each worker submission.
+     */
+    private static final long MAX_BLOCKS_PER_SUBMISSION = 64;
+
+    // translates to 75% of queue capacity checks.
+    private static final int QUEUE_PRESSURE_NUM = 3;
+    private static final int QUEUE_PRESSURE_DEN = 4;
+
+    // RA_STATS: log only from worker thread, sampled.
+    private static final int STATS_EVERY_N_PROCESS_CALLS = 1024;
 
     private volatile long desiredEndBlock = 0;
     private volatile long lastScheduledEndBlock = 0;
 
-    private int consecutiveHits = 0;
     private int missCount = 0;
-    private long missMaxBlock = -1;
-    private int throttleSkipCount = 0;  // AIMD: skip next N schedule attempts after rejection
 
-    private volatile long lastSignalNanos = 0;
-    private volatile boolean signalPending = false;
-    private final AtomicBoolean closed = new AtomicBoolean(false);
+    // Concurrency fix: volatile long avoids potential tearing and improves visibility.
+    private volatile long missMaxBlock = -1;
 
-    private static final VarHandle DESIRED_END_VH;
+    private int consecutiveMisses = 0;
+
+    private int throttleSkipCount = 0;
+
+    private int wakeupFlag = 0;
+
+    private volatile boolean isClosed = false;
+
+    // Best-effort stats (updated from multiple threads; correctness not required)
+    private long accessMisses = 0;
+    private long pauseEvents = 0;
+    private long throttleSkips = 0;
+    private long wakeups = 0;
+
+    private long processCalls = 0;
+    private long pressureSkips = 0;
+    private long scheduleAttempts = 0;
+    private long scheduleAccepted = 0;
+    private long scheduleRejected = 0;
+    private long blocksAttempted = 0;
+    private long blocksAccepted = 0;
+
+    private static final VarHandle THROTTLE_SKIP_VH;
+    private static final VarHandle WAKEUP_VH;
+
     static {
         try {
-            DESIRED_END_VH = MethodHandles.lookup().findVarHandle(WindowedReadAheadContext.class, "desiredEndBlock", long.class);
+            THROTTLE_SKIP_VH = MethodHandles.lookup().findVarHandle(WindowedReadAheadContext.class, "throttleSkipCount", int.class);
+            WAKEUP_VH = MethodHandles.lookup().findVarHandle(WindowedReadAheadContext.class, "wakeupFlag", int.class);
         } catch (ReflectiveOperationException e) {
             throw new ExceptionInInitializerError(e);
         }
@@ -78,17 +121,6 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         this.lastFileSeg = Math.max(0L, (fileLength - 1) >>> CACHE_BLOCK_SIZE_POWER);
     }
 
-    /**
-     * Factory method to create a new WindowedReadAheadContext.
-     *
-     * @param path the file path for this context
-     * @param fileLength the length of the file
-     * @param worker the worker thread pool for scheduling readahead tasks
-     * @param blockCache the directory-specific block cache to use for prefetching
-     * @param config the readahead configuration
-     * @param signalCallback callback to invoke when readahead work is available
-     * @return a new WindowedReadAheadContext instance
-     */
     public static WindowedReadAheadContext build(
         Path path,
         long fileLength,
@@ -101,216 +133,195 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         return new WindowedReadAheadContext(path, fileLength, worker, blockCache, policy, signalCallback);
     }
 
-    // hot path. keep it always optimized and fast
+    /**
+     * Hot path. has to be super cheap!
+     *
+     */
     @Override
     public void onAccess(long blockOffset, boolean wasHit) {
-        final long currBlock = blockOffset >>> CACHE_BLOCK_SIZE_POWER;
+        if (isClosed) {
+            return;
+        }
 
         if (wasHit) {
-            handleCacheHit(currBlock);
+            consecutiveMisses = 0;
             return;
         }
-        handleCacheMiss(currBlock);
-    }
 
-    private void handleCacheHit(long currBlock) {
-        if (++consecutiveHits < hitNopThreshold)
+        accessMisses++;
+
+        final long currBlock = blockOffset >>> CACHE_BLOCK_SIZE_POWER;
+
+        if (++consecutiveMisses >= MISS_STREAK_PAUSE_THRESHOLD) {
+            pauseEvents++;
+
+            throttleSetAtLeast(MISS_STREAK_PAUSE_SKIPS);
+            desiredEndBlock = lastScheduledEndBlock;
+
+            consecutiveMisses = 0;
+            missCount = 0;
+            missMaxBlock = -1;
             return;
+        }
 
-        guardedExtend(currBlock);
-
-        // exponentially back off hit window to reduce wakeups
-        if (hitNopThreshold < HIT_NOP_THRESHOLD_MAX)
-            hitNopThreshold <<= 1;
-
-        consecutiveHits = 0;
-    }
-
-    private void handleCacheMiss(long currBlock) {
-        // Drain any pending signal from cache hits (off hot path)
-        drainSignalIfPending();
-
-        consecutiveHits = 0;
-        hitNopThreshold = HIT_NOP_THRESHOLD_BASE;
-
-        missCount++;
-        if (currBlock > missMaxBlock)
+        if (++missCount == 1) {
             missMaxBlock = currBlock;
-
-        final int window = Math.max(1, policy.currentWindow());
-        final boolean enoughMisses = missCount >= MISS_BATCH;
-        final boolean farAhead = (missMaxBlock - lastScheduledEndBlock) >= Math.max(1, window / 4);
-
-        if (enoughMisses || farAhead) {
-            handleSequentialMiss();
-        } else if (currBlock < lastScheduledEndBlock - window) {
-            handleRandomMiss();
+        } else if (currBlock > missMaxBlock) {
+            missMaxBlock = currBlock;
         }
-    }
 
-    /** Sequential miss: extend readahead window and schedule */
-    private void handleSequentialMiss() {
-        // AIMD throttling: skip scheduling if we're backing off from queue rejections
-        if (throttleSkipCount > 0) {
-            throttleSkipCount--;
-            missCount = 0;
-            missMaxBlock = -1;
+        if (missCount < MISS_BATCH) {
             return;
         }
 
-        // Proactive congestion check: if queue is >75% full, skip scheduling and shrink window
-        int queueSize = worker.getQueueSize();
-        int queueCapacity = worker.getQueueCapacity();
-        if (queueSize > (queueCapacity * 3) / 4) {
-            // Queue is congested - shrink window and skip this scheduling attempt
-            policy.onQueuePressureMedium();
-            missCount = 0;
-            missMaxBlock = -1;
-            if (LOGGER.isDebugEnabled()) {
-                LOGGER
-                    .debug(
-                        "RA_CONGESTION_SKIP path={} qsize={}/{} window={} - preemptively skipping",
-                        path,
-                        queueSize,
-                        queueCapacity,
-                        policy.currentWindow()
-                    );
-            }
-            return;
-        }
-
-        final long target = Math.min(missMaxBlock + policy.leadBlocks(), lastFileSeg + 1);
-        extendDesiredTo(target);
         missCount = 0;
+        final long maxBlock = missMaxBlock;
         missMaxBlock = -1;
-        maybeSignal();
-        // Process immediately on miss (off hot path)
-        drainSignalIfPending();
-    }
 
-    /** Random or backward miss: cancel pending readahead */
-    private void handleRandomMiss() {
-        desiredEndBlock = lastScheduledEndBlock;
-        missCount = 0;
-        missMaxBlock = -1;
-    }
-
-    /** Extend readahead if we are close to scheduled tail */
-    private void guardedExtend(long currBlock) {
-        final long scheduledEnd = lastScheduledEndBlock;
-        if (scheduledEnd <= 0)
+        if (throttleTryDecrement()) {
+            throttleSkips++;
+            desiredEndBlock = lastScheduledEndBlock;
             return;
-        final long guardStart = Math.max(0, scheduledEnd - policy.leadBlocks());
-        if (currBlock >= guardStart && currBlock < scheduledEnd) {
-            final long newEnd = Math.min(currBlock + policy.leadBlocks(), lastFileSeg + 1);
-            extendDesiredTo(newEnd);
-            maybeSignal();
         }
+
+        // Extend desired tail (best-effort monotonic volatile write; no CAS loop).
+        final long target = Math.min(maxBlock + policy.leadBlocks(), lastFileSeg + 1);
+        if (target > desiredEndBlock) {
+            desiredEndBlock = target;
+        }
+
+        // Wake the worker once (idempotent). The callback must be cheap.
+        maybeWakeWorkerOnce();
     }
 
     @Override
     public boolean processQueue() {
-        if (closed.get())
+        if (isClosed) {
             return false;
-
-        long desired = desiredEndBlock;
-        final long scheduled = lastScheduledEndBlock;
-        if (desired <= scheduled)
-            return false;
-
-        // brief spin to absorb recent updates
-        final long spinUntil = System.nanoTime() + MERGE_SPIN_NS;
-        while (System.nanoTime() < spinUntil) {
-            long d2 = desiredEndBlock;
-            if (d2 <= desired)
-                break;
-            desired = d2;
-            Thread.onSpinWait();
         }
 
-        final long startSeg = scheduled;
-        final long endExclusive = Math.min(desired, lastFileSeg + 1);
-        final long blockCount = endExclusive - startSeg;
-        if (blockCount < 1)
-            return false;
+        processCalls++;
 
-        final long anchorOffset = startSeg << CACHE_BLOCK_SIZE_POWER;
-        boolean accepted = worker.schedule(blockCache, path, anchorOffset, blockCount);
+        final long scheduled = lastScheduledEndBlock;
+        final long desired = desiredEndBlock;
+
+        if (desired <= scheduled) {
+            WAKEUP_VH.setRelease(this, 0);
+            maybeLogStats();
+            return false;
+        }
+
+        final int cap = worker.getQueueCapacity();
+        if (cap > 0) {
+            final int q = worker.getQueueSize();
+            if (q > (cap * QUEUE_PRESSURE_NUM) / QUEUE_PRESSURE_DEN) {
+                pressureSkips++;
+
+                policy.onQueuePressureMedium();
+                desiredEndBlock = lastScheduledEndBlock;
+                throttleSetAtLeast(1);
+
+                WAKEUP_VH.setRelease(this, 0);
+                maybeLogStats();
+                return false;
+            }
+        }
+
+        final long endExclusiveRaw = Math.min(desired, lastFileSeg + 1);
+        final long endExclusive = Math.min(endExclusiveRaw, scheduled + MAX_BLOCKS_PER_SUBMISSION);
+
+        final long blockCount = endExclusive - scheduled;
+        if (blockCount <= 0) {
+            WAKEUP_VH.setRelease(this, 0);
+            maybeLogStats();
+            return false;
+        }
+
+        scheduleAttempts++;
+        blocksAttempted += blockCount;
+
+        final long anchorOffset = scheduled << CACHE_BLOCK_SIZE_POWER;
+        final boolean accepted = worker.schedule(blockCache, path, anchorOffset, blockCount);
 
         if (accepted) {
-            lastScheduledEndBlock = endExclusive;
-            // AIMD: Additive decrease on success - reduce throttle gradually
-            if (throttleSkipCount > 0) {
-                throttleSkipCount = Math.max(0, throttleSkipCount - 1);
-            }
-        } else {
-            // AIMD: Multiplicative increase on rejection - exponentially back off
-            // Also shrink window like Linux kernel does under congestion
-            throttleSkipCount = Math.min(64, Math.max(4, throttleSkipCount * 2));
-            policy.onQueueSaturated();
+            scheduleAccepted++;
+            blocksAccepted += blockCount;
 
-            if (LOGGER.isDebugEnabled()) {
-                LOGGER
-                    .debug(
-                        "RA_THROTTLE path={} throttleSkip={} window={} - queue rejected, backing off and shrinking window",
-                        path,
-                        throttleSkipCount,
-                        policy.currentWindow()
-                    );
-            }
+            lastScheduledEndBlock = endExclusive;
+            throttleDecreaseOnSuccess();
+
+            WAKEUP_VH.setRelease(this, 0);
+            maybeLogStats();
+            return true;
         }
+
+        scheduleRejected++;
+
+        desiredEndBlock = lastScheduledEndBlock;
+        throttleIncreaseOnReject();
+        policy.onQueueSaturated();
 
         if (LOGGER.isDebugEnabled()) {
             LOGGER
                 .debug(
-                    "RA_TRIGGER path={} startSeg={} endExclusive={} blocks={} accepted={} desired={} watermark={} throttleSkip={}",
+                    "RA_REJECT path={} blocks={} window={} lead={} throttleSkip={}",
                     path,
-                    startSeg,
-                    endExclusive,
                     blockCount,
-                    accepted,
-                    desired,
-                    lastScheduledEndBlock,
-                    throttleSkipCount
+                    policy.currentWindow(),
+                    policy.leadBlocks(),
+                    throttleGet()
                 );
         }
-        return accepted;
+
+        WAKEUP_VH.setRelease(this, 0);
+        maybeLogStats();
+        return false;
     }
 
-    private void extendDesiredTo(long newEndExclusive) {
-        long prev;
-        do {
-            prev = desiredEndBlock;
-            if (newEndExclusive <= prev)
-                return;
-        } while (!DESIRED_END_VH.weakCompareAndSetRelease(this, prev, newEndExclusive));
-    }
-
-    private void maybeSignal() {
-        final long delta = desiredEndBlock - lastScheduledEndBlock;
-        if (delta <= 0)
+    private void maybeLogStats() {
+        if (LOGGER.isInfoEnabled() == false) {
             return;
-
-        final int w = Math.max(1, policy.currentWindow());
-        final int minBatch = Math.max(policy.initialWindow(), Math.max(policy.leadBlocks(), w / 2));
-        if (delta < minBatch)
-            return;
-
-        final long now = System.nanoTime();
-        if (now - lastSignalNanos < MIN_SIGNAL_INTERVAL_NS)
-            return;
-
-        lastSignalNanos = now;
-
-        // Set flag instead of inline processing to avoid hot path latency
-        signalPending = true;
-    }
-
-    private void drainSignalIfPending() {
-        if (signalPending && signalCallback != null) {
-            signalPending = false;
-            signalCallback.run();
         }
+        // Only from worker thread, sampled.
+        if ((processCalls % STATS_EVERY_N_PROCESS_CALLS) != 0) {
+            return;
+        }
+
+        int q = -1;
+        int cap = -1;
+        try {
+            cap = worker.getQueueCapacity();
+            q = worker.getQueueSize();
+        } catch (Exception ignored) {
+            // keep it safe
+        }
+
+        LOGGER
+            .info(
+                "RA_STATS path={} missAccess={} desired={} scheduledTail={} queuedDelta={} window={} lead={} "
+                    + "pause={} throttleSkips={} wakeups={} "
+                    + "processCalls={} pressureSkips={} schedule(attempt={}, ok={}, reject={}) blocks(attempted={}, ok={}) throttleSkip={} q={}/{}",
+                path,
+                accessMisses,
+                desiredEndBlock,
+                lastScheduledEndBlock,
+                (desiredEndBlock - lastScheduledEndBlock),
+                policy.currentWindow(),
+                policy.leadBlocks(),
+                pauseEvents,
+                throttleSkips,
+                wakeups,
+                processCalls,
+                pressureSkips,
+                scheduleAttempts,
+                scheduleAccepted,
+                scheduleRejected,
+                blocksAttempted,
+                blocksAccepted,
+                throttleGet(),
+                q,
+                cap
+            );
     }
 
     @Override
@@ -325,9 +336,16 @@ public class WindowedReadAheadContext implements ReadaheadContext {
 
     @Override
     public void triggerReadahead(long fileOffset) {
+        if (isClosed) {
+            return;
+        }
+
         final long start = fileOffset >>> CACHE_BLOCK_SIZE_POWER;
-        extendDesiredTo(Math.min(start + policy.currentWindow(), lastFileSeg + 1));
-        maybeSignal();
+        final long target = Math.min(start + policy.currentWindow(), lastFileSeg + 1);
+        if (target > desiredEndBlock) {
+            desiredEndBlock = target;
+        }
+        maybeWakeWorkerOnce();
     }
 
     @Override
@@ -335,23 +353,88 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         desiredEndBlock = lastScheduledEndBlock;
         missCount = 0;
         missMaxBlock = -1;
-        consecutiveHits = 0;
+        consecutiveMisses = 0;
     }
 
     @Override
     public void cancel() {
-        if (worker != null)
+        if (worker != null) {
             worker.cancel(path);
+        }
     }
 
     @Override
     public boolean isReadAheadEnabled() {
-        return !closed.get();
+        return !isClosed;
     }
 
     @Override
     public void close() {
-        if (closed.compareAndSet(false, true))
-            cancel();
+        if (isClosed) {
+            return;
+        }
+        isClosed = true;
+        cancel();
+    }
+
+    // -------------------------------
+    // Wakeup (idempotent)
+    // -------------------------------
+
+    private void maybeWakeWorkerOnce() {
+        if (signalCallback == null) {
+            return;
+        }
+        if ((int) WAKEUP_VH.compareAndExchange(this, 0, 1) == 0) {
+            wakeups++;
+            signalCallback.run();
+        }
+    }
+
+    // -------------------------------
+    // Throttle helpers (atomic-ish)
+    // -------------------------------
+
+    private int throttleGet() {
+        return (int) THROTTLE_SKIP_VH.getVolatile(this);
+    }
+
+    private boolean throttleTryDecrement() {
+        int prev;
+        do {
+            prev = (int) THROTTLE_SKIP_VH.getVolatile(this);
+            if (prev <= 0) {
+                return false;
+            }
+        } while (!THROTTLE_SKIP_VH.compareAndSet(this, prev, prev - 1));
+        return true;
+    }
+
+    private void throttleDecreaseOnSuccess() {
+        int prev;
+        do {
+            prev = (int) THROTTLE_SKIP_VH.getVolatile(this);
+            if (prev <= 0) {
+                return;
+            }
+        } while (!THROTTLE_SKIP_VH.compareAndSet(this, prev, prev - 1));
+    }
+
+    private void throttleIncreaseOnReject() {
+        int prev, next;
+        do {
+            prev = (int) THROTTLE_SKIP_VH.getVolatile(this);
+            next = Math.min(64, Math.max(4, prev == 0 ? 4 : prev * 2));
+        } while (!THROTTLE_SKIP_VH.compareAndSet(this, prev, next));
+    }
+
+    private void throttleSetAtLeast(int minSkips) {
+        int prev;
+        do {
+            prev = (int) THROTTLE_SKIP_VH.getVolatile(this);
+            if (prev >= minSkips) {
+                return;
+            }
+        } while (!THROTTLE_SKIP_VH.compareAndSet(this, prev, minSkips));
     }
 }
