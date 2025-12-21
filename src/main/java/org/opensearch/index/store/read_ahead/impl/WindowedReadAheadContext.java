@@ -4,13 +4,14 @@
  */
 package org.opensearch.index.store.read_ahead.impl;
 
+import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE_POWER;
+
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.nio.file.Path;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE_POWER;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadPolicy;
 import org.opensearch.index.store.read_ahead.Worker;
@@ -21,12 +22,16 @@ import org.opensearch.index.store.read_ahead.Worker;
  * Principles:
  *  - onAccess() must be extremely cheap (no nanoTime, no queue introspection, no CAS loops for max updates, no logging)
  *  - miss-driven: if there are no cache misses, we do essentially nothing
- *  - bail early if scheduling is not possible (throttle / pause) without building backlog
+ *  - bail early if scheduling is not possible (paused / pressure) without building backlog
  *  - skip-and-forget: if scheduling is rejected, drop pending speculative work and move forward
  *  - bounded submissions: never submit huge bursts
  *  - idempotent wakeups: never storm the worker callback from search threads
+ *
+ * Key idea:
+ *  - batching should be based on "growth since last wake" (not growth since last scheduled),
+ *    so we keep making progress whenever the worker gets an opportunity to run.
  */
-public class WindowedReadAheadContext implements ReadaheadContext {
+public final class WindowedReadAheadContext implements ReadaheadContext {
     private static final Logger LOGGER = LogManager.getLogger(WindowedReadAheadContext.class);
 
     private final Path path;
@@ -36,69 +41,59 @@ public class WindowedReadAheadContext implements ReadaheadContext {
     private final WindowedReadaheadPolicy policy;
     private final Runnable signalCallback;
 
-    private static final int MISS_BATCH = 8;
-
-    private static final int MISS_STREAK_PAUSE_THRESHOLD = 64;
-    private static final int MISS_STREAK_PAUSE_SKIPS = 8;
-
+    // Bound per processQueue() call.
     private static final long MAX_BLOCKS_PER_SUBMISSION = 64;
 
-    // 75% of queue capacity checks.
+    // 75% of queue capacity checks (per-context guard to avoid building backlog).
     private static final int QUEUE_PRESSURE_NUM = 3;
     private static final int QUEUE_PRESSURE_DEN = 4;
 
-    // RA_STATS: log only from worker thread, sampled.
-    private static final int STATS_EVERY_N_PROCESS_CALLS = 1024;
-
-    /**
-     * Wake threshold (in blocks): don't wake the worker unless we have accumulated
-     * a meaningful amount of queuedDelta. This reduces wakeups/processQueue calls
-     * that don't lead to any scheduling.
-     *
-     * Keep it time-free and cheap. We compute it in-line using leadBlocks().
-     */
-    private static long wakeMinDeltaBlocks(int leadBlocks) {
-        // Enough to amortize wakeups but still responsive.
-        // leadBlocks is often small (e.g., 1..8), so bound by MAX_BLOCKS_PER_SUBMISSION.
-        return Math.min(MAX_BLOCKS_PER_SUBMISSION, Math.max(8, leadBlocks * 2L));
-    }
-
+    // Desired tail (exclusive, in blocks), and scheduled tail (exclusive, in blocks).
     private volatile long desiredEndBlock = 0;
     private volatile long lastScheduledEndBlock = 0;
 
-    private int missCount = 0;
+    /**
+     * Batching baseline: last desiredEndBlock value for which we successfully woke the worker.
+     * We batch wakeups based on (desiredEndBlock - lastWakeDesiredEndBlock).
+     *
+     * Why track this separately from lastScheduledEndBlock?
+     *
+     * If we batched on (desiredEndBlock - lastScheduledEndBlock), we'd have a starvation problem:
+     *  - Worker is busy processing previous batch
+     *  - lastScheduledEndBlock doesn't advance (worker hasn't drained yet)
+     *  - desiredEndBlock keeps growing from new misses
+     *  - But delta threshold is never met because we already woke once (wakeFlag=1)
+     *  - Worker finishes, but no new wake signal → it starves until next miss
+     *
+     * By tracking lastWakeDesiredEndBlock, we batch on "growth since last wake":
+     *  - Even if worker is busy, we keep waking it as desired grows
+     *  - Worker always has fresh work when it gets an opportunity
+     *  - "Make progress on opportunity" principle
+     */
+    private volatile long lastWakeDesiredEndBlock = 0;
 
-    // Concurrency fix: volatile long avoids potential tearing and improves visibility.
-    private volatile long missMaxBlock = -1;
-
-    private int consecutiveMisses = 0;
-
-    private int throttleSkipCount = 0;
-
+    // Idempotent wakeup gate (0 -> not woken, 1 -> woken).
     private int wakeupFlag = 0;
 
     private volatile boolean isClosed = false;
 
-    // Best-effort stats (updated from multiple threads; correctness not required)
+    // Best-effort stats (not required to be exact)
     private long accessMisses = 0;
-    private long pauseEvents = 0;
-    private long throttleSkips = 0;
     private long wakeups = 0;
 
     private long processCalls = 0;
     private long pressureSkips = 0;
+    private long pausedSkips = 0;
     private long scheduleAttempts = 0;
     private long scheduleAccepted = 0;
     private long scheduleRejected = 0;
     private long blocksAttempted = 0;
     private long blocksAccepted = 0;
 
-    private static final VarHandle THROTTLE_SKIP_VH;
     private static final VarHandle WAKEUP_VH;
 
     static {
         try {
-            THROTTLE_SKIP_VH = MethodHandles.lookup().findVarHandle(WindowedReadAheadContext.class, "throttleSkipCount", int.class);
             WAKEUP_VH = MethodHandles.lookup().findVarHandle(WindowedReadAheadContext.class, "wakeupFlag", int.class);
         } catch (ReflectiveOperationException e) {
             throw new ExceptionInInitializerError(e);
@@ -134,69 +129,46 @@ public class WindowedReadAheadContext implements ReadaheadContext {
     }
 
     /**
-     * Hot path. has to be super cheap!
+     * Hot path: must be extremely cheap.
      *
+     * We only react on misses:
+     *  - bail if worker is globally paused (node-wide thrash/pressure)
+     *  - ask policy if this access pattern should trigger readahead
+     *  - extend desired tail to currBlock + leadBlocks() (best-effort monotonic)
+     *  - wake worker once if we grew enough since the last wake
      */
     @Override
-    public void onAccess(long blockOffset, boolean wasHit) {
-        if (isClosed) {
+    public void onAccess(long blockOffsetBytes, boolean wasHit) {
+        if (isClosed || wasHit) {
             return;
         }
 
-        if (wasHit) {
-            consecutiveMisses = 0;
+        if (worker.isReadAheadPaused()) {
             return;
         }
 
         accessMisses++;
 
-        final long currBlock = blockOffset >>> CACHE_BLOCK_SIZE_POWER;
+        final long currBlock = blockOffsetBytes >>> CACHE_BLOCK_SIZE_POWER;
 
-        if (++consecutiveMisses >= MISS_STREAK_PAUSE_THRESHOLD) {
-            pauseEvents++;
-
-            throttleSetAtLeast(MISS_STREAK_PAUSE_SKIPS);
-            desiredEndBlock = lastScheduledEndBlock;
-
-            consecutiveMisses = 0;
-            missCount = 0;
-            missMaxBlock = -1;
+        if (policy.shouldTrigger(currBlock) == false) {
             return;
         }
 
-        if (++missCount == 1) {
-            missMaxBlock = currBlock;
-        } else if (currBlock > missMaxBlock) {
-            missMaxBlock = currBlock;
-        }
+        final long target = Math.min(currBlock + policy.leadBlocks(), lastFileSeg + 1);
 
-        if (missCount < MISS_BATCH) {
-            return;
-        }
-
-        missCount = 0;
-        final long maxBlock = missMaxBlock;
-        missMaxBlock = -1;
-
-        if (throttleTryDecrement()) {
-            throttleSkips++;
-            desiredEndBlock = lastScheduledEndBlock;
-            return;
-        }
-
-        // Extend desired tail (best-effort monotonic volatile write; no CAS loop).
-        final long target = Math.min(maxBlock + policy.leadBlocks(), lastFileSeg + 1);
-
-        // Only wake if we actually extended desired.
+        // Best-effort monotonic extend
         final long prevDesired = desiredEndBlock;
-        if (target > prevDesired) {
-            desiredEndBlock = target;
+        if (target <= prevDesired) {
+            return;
+        }
+        desiredEndBlock = target;
 
-            // Wake only if there's meaningful queued work.
-            final long delta = target - lastScheduledEndBlock;
-            if (delta >= wakeMinDeltaBlocks(policy.leadBlocks())) {
-                maybeWakeWorkerOnce();
-            }
+        // Wake immediately on growth - idempotent gate prevents storms.
+        // processQueue() naturally batches up to MAX_BLOCKS_PER_SUBMISSION (64).
+        // This ensures we "make progress on opportunity" for all access patterns (sparse, burst, sequential).
+        if (maybeWakeWorkerOnce()) {
+            lastWakeDesiredEndBlock = target;
         }
     }
 
@@ -208,28 +180,31 @@ public class WindowedReadAheadContext implements ReadaheadContext {
 
         processCalls++;
 
-        final long scheduled = lastScheduledEndBlock;
-        long desired = desiredEndBlock;
+        // If node-wide gate is paused, drop backlog and clear wake gate.
+        if (worker.isReadAheadPaused()) {
+            pausedSkips++;
+            dropBacklogAndResetWakeBaseline();
+            maybeLogStats();
+            return false;
+        }
 
-        // If there's no work, clear the wakeup gate and return.
+        final long scheduled = lastScheduledEndBlock;
+        final long desired = desiredEndBlock;
+
         if (desired <= scheduled) {
             WAKEUP_VH.setRelease(this, 0);
             maybeLogStats();
             return false;
         }
 
+        // Per-context queue pressure guard (cheap introspection is OK here; processQueue is not hot).
         final int cap = worker.getQueueCapacity();
         if (cap > 0) {
             final int q = worker.getQueueSize();
             if (q > (cap * QUEUE_PRESSURE_NUM) / QUEUE_PRESSURE_DEN) {
                 pressureSkips++;
-
                 policy.onQueuePressureMedium();
-                desiredEndBlock = lastScheduledEndBlock;
-                throttleSetAtLeast(1);
-
-                // We dropped backlog => allow future wakeups.
-                WAKEUP_VH.setRelease(this, 0);
+                dropBacklogAndResetWakeBaseline();
                 maybeLogStats();
                 return false;
             }
@@ -240,7 +215,6 @@ public class WindowedReadAheadContext implements ReadaheadContext {
 
         final long blockCount = endExclusive - scheduled;
         if (blockCount <= 0) {
-            // Nothing schedulable: allow future wakeups.
             WAKEUP_VH.setRelease(this, 0);
             maybeLogStats();
             return false;
@@ -257,12 +231,9 @@ public class WindowedReadAheadContext implements ReadaheadContext {
             blocksAccepted += blockCount;
 
             lastScheduledEndBlock = endExclusive;
-            throttleDecreaseOnSuccess();
 
-            // IMPORTANT: do NOT clear wakeupFlag here if more work remains.
-            // One wake should drain multiple schedule() chunks.
-            final long newDesired = desiredEndBlock;
-            if (newDesired <= lastScheduledEndBlock) {
+            // Do not clear wake gate if more work remains.
+            if (desiredEndBlock <= lastScheduledEndBlock) {
                 WAKEUP_VH.setRelease(this, 0);
             }
             maybeLogStats();
@@ -272,41 +243,28 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         scheduleRejected++;
 
         // Rejected: drop backlog and allow future wakeups.
-        desiredEndBlock = lastScheduledEndBlock;
-        throttleIncreaseOnReject();
         policy.onQueueSaturated();
+        dropBacklogAndResetWakeBaseline();
 
-        if (LOGGER.isDebugEnabled()) {
-            LOGGER.debug(
-                "RA_REJECT path={} blocks={} window={} lead={} throttleSkip={}",
-                path,
-                blockCount,
-                policy.currentWindow(),
-                policy.leadBlocks(),
-                throttleGet()
-            );
-        }
+        LOGGER.info("RA_REJECT path={} blocks={} window={} lead={}", path, blockCount, policy.currentWindow(), policy.leadBlocks());
 
-        WAKEUP_VH.setRelease(this, 0);
         maybeLogStats();
         return false;
     }
 
-    private void maybeLogStats() {
-        if (LOGGER.isInfoEnabled() == false) {
-            return;
-        }
-        if ((processCalls % STATS_EVERY_N_PROCESS_CALLS) != 0) {
-            return;
-        }
+    private void dropBacklogAndResetWakeBaseline() {
+        desiredEndBlock = lastScheduledEndBlock;
+        lastWakeDesiredEndBlock = lastScheduledEndBlock;
+        WAKEUP_VH.setRelease(this, 0);
+    }
 
+    private void maybeLogStats() {
         int q = -1;
         int cap = -1;
         try {
             cap = worker.getQueueCapacity();
             q = worker.getQueueSize();
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
 
         final long desired = desiredEndBlock;
         final long tail = lastScheduledEndBlock;
@@ -315,34 +273,32 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         final long emptyProcess = processCalls - scheduleAttempts;
         final long avgBlocksPerOk = scheduleAccepted == 0 ? 0 : (blocksAccepted / scheduleAccepted);
 
-        LOGGER.info(
-            "RA_STATS path={} missAccess={} desired={} scheduledTail={} queuedDelta={} window={} lead={} " +
-            "pause={} throttleSkips={} wakeups={} " +
-            "processCalls={} emptyProcess={} pressureSkips={} " +
-            "schedule(attempt={}, ok={}, reject={}) blocks(attempted={}, ok={}, avgOk={}) throttleSkip={} q={}/{}",
-            path,
-            accessMisses,
-            desired,
-            tail,
-            queuedDelta,
-            policy.currentWindow(),
-            policy.leadBlocks(),
-            pauseEvents,
-            throttleSkips,
-            wakeups,
-            processCalls,
-            emptyProcess,
-            pressureSkips,
-            scheduleAttempts,
-            scheduleAccepted,
-            scheduleRejected,
-            blocksAttempted,
-            blocksAccepted,
-            avgBlocksPerOk,
-            throttleGet(),
-            q,
-            cap
-        );
+        LOGGER
+            .info(
+                "RA_STATS path={} missAccess={} desired={} scheduledTail={} queuedDelta={} window={} lead={} "
+                    + "wakeups={} processCalls={} emptyProcess={} pressureSkips={} pausedSkips={} "
+                    + "schedule(attempt={}, ok={}, reject={}) blocks(attempted={}, ok={}, avgOk={}) q={}/{}",
+                path,
+                accessMisses,
+                desired,
+                tail,
+                queuedDelta,
+                policy.currentWindow(),
+                policy.leadBlocks(),
+                wakeups,
+                processCalls,
+                emptyProcess,
+                pressureSkips,
+                pausedSkips,
+                scheduleAttempts,
+                scheduleAccepted,
+                scheduleRejected,
+                blocksAttempted,
+                blocksAccepted,
+                avgBlocksPerOk,
+                q,
+                cap
+            );
     }
 
     @Override
@@ -356,37 +312,40 @@ public class WindowedReadAheadContext implements ReadaheadContext {
     }
 
     @Override
-    public void triggerReadahead(long fileOffset) {
+    public void triggerReadahead(long fileOffsetBytes) {
         if (isClosed) {
             return;
         }
+        if (worker.isReadAheadPaused()) {
+            return;
+        }
 
-        final long start = fileOffset >>> CACHE_BLOCK_SIZE_POWER;
+        final long start = fileOffsetBytes >>> CACHE_BLOCK_SIZE_POWER;
         final long target = Math.min(start + policy.currentWindow(), lastFileSeg + 1);
-        final long prev = desiredEndBlock;
-        if (target > prev) {
-            desiredEndBlock = target;
 
-            final long delta = target - lastScheduledEndBlock;
-            if (delta >= wakeMinDeltaBlocks(policy.leadBlocks())) {
-                maybeWakeWorkerOnce();
-            }
+        final long prevDesired = desiredEndBlock;
+        if (target <= prevDesired) {
+            return;
+        }
+        desiredEndBlock = target;
+
+        // Wake immediately - same as onAccess
+        if (maybeWakeWorkerOnce()) {
+            lastWakeDesiredEndBlock = target;
         }
     }
 
     @Override
     public void reset() {
         desiredEndBlock = lastScheduledEndBlock;
-        missCount = 0;
-        missMaxBlock = -1;
-        consecutiveMisses = 0;
+        lastWakeDesiredEndBlock = lastScheduledEndBlock;
+        WAKEUP_VH.setRelease(this, 0);
+        policy.reset();
     }
 
     @Override
     public void cancel() {
-        if (worker != null) {
-            worker.cancel(path);
-        }
+        worker.cancel(path);
     }
 
     @Override
@@ -401,60 +360,20 @@ public class WindowedReadAheadContext implements ReadaheadContext {
         }
         isClosed = true;
         cancel();
-        // Allow flag reset (not strictly needed, but avoids weirdness if reused in tests)
+        desiredEndBlock = lastScheduledEndBlock;
+        lastWakeDesiredEndBlock = lastScheduledEndBlock;
         WAKEUP_VH.setRelease(this, 0);
     }
 
-    private void maybeWakeWorkerOnce() {
+    private boolean maybeWakeWorkerOnce() {
         if (signalCallback == null) {
-            return;
+            return false;
         }
         if ((int) WAKEUP_VH.compareAndExchange(this, 0, 1) == 0) {
             wakeups++;
             signalCallback.run();
+            return true;
         }
-    }
-
-    private int throttleGet() {
-        return (int) THROTTLE_SKIP_VH.getVolatile(this);
-    }
-
-    private boolean throttleTryDecrement() {
-        int prev;
-        do {
-            prev = (int) THROTTLE_SKIP_VH.getVolatile(this);
-            if (prev <= 0) {
-                return false;
-            }
-        } while (!THROTTLE_SKIP_VH.compareAndSet(this, prev, prev - 1));
-        return true;
-    }
-
-    private void throttleDecreaseOnSuccess() {
-        int prev;
-        do {
-            prev = (int) THROTTLE_SKIP_VH.getVolatile(this);
-            if (prev <= 0) {
-                return;
-            }
-        } while (!THROTTLE_SKIP_VH.compareAndSet(this, prev, prev - 1));
-    }
-
-    private void throttleIncreaseOnReject() {
-        int prev, next;
-        do {
-            prev = (int) THROTTLE_SKIP_VH.getVolatile(this);
-            next = Math.min(64, Math.max(4, prev == 0 ? 4 : prev * 2));
-        } while (!THROTTLE_SKIP_VH.compareAndSet(this, prev, next));
-    }
-
-    private void throttleSetAtLeast(int minSkips) {
-        int prev;
-        do {
-            prev = (int) THROTTLE_SKIP_VH.getVolatile(this);
-            if (prev >= minSkips) {
-                return;
-            }
-        } while (!THROTTLE_SKIP_VH.compareAndSet(this, prev, minSkips));
+        return false;
     }
 }

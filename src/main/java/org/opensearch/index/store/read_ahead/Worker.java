@@ -61,6 +61,14 @@ public interface Worker extends Closeable {
     void cancel(Path path);
 
     /**
+     * Checks if readahead is currently paused due to cache thrashing.
+     * This is a cheap volatile read meant to be called from the hot path.
+     *
+     * @return true if readahead should be paused
+     */
+    boolean isReadAheadPaused();
+
+    /**
      * Close the worker and cancel all pending requests.
      */
     @Override
