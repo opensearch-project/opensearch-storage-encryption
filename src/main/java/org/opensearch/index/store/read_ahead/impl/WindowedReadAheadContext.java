@@ -184,7 +184,7 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
         if (worker.isReadAheadPaused()) {
             pausedSkips++;
             dropBacklogAndResetWakeBaseline();
-            // maybeLogStats(); // enable back for debugging. 
+            // maybeLogStats(); // enable back for debugging.
             return false;
         }
 
