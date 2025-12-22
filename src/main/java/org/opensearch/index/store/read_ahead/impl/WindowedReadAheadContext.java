@@ -184,7 +184,7 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
         if (worker.isReadAheadPaused()) {
             pausedSkips++;
             dropBacklogAndResetWakeBaseline();
-            maybeLogStats();
+            // maybeLogStats(); // enable back for debugging. 
             return false;
         }
 
@@ -193,7 +193,7 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
 
         if (desired <= scheduled) {
             WAKEUP_VH.setRelease(this, 0);
-            maybeLogStats();
+            // maybeLogStats();
             return false;
         }
 
@@ -205,7 +205,7 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
                 pressureSkips++;
                 policy.onQueuePressureMedium();
                 dropBacklogAndResetWakeBaseline();
-                maybeLogStats();
+                // maybeLogStats();
                 return false;
             }
         }
@@ -216,7 +216,7 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
         final long blockCount = endExclusive - scheduled;
         if (blockCount <= 0) {
             WAKEUP_VH.setRelease(this, 0);
-            maybeLogStats();
+            // maybeLogStats();
             return false;
         }
 
@@ -236,7 +236,7 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
             if (desiredEndBlock <= lastScheduledEndBlock) {
                 WAKEUP_VH.setRelease(this, 0);
             }
-            maybeLogStats();
+            // maybeLogStats();
             return true;
         }
 
@@ -246,9 +246,7 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
         policy.onQueueSaturated();
         dropBacklogAndResetWakeBaseline();
 
-        LOGGER.info("RA_REJECT path={} blocks={} window={} lead={}", path, blockCount, policy.currentWindow(), policy.leadBlocks());
-
-        maybeLogStats();
+        // maybeLogStats();
         return false;
     }
 
@@ -258,6 +256,7 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
         WAKEUP_VH.setRelease(this, 0);
     }
 
+    @SuppressWarnings("unused")
     private void maybeLogStats() {
         int q = -1;
         int cap = -1;
