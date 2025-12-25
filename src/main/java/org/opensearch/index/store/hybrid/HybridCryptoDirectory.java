@@ -71,7 +71,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
      * @param extension the file extension
      * @return true if the file should use Direct I/O, false for NIO
      */
-    private boolean shouldUseDirectIO(String extension) {
+    private boolean delegeteBufferPool(String extension) {
         return !extension.isEmpty() && !nioExtensions.contains(extension);
     }
 
@@ -82,7 +82,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         ensureOpen();
         ensureCanRead(name);
 
-        if (shouldUseDirectIO(extension)) {
+        if (delegeteBufferPool(extension)) {
             return bufferPoolDirectory.openInput(name, context);
         }
 
@@ -96,18 +96,37 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
         ensureOpen();
         ensureCanRead(name);
 
-        if (shouldUseDirectIO(extension)) {
+        if (delegeteBufferPool(extension)) {
             return bufferPoolDirectory.createOutput(name, context);
         }
 
         return super.createOutput(name, context);
     }
 
+    /**
+     * Routes all temporary file creation to NIO, bypassing the buffer pool.
+     *
+     * <p>Temporary files are short-lived intermediate outputs (e.g., during segment merges)
+     * that are written once and immediately renamed. They don't benefit from buffer pool
+     * caching or read-ahead, so we route them to the simpler NIO path to avoid wasting
+     * limited buffer pool resources.
+     *
+     * @param prefix the prefix string to be used in generating the file's name
+     * @param suffix the suffix string to be used in generating the file's name
+     * @param context the IO context for this operation
+     * @return an IndexOutput for writing to the temporary file
+     * @throws IOException if an I/O error occurs
+     */
+    @Override
+    public IndexOutput createTempOutput(String prefix, String suffix, IOContext context) throws IOException {
+        return super.createTempOutput(prefix, suffix, context);
+    }
+
     @Override
     public void deleteFile(String name) throws IOException {
         String extension = FileSwitchDirectory.getExtension(name);
 
-        if (shouldUseDirectIO(extension)) {
+        if (delegeteBufferPool(extension)) {
             bufferPoolDirectory.deleteFile(name);
         } else {
             super.deleteFile(name);
