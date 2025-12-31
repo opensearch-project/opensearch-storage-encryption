@@ -20,26 +20,55 @@ import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 /**
  * Tiny L1 cache in front of the main Caffeine L2 cache.
  *
- * Correctness under segment recycling:
- *  - Tier-2 slot uses a single stamp (release/acquire) to publish {blockIdx, val} consistently.
- *  - Tier-3 uses pin-then-validate generation to close TOCTOU:
+ * Accessing Caffeine for every block read is expensive even when it's a cache hit.
+ * This gives us a tiny 32-slot direct-mapped cache that sits in front of Caffeine,
+ * handling the hottest blocks with zero locking and minimal overhead.
  *
- *    expectedGen = v.value().getGeneration()
- *    if (v.tryPin()) {
- *      if (v.value().getGeneration() == expectedGen) return v;
- *      v.unpin();
- *    }
+ * We maintain 32 slots using parallel arrays. Each slot can hold one cached block.
+ * The slot index is computed by hashing the block index: hash(blockIdx) % 32.
  *
- * Stamp gate (release/acquire) avoids reading half-updated slot fields:
+ * Each slot stores three pieces of data (in separate arrays):
+ *   - slotBlockIdx[i]: which block number is cached here
+ *   - slotVal[i]: the actual cached segment value
+ *   - slotStamp[i]: packed [generation:32 | hash:32] acting as a memory barrier gate
  *
- *   Writer (fill slot):
- *     slotBlockIdx[i] = X;
- *     slotVal[i]      = V;
- *     stamp[i] = pack(hash(X), G)   // RELEASE store, written last
+ * SYNCHRONIZATION VIA STAMP GATE:
+ * We can't use locks (too slow) and we can't make everything volatile (too slow).
+ * Instead we use acquire/release ordering on the stamp as a publication gate.
  *
- *   Reader (check slot):
- *     s = stamp[i]                 // ACQUIRE load, read first
- *     if (matches) then read slotBlockIdx/slotVal safely
+ * When writing to a slot (publishToL1):
+ *   1. Write slotBlockIdx[i] and slotVal[i] with plain stores
+ *   2. Pack (hash, generation) into a stamp
+ *   3. Write stamp[i] with RELEASE semantics (VarHandle.setRelease)
+ *      This ensures all preceding writes become visible before the stamp update.
+ *
+ * When reading from a slot (acquireRefCountedValue):
+ *   1. Read stamp[i] with ACQUIRE semantics (VarHandle.getAcquire)
+ *      This ensures we don't read dependent fields before seeing the stamp.
+ *   2. Check if hash matches our target block
+ *   3. If yes, safe to read slotBlockIdx[i] and slotVal[i]
+ *      The acquire load guarantees we see the values the writer published.
+ *
+ * Result: If stamp matches, {slotBlockIdx, slotVal} are guaranteed consistent.
+ * No torn reads, no stale data, no locks needed. We cannot affors locks, the moment 
+ * you add a lock, reading from caffeine directly is going to be better.
+ *
+ * HANDLING SEGMENT RECYCLING (THE TRICKY PART):
+ * Memory segments get recycled: evicted, returned to pool, reused for different blocks.
+ * If you cache a pointer to block 42 (say) but that memory gets reused for block 99 (say), you'll
+ * read wrong data. We use generation counters to detect this.
+ *
+ * Each segment has a generation number that bumps on eviction. We snapshot the generation
+ * in the stamp when caching. When retrieving, we do pin-then-validate:
+ *   1. Pin the segment (holds refcount, prevents pool return)
+ *   2. Check generation still matches snapshot
+ *   3. If match: safe. If mismatch: unpin, treat as miss (segment was recycled)
+ *
+ * Why pin BEFORE validating? If we check generation first, the segment could get evicted
+ * and recycled between the check and pin. Pin holds it stable during validation.
+ * Generation detects staleness, pinning controls lifecycle. Hand-in-hand coordination. But
+ * we avoid tight coupling of generation with pin -- they serve different purposes.
+ *
  */
 public class BlockSlotTinyCache {
 
@@ -68,7 +97,7 @@ public class BlockSlotTinyCache {
     private final BlockCache<RefCountedMemorySegment> cache;
     private final Path path;
 
-    // Parallel arrays for Tier-2 L1 slots
+    // Parallel arrays for Tier-2 L1 slots (faster than object allocations)
     private final long[] slotBlockIdx; // published under stamp gate
     private final BlockCacheValue<RefCountedMemorySegment>[] slotVal; // published under stamp gate
 
@@ -124,10 +153,6 @@ public class BlockSlotTinyCache {
     public BlockCacheValue<RefCountedMemorySegment> acquireRefCountedValue(long blockOff, CacheHitHolder hitHolder) throws IOException {
 
         final long blockIdx = blockOff >>> CACHE_BLOCK_SIZE_POWER;
-
-        // -------------------------
-        // TIER 2: Shared slots (stamp-gated)
-        // -------------------------
         final int slotIdx = (int) ((blockIdx ^ (blockIdx >>> 17)) & SLOT_MASK);
 
         // Acquire-load stamp FIRST (publication gate)
@@ -154,9 +179,6 @@ public class BlockSlotTinyCache {
             }
         }
 
-        // -------------------------
-        // TIER 3: Main cache (race-safe pin)
-        // -------------------------
         final int maxAttempts = 10;
 
         FileBlockCacheKey key = slotKeys[slotIdx];

@@ -171,8 +171,9 @@ public final class QueuingWorker implements Worker {
         final boolean accepted = queue.offerLast(task);
         if (!accepted) {
             inFlight.remove(task);
+            // todo add a metric here.
             LOGGER
-                .warn(
+                .debug(
                     "Readahead queue full, dropping task path={} off={} blocks={} qsz={}/{}",
                     path,
                     offset,
@@ -257,8 +258,9 @@ public final class QueuingWorker implements Worker {
             final long endBlock = task.endBlock();
 
             if (ioMs > 500) {
+                // todo add a metric here.
                 LOGGER
-                    .warn(
+                    .debug(
                         "Slow readahead I/O path={} blocks=[{}-{}) count={} took={}ms qsz={}/{} inflight={}",
                         task.path,
                         startBlock,

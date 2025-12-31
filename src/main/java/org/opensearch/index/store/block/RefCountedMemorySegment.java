@@ -16,10 +16,20 @@ import org.opensearch.index.store.metrics.ErrorType;
 
 /**
  * A reference-counted wrapper around a {@link MemorySegment} that implements {@link BlockCacheValue}.
+ * SAFE for concurrent access.
+ *
+ * WHY this exists -- 
+ * We allocate chunks of native memory (off-heap) to cache decrypted file blocks.
+ * Multiple threads can read the same block simultaneously. We need to know when nobody
+ * is using a block anymore so we can safely return it to the pool for reuse.
+ *
+ * Think of it like a library book: refCount tracks how many people have it checked out.
+ * When the count hits zero, the book goes back on the shelf (pool).
+ *
  *
  * Packed-state design:
  *  - We store (generation, refCount) in a single volatile long, updated atomically via CAS.
- *  - This avoids any TOCTOU kinda race between reading generation and pinning:
+ *  - This avoids TOCTOU between reading generation and pinning:
  *      * tryPin() observes BOTH generation and refCount in one snapshot
  *      * CAS increments refCount only if generation is unchanged
  *  - close() atomically:
@@ -30,9 +40,10 @@ import org.opensearch.index.store.metrics.ErrorType;
  * Layout (64-bit):
  *   [ generation: 32 bits ][ refCount: 32 bits ]
  *
- * Notes:
+ * Important Notes:
  *  - generation is treated as unsigned 32-bit (wraparound is fine in practice)
  *  - refCount must stay > 0 for pin to succeed; 0 means retired/released
+ *
  */
 @SuppressWarnings("preview")
 public final class RefCountedMemorySegment implements BlockCacheValue<RefCountedMemorySegment> {
@@ -87,23 +98,23 @@ public final class RefCountedMemorySegment implements BlockCacheValue<RefCounted
 
     @Override
     public int getGeneration() {
-        // Single volatile read of state; no separate generation field.
-        long s = (long) STATE.getVolatile(this);
+        // Single volatile read of packed state.
+        final long s = (long) STATE.getVolatile(this);
         return unpackGeneration(s);
     }
 
     public int getRefCount() {
-        long s = (long) STATE.getVolatile(this);
+        final long s = (long) STATE.getVolatile(this);
         return unpackRefCount(s);
     }
 
     /**
      * Atomically increments refCount iff refCount > 0.
      *
-     * Because generation is in the same word, callers can also do “pin-then-validate”
-     * by snapshotting the packed state externally if needed. But most importantly:
-     * close() cannot interleave generation bump with refcount drop in a way that
-     * would allow pinning a recycled generation.
+     * Hot-path is straight-line:
+     *   - read packed state
+     *   - check rc > 0
+     *   - CAS state+1 (increment low 32 bits only)
      */
     @Override
     public boolean tryPin() {
@@ -112,14 +123,11 @@ public final class RefCountedMemorySegment implements BlockCacheValue<RefCounted
         for (;;) {
             final int rc = unpackRefCount(s);
             if (rc <= 0) {
-                if (LOGGER.isDebugEnabled()) {
-                    LOGGER.debug("tryPin failed: refCount=0");
-                }
-                return false;
+                return tryPinFailed();
             }
 
-            // Increment refcount, here we keep generation unchanged.
-            final long ns = packState(unpackGeneration(s), rc + 1);
+            // Increment refcount (lower 32 bits) only; generation (upper 32) unchanged.
+            final long ns = s + 1L;
 
             if (STATE.compareAndSet(this, s, ns)) {
                 return true;
@@ -143,19 +151,17 @@ public final class RefCountedMemorySegment implements BlockCacheValue<RefCounted
         long s = (long) STATE.getVolatile(this);
 
         for (;;) {
-            final int gen = unpackGeneration(s);
             final int rc = unpackRefCount(s);
-            final int nrc = rc - 1;
-
             if (rc <= 0) {
                 recordErrorMetric();
-                throw new IllegalStateException("decRef underflow (refCount=" + nrc + ')');
+                throw new IllegalStateException("decRef underflow (refCount=" + (rc - 1) + ')');
             }
 
-            final long ns = packState(gen, nrc);
+            // Decrement refcount (lower 32 bits) only; generation unchanged.
+            final long ns = s - 1L;
 
             if (STATE.compareAndSet(this, s, ns)) {
-                if (nrc == 0) {
+                if (rc == 1) { // transitioned to 0
                     onFullyReleased.release(this);
                 }
                 return;
@@ -167,21 +173,19 @@ public final class RefCountedMemorySegment implements BlockCacheValue<RefCounted
     }
 
     /**
-     * Internal-only: increments refcount for tests.
-     * With packed-state, this still cannot revive if rc==0 (we keep that invariant).
+     * Internal-only-for tests.
      */
     public void incRef() {
         long s = (long) STATE.getVolatile(this);
 
         for (;;) {
-            final int gen = unpackGeneration(s);
             final int rc = unpackRefCount(s);
             if (rc <= 0) {
                 recordErrorMetric();
                 throw new IllegalStateException("Attempted to revive a released segment (refCount=" + rc + ")");
             }
 
-            final long ns = packState(gen, rc + 1);
+            final long ns = s + 1L;
             if (STATE.compareAndSet(this, s, ns)) {
                 return;
             }
@@ -195,12 +199,13 @@ public final class RefCountedMemorySegment implements BlockCacheValue<RefCounted
      * Resets this segment to a fresh state when reused from pool.
      * Must be called under pool lock, before publishing the segment.
      *
-     * IMPORTANT: This resets refCount to 1 but does NOT touch generation.
+     * IMPORTANT: resets refCount to 1 but does NOT touch generation.
      * Generation bump happens on close() (eviction), not on reset().
      */
     public void reset() {
         // Under pool lock; plain set is fine.
-        final int gen = unpackGeneration((long) STATE.getVolatile(this));
+        final long s = (long) STATE.getVolatile(this);
+        final int gen = unpackGeneration(s);
         state = packState(gen, 1);
     }
 
@@ -209,17 +214,14 @@ public final class RefCountedMemorySegment implements BlockCacheValue<RefCounted
      *  - bump generation
      *  - drop cache's reference (refCount--)
      *
-     * Single CAS ensures readers never observe “new generation but old refCount”
-     * or vice versa.
-     *
-     * Contract: called exactly once by removal listener.
+     * Done in a single CAS:
+     *   ns = s + (1<<32) - 1
      */
     @Override
     public void close() {
         long s = (long) STATE.getVolatile(this);
 
         for (;;) {
-            final int gen = unpackGeneration(s);
             final int rc = unpackRefCount(s);
 
             // cache should always hold a ref while entry is alive
@@ -228,12 +230,11 @@ public final class RefCountedMemorySegment implements BlockCacheValue<RefCounted
                 throw new IllegalStateException("close on already released segment (refCount=" + rc + ")");
             }
 
-            final int ngen = gen + 1;   // bump epoch
-            final int nrc = rc - 1;     // drop cache ref
-            final long ns = packState(ngen, nrc);
+            // bump generation (upper 32) and drop one ref (lower 32)
+            final long ns = s + (1L << 32) - 1L;
 
             if (STATE.compareAndSet(this, s, ns)) {
-                if (nrc == 0) {
+                if (rc == 1) { // transitioned to 0
                     onFullyReleased.release(this);
                 }
                 return;
@@ -244,16 +245,85 @@ public final class RefCountedMemorySegment implements BlockCacheValue<RefCounted
         }
     }
 
+    /**
+     * Optional helper: atomically pins only if the generation matches expected.
+     * This reduces "pin then validate then unpin" churn in callers.
+     */
+    public boolean tryPinIfGeneration(int expectedGen) {
+        long s = (long) STATE.getVolatile(this);
+
+        for (;;) {
+            final int rc = unpackRefCount(s);
+            if (rc <= 0) {
+                return false;
+            }
+            if (unpackGeneration(s) != expectedGen) {
+                return false;
+            }
+
+            final long ns = s + 1L;
+            if (STATE.compareAndSet(this, s, ns)) {
+                return true;
+            }
+
+            s = (long) STATE.getVolatile(this);
+            Thread.onSpinWait();
+        }
+    }
+
+    /** Cold path: keep debug checks out of the hot loop. */
+    private boolean tryPinFailed() {
+        if (LOGGER.isDebugEnabled()) {
+            LOGGER.debug("tryPin failed: refCount=0");
+        }
+        return false;
+    }
+
+    /**
+     * Pack generation and refCount into a single 64-bit long.
+     *
+     * Layout: [generation:32][refCount:32]
+     *
+     * Math breakdown:
+     *   generation & 0xFFFF_FFFFL   - mask to 32 bits (treat as unsigned)
+     *   << 32                        - shift left 32 bits (moves to upper half)
+     *   refCount & 0xFFFF_FFFFL      - mask to 32 bits (treat as unsigned)
+     *
+     * Example: gen=5, refCount=3
+     *   gen & 0xFFFF_FFFFL      = 0x0000_0005
+     *   << 32                   = 0x0000_0005_0000_0000
+     *   refCount & 0xFFFF_FFFFL = 0x0000_0003
+     *   result                  = 0x0000_0005_0000_0003
+     */
     private static long packState(int generation, int refCount) {
-        // store both as unsigned 32-bit lanes
         return ((generation & 0xFFFF_FFFFL) << 32) | (refCount & 0xFFFF_FFFFL);
     }
 
+    /**
+     * Extract generation from packed state (upper 32 bits).
+     *
+     * Math: unsigned right shift by 32 bits drops the lower 32 bits (refCount),
+     * leaving only generation. Cast to int to get the 32-bit value.
+     *
+     * Example: state = 0x0000_0005_0000_0003
+     *   >>> 32  shifts: 0x0000_0000_0000_0005
+     *   (int) cast:     5
+     */
     private static int unpackGeneration(long state) {
         return (int) (state >>> 32);
     }
 
+    /**
+     * Extract refCount from packed state (lower 32 bits).
+     *
+     * Math: casting long to int simply drops the upper 32 bits. Its safe.
+     * Java truncates to the lower 32 bits automatically.
+     *
+     * Example: state = 0x0000_0005_0000_0003
+     *   (int) cast: 3
+     */
     private static int unpackRefCount(long state) {
+        // JLS 5.1.3: narrowing long->int keeps low 32 bits (mod 2^32)
         return (int) state;
     }
 
