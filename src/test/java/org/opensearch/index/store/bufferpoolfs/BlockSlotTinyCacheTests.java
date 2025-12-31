@@ -6,6 +6,7 @@ package org.opensearch.index.store.bufferpoolfs;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atMost;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -513,5 +514,93 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
         result1.unpin();
         result2.unpin();
         assertEquals(1, refSegment.getRefCount());
+    }
+
+    public void testRaceBetweenGetAndPinWithSegmentRecycling_reproAndFix() throws Exception {
+        BlockSlotTinyCache cache = new BlockSlotTinyCache(mockCache, testPath, BLOCK_SIZE * 100);
+
+        MemorySegment segment = arena.allocate(BLOCK_SIZE);
+        segment.fill((byte) 0xAA);
+
+        RefCountedMemorySegment refSegment = new RefCountedMemorySegment(segment, BLOCK_SIZE, (seg) -> {});
+
+        BlockCacheValue<RefCountedMemorySegment> cacheValue = mock(BlockCacheValue.class);
+        when(cacheValue.value()).thenReturn(refSegment);
+
+        // Latches to force the window: cache.get returned, then we pause at tryPin
+        CountDownLatch tryPinEntered = new CountDownLatch(1);
+        CountDownLatch allowTryPinToProceed = new CountDownLatch(1);
+
+        when(cacheValue.tryPin()).thenAnswer(inv -> {
+            tryPinEntered.countDown();                 // signal T1 reached tryPin
+            allowTryPinToProceed.await(5, TimeUnit.SECONDS); // wait for recycle
+            return refSegment.tryPin();                // may succeed after reset()
+        });
+
+        doAnswer(inv -> {
+            refSegment.unpin();
+            return null;
+        }).when(cacheValue).unpin();
+
+        // Main cache behavior: always return same object for the key (like "stale handle")
+        when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(cacheValue);
+
+        // If your Tier-3 falls back to load on mismatch, provide a fresh object for getOrLoad
+        MemorySegment fresh = arena.allocate(BLOCK_SIZE);
+        fresh.fill((byte) 0xAA);
+        RefCountedMemorySegment freshSeg = new RefCountedMemorySegment(fresh, BLOCK_SIZE, (seg) -> {});
+
+        BlockCacheValue<RefCountedMemorySegment> freshValue = mock(BlockCacheValue.class);
+        when(freshValue.value()).thenReturn(freshSeg);
+        when(freshValue.tryPin()).thenAnswer(inv -> freshSeg.tryPin());
+        doAnswer(inv -> {
+            freshSeg.unpin();
+            return null;
+        }).when(freshValue).unpin();
+
+        when(mockCache.getOrLoad(any(FileBlockCacheKey.class))).thenReturn(freshValue);
+
+        ExecutorService exec = Executors.newFixedThreadPool(2);
+        AtomicReference<BlockCacheValue<RefCountedMemorySegment>> t1Result = new AtomicReference<>();
+        AtomicReference<Throwable> error = new AtomicReference<>();
+
+        exec.submit(() -> {
+            try {
+                BlockCacheValue<RefCountedMemorySegment> v = cache.acquireRefCountedValue(0);
+                t1Result.set(v);
+            } catch (Throwable t) {
+                error.set(t);
+            }
+        });
+
+        exec.submit(() -> {
+            try {
+                // Wait until T1 is *about to pin*
+                assertTrue("T1 never reached tryPin", tryPinEntered.await(5, TimeUnit.SECONDS));
+
+                // Simulate eviction + recycle of the same object
+                refSegment.close();         // drops cache ref, generation++, refCount->0 (releaser is noop)
+                segment.fill((byte) 0xBB);  // overwrite underlying bytes (reused for another block)
+                refSegment.reset();         // refCount=1 again (reused)
+
+                allowTryPinToProceed.countDown();
+            } catch (Throwable t) {
+                error.set(t);
+            }
+        });
+
+        exec.shutdown();
+        assertTrue(exec.awaitTermination(30, TimeUnit.SECONDS));
+        if (error.get() != null)
+            throw new AssertionError(error.get());
+
+        BlockCacheValue<RefCountedMemorySegment> result = t1Result.get();
+        assertNotNull(result);
+
+        byte b = result.value().segment().get(java.lang.foreign.ValueLayout.JAVA_BYTE, 0);
+
+        assertEquals((byte) 0xAA, b);
+
+        result.unpin();
     }
 }

@@ -172,6 +172,11 @@ public class BlockSlotTinyCacheBenchmarkTests {
         public void decRef() {
             segment.decRef();
         }
+
+        @Override
+        public int getGeneration() {
+            return segment.getGeneration();
+        }
     }
 
     /**

@@ -89,4 +89,14 @@ public interface BlockCacheValue<T> extends AutoCloseable {
      * When the reference count reaches zero, the underlying resource is freed/returned to pool.
      */
     void decRef();
+
+    /**
+     * Returns the generation number for this cache value.
+     * <p>
+     * Used to detect staleness in cached references. The generation is incremented
+     * when the value is evicted from the cache, invalidating any cached references.
+     *
+     * @return current generation counter value
+     */
+    int getGeneration();
 }
