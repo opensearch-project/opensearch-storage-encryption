@@ -279,4 +279,24 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
             );
     }
 
+    @Override
+    public double getHitRate() {
+        return cache.stats().hitRate();
+    }
+
+    @Override
+    public long getCacheSize() {
+        return cache.estimatedSize();
+    }
+
+    @Override
+    public long hitCount() {
+        return cache.stats().hitCount();
+    }
+
+    @Override
+    public long missCount() {
+        return cache.stats().missCount();
+    }
+
 }

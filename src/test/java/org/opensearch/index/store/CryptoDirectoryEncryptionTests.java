@@ -467,9 +467,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         ExecutorService executorA = Executors.newFixedThreadPool(4);
         Worker readAheadWorkerA = new QueuingWorker(
             100, // queue capacity
-            4,   // thread count
-            executorA,
-            blockCacheA
+            executorA
         );
 
         // Write and verify encryption with DirectIO (keep directory open for footer cache)
@@ -547,9 +545,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         ExecutorService executorA = Executors.newFixedThreadPool(4);
         Worker readAheadWorkerA = new QueuingWorker(
             100, // queue capacity
-            4,   // thread count
-            executorA,
-            blockCacheA
+            executorA
         );
 
         // Write and read with same directory instance
@@ -626,9 +622,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         ExecutorService executorA = Executors.newFixedThreadPool(4);
         Worker readAheadWorkerA = new QueuingWorker(
             100, // queue capacity
-            4,   // thread count
-            executorA,
-            blockCacheA
+            executorA
         );
 
         // Write and read with same directory instance
@@ -706,9 +700,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         ExecutorService executorA = Executors.newFixedThreadPool(4);
         Worker readAheadWorkerA = new QueuingWorker(
             100, // queue capacity
-            4,   // thread count
-            executorA,
-            blockCacheA
+            executorA
         );
 
         // Write and read data to populate cache

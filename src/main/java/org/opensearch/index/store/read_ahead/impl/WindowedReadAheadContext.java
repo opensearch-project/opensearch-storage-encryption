@@ -9,7 +9,6 @@ import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.nio.file.Path;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -18,236 +17,287 @@ import org.opensearch.index.store.read_ahead.ReadaheadPolicy;
 import org.opensearch.index.store.read_ahead.Worker;
 
 /**
- * Handles cache hits/misses, batches readahead requests, rate-limits signals.
+ * Best-effort readahead context. The principles are inspired by kernel and RocksDB.
  *
- * Hot path: no atomics, best-effort counters.
- * Delegates pattern tracking to Policy, manages I/O scheduling.
+ * Principles:
+ *  - onAccess() must be extremely cheap (no nanoTime, no queue introspection, no CAS loops for max updates, no logging)
+ *  - miss-driven: if there are no cache misses, we do essentially nothing
+ *  - bail early if scheduling is not possible (paused / pressure) without building backlog
+ *  - skip-and-forget: if scheduling is rejected, drop pending speculative work and move forward
+ *  - bounded submissions: never submit huge bursts
+ *  - idempotent wakeups: never storm the worker callback from search threads
+ *
+ * Key idea:
+ *  - batching should be based on "growth since last wake" (not growth since last scheduled),
+ *    so we keep making progress whenever the worker gets an opportunity to run.
  */
-public class WindowedReadAheadContext implements ReadaheadContext {
+public final class WindowedReadAheadContext implements ReadaheadContext {
     private static final Logger LOGGER = LogManager.getLogger(WindowedReadAheadContext.class);
 
     private final Path path;
     private final long lastFileSeg;
     private final Worker worker;
+    private final org.opensearch.index.store.block_cache.BlockCache<? extends AutoCloseable> blockCache;
     private final WindowedReadaheadPolicy policy;
     private final Runnable signalCallback;
 
-    private static final int HIT_NOP_THRESHOLD_BASE = 8;
-    private static final int HIT_NOP_THRESHOLD_MAX = 512;
-    private int hitNopThreshold = HIT_NOP_THRESHOLD_BASE;
+    // Bound per processQueue() call.
+    private static final long MAX_BLOCKS_PER_SUBMISSION = 64;
 
-    private static final int MISS_BATCH = 3;                     // batch N misses before triggering
-    private static final long MIN_SIGNAL_INTERVAL_NS = 300_000L; // 300µs min signal interval
-    private static final long MERGE_SPIN_NS = 60_000L;           // 60µs worker spin to coalesce
+    // 75% of queue capacity checks (per-context guard to avoid building backlog).
+    private static final int QUEUE_PRESSURE_NUM = 3;
+    private static final int QUEUE_PRESSURE_DEN = 4;
 
+    // Desired tail (exclusive, in blocks), and scheduled tail (exclusive, in blocks).
     private volatile long desiredEndBlock = 0;
     private volatile long lastScheduledEndBlock = 0;
 
-    private int consecutiveHits = 0;
-    private int missCount = 0;
-    private long missMaxBlock = -1;
+    /**
+     * Batching baseline: last desiredEndBlock value for which we successfully woke the worker.
+     * We batch wakeups based on (desiredEndBlock - lastWakeDesiredEndBlock).
+     *
+     * Why track this separately from lastScheduledEndBlock?
+     *
+     * If we batched on (desiredEndBlock - lastScheduledEndBlock), we'd have a starvation problem:
+     *  - Worker is busy processing previous batch
+     *  - lastScheduledEndBlock doesn't advance (worker hasn't drained yet)
+     *  - desiredEndBlock keeps growing from new misses
+     *  - But delta threshold is never met because we already woke once (wakeFlag=1)
+     *  - Worker finishes, but no new wake signal → it starves until next miss
+     *
+     * By tracking lastWakeDesiredEndBlock, we batch on "growth since last wake":
+     *  - Even if worker is busy, we keep waking it as desired grows
+     *  - Worker always has fresh work when it gets an opportunity
+     *  - "Make progress on opportunity" principle
+     */
+    private volatile long lastWakeDesiredEndBlock = 0;
 
-    private volatile long lastSignalNanos = 0;
-    private volatile boolean signalPending = false;
-    private final AtomicBoolean closed = new AtomicBoolean(false);
+    // Idempotent wakeup gate (0 -> not woken, 1 -> woken).
+    private int wakeupFlag = 0;
 
-    private static final VarHandle DESIRED_END_VH;
+    private volatile boolean isClosed = false;
+
+    // Best-effort stats (not required to be exact)
+    private long accessMisses = 0;
+    private long wakeups = 0;
+
+    private long processCalls = 0;
+    private long pressureSkips = 0;
+    private long pausedSkips = 0;
+    private long scheduleAttempts = 0;
+    private long scheduleAccepted = 0;
+    private long scheduleRejected = 0;
+    private long blocksAttempted = 0;
+    private long blocksAccepted = 0;
+
+    private static final VarHandle WAKEUP_VH;
+
     static {
         try {
-            DESIRED_END_VH = MethodHandles.lookup().findVarHandle(WindowedReadAheadContext.class, "desiredEndBlock", long.class);
+            WAKEUP_VH = MethodHandles.lookup().findVarHandle(WindowedReadAheadContext.class, "wakeupFlag", int.class);
         } catch (ReflectiveOperationException e) {
             throw new ExceptionInInitializerError(e);
         }
     }
 
-    private WindowedReadAheadContext(Path path, long fileLength, Worker worker, WindowedReadaheadPolicy policy, Runnable signalCallback) {
+    private WindowedReadAheadContext(
+        Path path,
+        long fileLength,
+        Worker worker,
+        org.opensearch.index.store.block_cache.BlockCache<? extends AutoCloseable> blockCache,
+        WindowedReadaheadPolicy policy,
+        Runnable signalCallback
+    ) {
         this.path = path;
         this.worker = worker;
+        this.blockCache = blockCache;
         this.policy = policy;
         this.signalCallback = signalCallback;
         this.lastFileSeg = Math.max(0L, (fileLength - 1) >>> CACHE_BLOCK_SIZE_POWER);
     }
 
-    /**
-     * Factory method to create a new WindowedReadAheadContext.
-     *
-     * @param path the file path for this context
-     * @param fileLength the length of the file
-     * @param worker the worker thread pool for scheduling readahead tasks
-     * @param config the readahead configuration
-     * @param signalCallback callback to invoke when readahead work is available
-     * @return a new WindowedReadAheadContext instance
-     */
     public static WindowedReadAheadContext build(
         Path path,
         long fileLength,
         Worker worker,
+        org.opensearch.index.store.block_cache.BlockCache<? extends AutoCloseable> blockCache,
         WindowedReadAheadConfig config,
         Runnable signalCallback
     ) {
         var policy = new WindowedReadaheadPolicy(path, config.initialWindow(), config.maxWindowSegments(), config.randomAccessThreshold());
-        return new WindowedReadAheadContext(path, fileLength, worker, policy, signalCallback);
+        return new WindowedReadAheadContext(path, fileLength, worker, blockCache, policy, signalCallback);
     }
 
-    // hot path. keep it always optimized and fast
+    /**
+     * Hot path: must be extremely cheap.
+     *
+     * We only react on misses:
+     *  - bail if worker is globally paused (node-wide thrash/pressure)
+     *  - ask policy if this access pattern should trigger readahead
+     *  - extend desired tail to currBlock + leadBlocks() (best-effort monotonic)
+     *  - wake worker once if we grew enough since the last wake
+     */
     @Override
-    public void onAccess(long blockOffset, boolean wasHit) {
-        final long currBlock = blockOffset >>> CACHE_BLOCK_SIZE_POWER;
-
-        if (wasHit) {
-            handleCacheHit(currBlock);
+    public void onAccess(long blockOffsetBytes, boolean wasHit) {
+        if (isClosed || wasHit) {
             return;
         }
-        handleCacheMiss(currBlock);
-    }
 
-    private void handleCacheHit(long currBlock) {
-        if (++consecutiveHits < hitNopThreshold)
+        if (worker.isReadAheadPaused()) {
             return;
-
-        guardedExtend(currBlock);
-
-        // exponentially back off hit window to reduce wakeups
-        if (hitNopThreshold < HIT_NOP_THRESHOLD_MAX)
-            hitNopThreshold <<= 1;
-
-        consecutiveHits = 0;
-    }
-
-    private void handleCacheMiss(long currBlock) {
-        // Drain any pending signal from cache hits (off hot path)
-        drainSignalIfPending();
-
-        consecutiveHits = 0;
-        hitNopThreshold = HIT_NOP_THRESHOLD_BASE;
-
-        missCount++;
-        if (currBlock > missMaxBlock)
-            missMaxBlock = currBlock;
-
-        final int window = Math.max(1, policy.currentWindow());
-        final boolean enoughMisses = missCount >= MISS_BATCH;
-        final boolean farAhead = (missMaxBlock - lastScheduledEndBlock) >= Math.max(1, window / 4);
-
-        if (enoughMisses || farAhead) {
-            handleSequentialMiss();
-        } else if (currBlock < lastScheduledEndBlock - window) {
-            handleRandomMiss();
         }
-    }
 
-    /** Sequential miss: extend readahead window and schedule */
-    private void handleSequentialMiss() {
-        final long target = Math.min(missMaxBlock + policy.leadBlocks(), lastFileSeg + 1);
-        extendDesiredTo(target);
-        missCount = 0;
-        missMaxBlock = -1;
-        maybeSignal();
-        // Process immediately on miss (off hot path)
-        drainSignalIfPending();
-    }
+        accessMisses++;
 
-    /** Random or backward miss: cancel pending readahead */
-    private void handleRandomMiss() {
-        desiredEndBlock = lastScheduledEndBlock;
-        missCount = 0;
-        missMaxBlock = -1;
-    }
+        final long currBlock = blockOffsetBytes >>> CACHE_BLOCK_SIZE_POWER;
 
-    /** Extend readahead if we are close to scheduled tail */
-    private void guardedExtend(long currBlock) {
-        final long scheduledEnd = lastScheduledEndBlock;
-        if (scheduledEnd <= 0)
+        if (policy.shouldTrigger(currBlock) == false) {
             return;
-        final long guardStart = Math.max(0, scheduledEnd - policy.leadBlocks());
-        if (currBlock >= guardStart && currBlock < scheduledEnd) {
-            final long newEnd = Math.min(currBlock + policy.leadBlocks(), lastFileSeg + 1);
-            extendDesiredTo(newEnd);
-            maybeSignal();
+        }
+
+        final long target = Math.min(currBlock + policy.leadBlocks(), lastFileSeg + 1);
+
+        // Best-effort monotonic extend
+        final long prevDesired = desiredEndBlock;
+        if (target <= prevDesired) {
+            return;
+        }
+        desiredEndBlock = target;
+
+        // Wake immediately on growth - idempotent gate prevents storms.
+        // processQueue() naturally batches up to MAX_BLOCKS_PER_SUBMISSION (64).
+        // This ensures we "make progress on opportunity" for all access patterns (sparse, burst, sequential).
+        if (maybeWakeWorkerOnce()) {
+            lastWakeDesiredEndBlock = target;
         }
     }
 
     @Override
     public boolean processQueue() {
-        if (closed.get())
+        if (isClosed) {
             return false;
-
-        long desired = desiredEndBlock;
-        final long scheduled = lastScheduledEndBlock;
-        if (desired <= scheduled)
-            return false;
-
-        // brief spin to absorb recent updates
-        final long spinUntil = System.nanoTime() + MERGE_SPIN_NS;
-        while (System.nanoTime() < spinUntil) {
-            long d2 = desiredEndBlock;
-            if (d2 <= desired)
-                break;
-            desired = d2;
-            Thread.onSpinWait();
         }
 
-        final long startSeg = scheduled;
-        final long endExclusive = Math.min(desired, lastFileSeg + 1);
-        final long blockCount = endExclusive - startSeg;
-        if (blockCount < 1)
-            return false;
+        processCalls++;
 
-        final long anchorOffset = startSeg << CACHE_BLOCK_SIZE_POWER;
-        boolean accepted = worker.schedule(path, anchorOffset, blockCount);
-        if (accepted)
+        // If node-wide gate is paused, drop backlog and clear wake gate.
+        if (worker.isReadAheadPaused()) {
+            pausedSkips++;
+            dropBacklogAndResetWakeBaseline();
+            // maybeLogStats(); // enable back for debugging.
+            return false;
+        }
+
+        final long scheduled = lastScheduledEndBlock;
+        final long desired = desiredEndBlock;
+
+        if (desired <= scheduled) {
+            WAKEUP_VH.setRelease(this, 0);
+            // maybeLogStats();
+            return false;
+        }
+
+        // Per-context queue pressure guard (cheap introspection is OK here; processQueue is not hot).
+        final int cap = worker.getQueueCapacity();
+        if (cap > 0) {
+            final int q = worker.getQueueSize();
+            if (q > (cap * QUEUE_PRESSURE_NUM) / QUEUE_PRESSURE_DEN) {
+                pressureSkips++;
+                policy.onQueuePressureMedium();
+                dropBacklogAndResetWakeBaseline();
+                // maybeLogStats();
+                return false;
+            }
+        }
+
+        final long endExclusiveRaw = Math.min(desired, lastFileSeg + 1);
+        final long endExclusive = Math.min(endExclusiveRaw, scheduled + MAX_BLOCKS_PER_SUBMISSION);
+
+        final long blockCount = endExclusive - scheduled;
+        if (blockCount <= 0) {
+            WAKEUP_VH.setRelease(this, 0);
+            // maybeLogStats();
+            return false;
+        }
+
+        scheduleAttempts++;
+        blocksAttempted += blockCount;
+
+        final long anchorOffset = scheduled << CACHE_BLOCK_SIZE_POWER;
+        final boolean accepted = worker.schedule(blockCache, path, anchorOffset, blockCount);
+
+        if (accepted) {
+            scheduleAccepted++;
+            blocksAccepted += blockCount;
+
             lastScheduledEndBlock = endExclusive;
 
-        if (LOGGER.isDebugEnabled()) {
-            LOGGER
-                .debug(
-                    "RA_TRIGGER path={} startSeg={} endExclusive={} blocks={} accepted={} desired={} watermark={}",
-                    path,
-                    startSeg,
-                    endExclusive,
-                    blockCount,
-                    accepted,
-                    desired,
-                    lastScheduledEndBlock
-                );
+            // Do not clear wake gate if more work remains.
+            if (desiredEndBlock <= lastScheduledEndBlock) {
+                WAKEUP_VH.setRelease(this, 0);
+            }
+            // maybeLogStats();
+            return true;
         }
-        return accepted;
+
+        scheduleRejected++;
+
+        // Rejected: drop backlog and allow future wakeups.
+        policy.onQueueSaturated();
+        dropBacklogAndResetWakeBaseline();
+
+        // maybeLogStats();
+        return false;
     }
 
-    private void extendDesiredTo(long newEndExclusive) {
-        long prev;
-        do {
-            prev = desiredEndBlock;
-            if (newEndExclusive <= prev)
-                return;
-        } while (!DESIRED_END_VH.weakCompareAndSetRelease(this, prev, newEndExclusive));
+    private void dropBacklogAndResetWakeBaseline() {
+        desiredEndBlock = lastScheduledEndBlock;
+        lastWakeDesiredEndBlock = lastScheduledEndBlock;
+        WAKEUP_VH.setRelease(this, 0);
     }
 
-    private void maybeSignal() {
-        final long delta = desiredEndBlock - lastScheduledEndBlock;
-        if (delta <= 0)
-            return;
+    @SuppressWarnings("unused")
+    private void maybeLogStats() {
+        int q = -1;
+        int cap = -1;
+        try {
+            cap = worker.getQueueCapacity();
+            q = worker.getQueueSize();
+        } catch (Exception ignored) {}
 
-        final int w = Math.max(1, policy.currentWindow());
-        final int minBatch = Math.max(policy.initialWindow(), Math.max(policy.leadBlocks(), w / 2));
-        if (delta < minBatch)
-            return;
+        final long desired = desiredEndBlock;
+        final long tail = lastScheduledEndBlock;
+        final long queuedDelta = desired - tail;
 
-        final long now = System.nanoTime();
-        if (now - lastSignalNanos < MIN_SIGNAL_INTERVAL_NS)
-            return;
+        final long emptyProcess = processCalls - scheduleAttempts;
+        final long avgBlocksPerOk = scheduleAccepted == 0 ? 0 : (blocksAccepted / scheduleAccepted);
 
-        lastSignalNanos = now;
-
-        // Set flag instead of inline processing to avoid hot path latency
-        signalPending = true;
-    }
-
-    private void drainSignalIfPending() {
-        if (signalPending && signalCallback != null) {
-            signalPending = false;
-            signalCallback.run();
-        }
+        LOGGER
+            .info(
+                "RA_STATS path={} missAccess={} desired={} scheduledTail={} queuedDelta={} window={} lead={} "
+                    + "wakeups={} processCalls={} emptyProcess={} pressureSkips={} pausedSkips={} "
+                    + "schedule(attempt={}, ok={}, reject={}) blocks(attempted={}, ok={}, avgOk={}) q={}/{}",
+                path,
+                accessMisses,
+                desired,
+                tail,
+                queuedDelta,
+                policy.currentWindow(),
+                policy.leadBlocks(),
+                wakeups,
+                processCalls,
+                emptyProcess,
+                pressureSkips,
+                pausedSkips,
+                scheduleAttempts,
+                scheduleAccepted,
+                scheduleRejected,
+                blocksAttempted,
+                blocksAccepted,
+                avgBlocksPerOk,
+                q,
+                cap
+            );
     }
 
     @Override
@@ -261,34 +311,68 @@ public class WindowedReadAheadContext implements ReadaheadContext {
     }
 
     @Override
-    public void triggerReadahead(long fileOffset) {
-        final long start = fileOffset >>> CACHE_BLOCK_SIZE_POWER;
-        extendDesiredTo(Math.min(start + policy.currentWindow(), lastFileSeg + 1));
-        maybeSignal();
+    public void triggerReadahead(long fileOffsetBytes) {
+        if (isClosed) {
+            return;
+        }
+        if (worker.isReadAheadPaused()) {
+            return;
+        }
+
+        final long start = fileOffsetBytes >>> CACHE_BLOCK_SIZE_POWER;
+        final long target = Math.min(start + policy.currentWindow(), lastFileSeg + 1);
+
+        final long prevDesired = desiredEndBlock;
+        if (target <= prevDesired) {
+            return;
+        }
+        desiredEndBlock = target;
+
+        // Wake immediately - same as onAccess
+        if (maybeWakeWorkerOnce()) {
+            lastWakeDesiredEndBlock = target;
+        }
     }
 
     @Override
     public void reset() {
         desiredEndBlock = lastScheduledEndBlock;
-        missCount = 0;
-        missMaxBlock = -1;
-        consecutiveHits = 0;
+        lastWakeDesiredEndBlock = lastScheduledEndBlock;
+        WAKEUP_VH.setRelease(this, 0);
+        policy.reset();
     }
 
     @Override
     public void cancel() {
-        if (worker != null)
-            worker.cancel(path);
+        worker.cancel(path);
     }
 
     @Override
     public boolean isReadAheadEnabled() {
-        return !closed.get();
+        return !isClosed;
     }
 
     @Override
     public void close() {
-        if (closed.compareAndSet(false, true))
-            cancel();
+        if (isClosed) {
+            return;
+        }
+        isClosed = true;
+        cancel();
+        desiredEndBlock = lastScheduledEndBlock;
+        lastWakeDesiredEndBlock = lastScheduledEndBlock;
+        WAKEUP_VH.setRelease(this, 0);
+    }
+
+    private boolean maybeWakeWorkerOnce() {
+        if (signalCallback == null) {
+            return false;
+        }
+        if ((int) WAKEUP_VH.compareAndExchange(this, 0, 1) == 0) {
+            wakeups++;
+            signalCallback.run();
+            return true;
+        }
+        return false;
     }
 }

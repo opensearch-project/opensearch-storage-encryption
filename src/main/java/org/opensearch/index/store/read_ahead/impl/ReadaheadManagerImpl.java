@@ -46,6 +46,7 @@ public class ReadaheadManagerImpl implements ReadaheadManager {
     private static final Logger LOGGER = LogManager.getLogger(ReadaheadManagerImpl.class);
 
     private final Worker worker;
+    private final org.opensearch.index.store.block_cache.BlockCache<? extends AutoCloseable> blockCache;
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private ReadaheadContext context;
 
@@ -59,10 +60,12 @@ public class ReadaheadManagerImpl implements ReadaheadManager {
      * The worker should be properly configured and running before being passed to this constructor.
      *
      * @param worker the worker instance to handle readahead scheduling and execution
-     * @throws NullPointerException if worker is null
+     * @param blockCache the directory-specific block cache to use for prefetching
+     * @throws NullPointerException if worker or blockCache is null
      */
-    public ReadaheadManagerImpl(Worker worker) {
+    public ReadaheadManagerImpl(Worker worker, org.opensearch.index.store.block_cache.BlockCache<? extends AutoCloseable> blockCache) {
         this.worker = worker;
+        this.blockCache = blockCache;
     }
 
     /**
@@ -91,7 +94,7 @@ public class ReadaheadManagerImpl implements ReadaheadManager {
             throw new IllegalStateException("ReadaheadContext already registered");
 
         WindowedReadAheadConfig config = WindowedReadAheadConfig.defaultConfig();
-        this.context = WindowedReadAheadContext.build(path, fileLength, worker, config, this::signal);
+        this.context = WindowedReadAheadContext.build(path, fileLength, worker, blockCache, config, this::signal);
 
         return this.context;
     }

@@ -4,8 +4,6 @@
  */
 package org.opensearch.index.store.read_ahead.impl;
 
-import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE_POWER;
-
 import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -30,11 +28,11 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
 
     /** Immutable state snapshot. */
     private static final class State {
-        final long lastSeg;
+        final long lastBlock;
         final int window;
 
-        State(long lastSeg, int window) {
-            this.lastSeg = lastSeg;
+        State(long lastBlock, int window) {
+            this.lastBlock = lastBlock;
             this.window = window;
         }
 
@@ -97,20 +95,19 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
     }
 
     @Override
-    public boolean shouldTrigger(long currentOffset) {
-        final long currSeg = currentOffset >>> CACHE_BLOCK_SIZE_POWER;
+    public boolean shouldTrigger(long currBlock) {
         for (;;) {
             final State s = ref.get();
-            if (s.lastSeg == -1L) {
+            if (s.lastBlock == -1L) {
                 final int win = initialWindow;
-                if (ref.compareAndSet(s, new State(currSeg, win))) {
-                    LOGGER.trace("Init: path={}, currSeg={}, win={}", path, currSeg, win);
+                if (ref.compareAndSet(s, new State(currBlock, win))) {
+                    LOGGER.trace("Init: path={}, currSeg={}, win={}", path, currBlock, win);
                     return true;
                 }
                 continue;
             }
 
-            final long gap = currSeg - s.lastSeg;
+            final long gap = currBlock - s.lastBlock;
             int newWin;
             boolean trigger;
 
@@ -144,11 +141,11 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
                 newWin = (absGap > s.window / 2) ? initialWindow : decay(s.window);
             }
 
-            final State next = new State(currSeg, newWin);
+            final State next = new State(currBlock, newWin);
             if (ref.compareAndSet(s, next)) {
-                if (LOGGER.isDebugEnabled()) {
+                if (LOGGER.isTraceEnabled()) {
                     LOGGER
-                        .debug(
+                        .trace(
                             "path={}, gap={}, seq={}, trigger={}, win(old→new)={}->{}, currSeg={}, lead={}",
                             path,
                             gap,
@@ -156,7 +153,7 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
                             trigger,
                             s.window,
                             newWin,
-                            currSeg,
+                            currBlock,
                             leadFor(newWin)
                         );
                 }
@@ -195,7 +192,7 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
      * Called when the readahead queue is under moderate stress.
      */
     public void onQueuePressureMedium() {
-        ref.updateAndGet(s -> new State(s.lastSeg, Math.max(initialWindow, s.window >>> 1)));
+        ref.updateAndGet(s -> new State(s.lastBlock, Math.max(initialWindow, s.window >>> 1)));
     }
 
     /**
@@ -203,7 +200,7 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
      * Called when the readahead queue is under severe stress.
      */
     public void onQueuePressureHigh() {
-        ref.updateAndGet(s -> new State(s.lastSeg, initialWindow));
+        ref.updateAndGet(s -> new State(s.lastBlock, initialWindow));
     }
 
     /**
@@ -219,7 +216,7 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
      * This reduces unnecessary prefetching when the cache is already effective.
      */
     public void onCacheHitShrink() {
-        ref.updateAndGet(s -> new State(s.lastSeg, Math.max(initialWindow, s.window >>> 1)));
+        ref.updateAndGet(s -> new State(s.lastBlock, Math.max(initialWindow, s.window >>> 1)));
     }
 
     /**

@@ -104,4 +104,32 @@ public interface BlockCache<T> {
      * record cache stats
      */
     void recordStats();
+
+    /**
+     * Returns the cache hit rate as a value between 0.0 and 1.0.
+     *
+     * @return hit rate (hits / (hits + misses))
+     */
+    double getHitRate();
+
+    /**
+     * Returns the current estimated size of the cache.
+     *
+     * @return number of entries in the cache
+     */
+    long getCacheSize();
+
+    /**
+     * Returns the cumulative count of cache hits.
+     *
+     * @return total number of cache hits since cache creation
+     */
+    long hitCount();
+
+    /**
+     * Returns the cumulative count of cache misses.
+     *
+     * @return total number of cache misses since cache creation
+     */
+    long missCount();
 }

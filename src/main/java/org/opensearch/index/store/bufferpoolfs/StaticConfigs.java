@@ -50,15 +50,10 @@ public class StaticConfigs {
      */
     public static final int CACHE_BLOCK_SIZE = 1 << CACHE_BLOCK_SIZE_POWER;
 
-    /** 
+    /**
      * Bit mask for cache block alignment (block_size - 1).
      */
     public static final long CACHE_BLOCK_MASK = CACHE_BLOCK_SIZE - 1;
-
-    /** 
-     * Size of the read-ahead operation queue.
-     */
-    public static final int READ_AHEAD_QUEUE_SIZE = 4096;
 
     private static int getPageSizeSafe() {
         try {

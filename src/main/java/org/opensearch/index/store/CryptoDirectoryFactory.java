@@ -4,8 +4,6 @@
  */
 package org.opensearch.index.store;
 
-import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.READ_AHEAD_QUEUE_SIZE;
-
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -49,7 +47,6 @@ import org.opensearch.index.store.kms_encryption_context.EncryptionContextResolv
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 import org.opensearch.index.store.pool.PoolBuilder;
 import org.opensearch.index.store.read_ahead.Worker;
-import org.opensearch.index.store.read_ahead.impl.QueuingWorker;
 import org.opensearch.plugins.IndexStorePlugin;
 
 /**
@@ -497,10 +494,9 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             resources.getMaxCacheBlocks()
         );
 
-        // Create per-shard worker with isolated queue but shared executor threads
-        // Limit concurrent drainers per shard to prevent overwhelming the shared pool
-        int maxRunners = Math.max(2, Runtime.getRuntime().availableProcessors() / 8);
-        Worker readaheadWorker = new QueuingWorker(READ_AHEAD_QUEUE_SIZE, maxRunners, poolResources.getReadAheadExecutor(), directoryCache);
+        // Use the shared node-wide read-ahead worker
+        // All shards/directories share a single queue and executor pool for better resource utilization
+        Worker readaheadWorker = resources.getSharedReadaheadWorker();
 
         return new BufferPoolDirectory(
             location,

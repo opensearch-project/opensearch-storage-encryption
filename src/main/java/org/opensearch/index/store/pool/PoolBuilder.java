@@ -18,6 +18,9 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheBuilder;
+import org.opensearch.index.store.read_ahead.Worker;
+import org.opensearch.index.store.read_ahead.impl.QueuingWorker;
+import org.opensearch.index.store.read_ahead.impl.ReadAheadSizingPolicy;
 
 /**
  * Builder for creating shared pool and cache resources with proper lifecycle management.
@@ -45,6 +48,8 @@ public final class PoolBuilder {
         private final Pool<RefCountedMemorySegment> segmentPool;
         private final BlockCache<RefCountedMemorySegment> blockCache;
         private final long maxCacheBlocks;
+        private final int readAheadQueueSize;
+        private final Worker sharedReadaheadWorker;
         private final TelemetryThread telemetry;
         private final java.util.concurrent.ThreadPoolExecutor removalExecutor;
         private final ExecutorService readAheadExecutor;
@@ -53,6 +58,8 @@ public final class PoolBuilder {
             Pool<RefCountedMemorySegment> segmentPool,
             BlockCache<RefCountedMemorySegment> blockCache,
             long maxCacheBlocks,
+            int readAheadQueueSize,
+            Worker sharedReadaheadWorker,
             TelemetryThread telemetry,
             java.util.concurrent.ThreadPoolExecutor removalExecutor,
             ExecutorService readAheadExecutor
@@ -60,6 +67,8 @@ public final class PoolBuilder {
             this.segmentPool = segmentPool;
             this.blockCache = blockCache;
             this.maxCacheBlocks = maxCacheBlocks;
+            this.readAheadQueueSize = readAheadQueueSize;
+            this.sharedReadaheadWorker = sharedReadaheadWorker;
             this.telemetry = telemetry;
             this.removalExecutor = removalExecutor;
             this.readAheadExecutor = readAheadExecutor;
@@ -93,6 +102,25 @@ public final class PoolBuilder {
         }
 
         /**
+         * Returns the calculated read-ahead queue size.
+         *
+         * @return the read-ahead queue size
+         */
+        public int getReadAheadQueueSize() {
+            return readAheadQueueSize;
+        }
+
+        /**
+         * Returns the shared read-ahead worker.
+         * This worker is shared across all shards/directories with a single queue and executor pool.
+         *
+         * @return the shared read-ahead worker
+         */
+        public Worker getSharedReadaheadWorker() {
+            return sharedReadaheadWorker;
+        }
+
+        /**
          * Returns the shared read-ahead executor service.
          * This executor is shared across all per-shard workers for thread reuse while maintaining queue isolation.
          *
@@ -109,6 +137,13 @@ public final class PoolBuilder {
         public void close() {
             if (telemetry != null) {
                 telemetry.close();
+            }
+            if (sharedReadaheadWorker != null) {
+                try {
+                    sharedReadaheadWorker.close();
+                } catch (Exception e) {
+                    LOGGER.warn("Error closing shared readahead worker", e);
+                }
             }
             if (removalExecutor != null) {
                 removalExecutor.shutdown();
@@ -224,6 +259,11 @@ public final class PoolBuilder {
         segmentPool.warmUp(warmupBlocks);
         LOGGER.info("Warmed up {} blocks ({}% of {} cache blocks)", warmupBlocks, warmupPercentage * 100, maxCacheBlocks);
 
+        // Calculate read-ahead queue size based on cache capacity
+        // Pool constraint not needed since cache evictions automatically release pool memory
+        int readAheadQueueSize = ReadAheadSizingPolicy.calculateQueueSize(maxCacheBlocks);
+        LOGGER.info("Calculated read-ahead queue size={} (cache={} blocks)", readAheadQueueSize, maxCacheBlocks);
+
         // Initialize shared cache with removal listener and get its executor
         BlockCacheBuilder.CacheWithExecutor<RefCountedMemorySegment, RefCountedMemorySegment> cacheWithExecutor = BlockCacheBuilder
             .build(CACHE_INITIAL_SIZE, maxCacheBlocks);
@@ -231,20 +271,35 @@ public final class PoolBuilder {
         java.util.concurrent.ThreadPoolExecutor removalExecutor = cacheWithExecutor.getExecutor();
         LOGGER.info("Creating shared block cache with blocks={}", maxCacheBlocks);
 
-        // Create shared read-ahead executor service
-        // Each per-shard worker will have its own queue but share these threads
-        int threads = Math.max(8, Runtime.getRuntime().availableProcessors() / 4);
+        // Calculate worker threads using principled drain-time approach
+        int threads = ReadAheadSizingPolicy.calculateWorkerThreads(readAheadQueueSize);
+
         AtomicInteger threadId = new AtomicInteger();
         ExecutorService readAheadExecutor = Executors.newFixedThreadPool(threads, r -> {
             Thread t = new Thread(r, "readahead-worker-" + threadId.incrementAndGet());
             t.setDaemon(true);
             return t;
         });
-        LOGGER.info("Creating shared read-ahead executor with threads={}", threads);
+        LOGGER.info("Creating shared read-ahead executor with threads={} (queue={})", threads, readAheadQueueSize);
+
+        // Create shared read-ahead worker (node-wide, single queue)
+        // Executor thread pool naturally limits concurrency - no need for separate maxRunners cap
+        // BlockCache is passed per-request to support directory-specific loaders
+        Worker sharedReadaheadWorker = new QueuingWorker(readAheadQueueSize, readAheadExecutor);
+        LOGGER.info("Created shared read-ahead worker: queueSize={} executorThreads={}", readAheadQueueSize, threads);
 
         // Start telemetry
         TelemetryThread telemetry = new TelemetryThread(segmentPool, blockCache);
 
-        return new PoolResources(segmentPool, blockCache, maxCacheBlocks, telemetry, removalExecutor, readAheadExecutor);
+        return new PoolResources(
+            segmentPool,
+            blockCache,
+            maxCacheBlocks,
+            readAheadQueueSize,
+            sharedReadaheadWorker,
+            telemetry,
+            removalExecutor,
+            readAheadExecutor
+        );
     }
 }

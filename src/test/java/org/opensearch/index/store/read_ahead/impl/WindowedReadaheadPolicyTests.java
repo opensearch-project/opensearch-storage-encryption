@@ -131,13 +131,13 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
         assertEquals("Initial window", 4, policy.currentWindow());
 
         // Sequential reads: gap = 1 each time
-        policy.shouldTrigger(1L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(1L);
         assertEquals("Window doubles after sequential", 8, policy.currentWindow());
 
-        policy.shouldTrigger(2L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(2L);
         assertEquals("Window doubles again", 16, policy.currentWindow());
 
-        policy.shouldTrigger(3L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(3L);
         assertEquals("Window doubles again", 32, policy.currentWindow());
     }
 
@@ -148,16 +148,16 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 32, 8);
 
         policy.shouldTrigger(0);
-        policy.shouldTrigger(1L * CACHE_BLOCK_SIZE); // window = 8
-        policy.shouldTrigger(2L * CACHE_BLOCK_SIZE); // window = 16
-        policy.shouldTrigger(3L * CACHE_BLOCK_SIZE); // window = 32 (max)
+        policy.shouldTrigger(1L); // window = 8
+        policy.shouldTrigger(2L); // window = 16
+        policy.shouldTrigger(3L); // window = 32 (max)
 
         assertEquals("Window should be at max", 32, policy.currentWindow());
 
-        policy.shouldTrigger(4L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(4L);
         assertEquals("Window should stay at max", 32, policy.currentWindow());
 
-        policy.shouldTrigger(5L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(5L);
         assertEquals("Window should stay at max", 32, policy.currentWindow());
     }
 
@@ -169,7 +169,7 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
 
         List<Boolean> triggers = new ArrayList<>();
         for (int i = 0; i < 10; i++) {
-            triggers.add(policy.shouldTrigger(i * CACHE_BLOCK_SIZE));
+            triggers.add(policy.shouldTrigger(i));
         }
 
         // All sequential accesses should trigger
@@ -188,7 +188,7 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
         int initialWindow = policy.currentWindow();
 
         // Gap of 2 blocks - should be sequential (within seqGapBuffer)
-        boolean triggered = policy.shouldTrigger(2L * CACHE_BLOCK_SIZE);
+        boolean triggered = policy.shouldTrigger(2L);
 
         assertTrue("Small gap should trigger", triggered);
         assertEquals("Window should grow", initialWindow * 2, policy.currentWindow());
@@ -204,7 +204,7 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
 
         // seqGapBuffer = max(2, min(window/2, 4)) = max(2, min(4, 4)) = 4
         // So gaps 1-4 should be sequential
-        boolean triggered = policy.shouldTrigger(4L * CACHE_BLOCK_SIZE);
+        boolean triggered = policy.shouldTrigger(4L);
 
         assertTrue("Gap within buffer should be sequential", triggered);
         assertTrue("Window should grow", policy.currentWindow() > 8);
@@ -220,16 +220,16 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
 
         // Build up window to 64
         policy.shouldTrigger(0);
-        policy.shouldTrigger(1L * CACHE_BLOCK_SIZE);
-        policy.shouldTrigger(2L * CACHE_BLOCK_SIZE);
-        policy.shouldTrigger(3L * CACHE_BLOCK_SIZE);
-        policy.shouldTrigger(4L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(1L);
+        policy.shouldTrigger(2L);
+        policy.shouldTrigger(3L);
+        policy.shouldTrigger(4L);
         int windowBeforeJump = policy.currentWindow(); // Should be 64
 
         // Small jump: gap > seqGapBuffer but <= window/smallGapDivisor
         // seqGapBuffer = max(2, min(64/2, 4)) = 4
         // window/8 = 64/8 = 8, so jump of 6 blocks is small (> 4 but <= 8)
-        boolean triggered = policy.shouldTrigger(10L * CACHE_BLOCK_SIZE);
+        boolean triggered = policy.shouldTrigger(10L);
 
         assertTrue("Small jump should trigger", triggered);
         assertEquals("Window should shrink by half", windowBeforeJump / 2, policy.currentWindow());
@@ -243,13 +243,13 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
 
         // Build up window
         policy.shouldTrigger(0);
-        policy.shouldTrigger(1L * CACHE_BLOCK_SIZE);
-        policy.shouldTrigger(2L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(1L);
+        policy.shouldTrigger(2L);
         assertEquals("Window should be grown", 16, policy.currentWindow());
 
         // Large jump: gap > window/smallGapDivisor
         // window/8 = 16/8 = 2, so jump of 100 is large
-        boolean triggered = policy.shouldTrigger(100L * CACHE_BLOCK_SIZE);
+        boolean triggered = policy.shouldTrigger(100L);
 
         assertFalse("Large jump should NOT trigger", triggered);
         assertEquals("Window should reset to initial", 4, policy.currentWindow());
@@ -263,20 +263,20 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
 
         // Build window - start at 8, doubles each time
         policy.shouldTrigger(0); // window = 8
-        policy.shouldTrigger(1L * CACHE_BLOCK_SIZE); // window = 16
-        policy.shouldTrigger(2L * CACHE_BLOCK_SIZE); // window = 32
+        policy.shouldTrigger(1L); // window = 16
+        policy.shouldTrigger(2L); // window = 32
         assertEquals("Window should be 32", 32, policy.currentWindow());
 
         // seqGapBuffer = max(2, min(32/2, 4)) = 4
         // smallGapDivisor = 4, so smallGap = max(1, 32/4) = 8
         // Jump of 8 blocks (from 2 to 10) should be small (gap=8, seqGap=4, smallGap=8)
         // gap > seqGapBuffer (8 > 4) AND gap <= smallGap (8 <= 8) → small jump, triggers and shrinks
-        boolean triggered8 = policy.shouldTrigger(10L * CACHE_BLOCK_SIZE);
+        boolean triggered8 = policy.shouldTrigger(10L);
         assertTrue("Jump of exactly smallGap should trigger", triggered8);
         assertEquals("Window should shrink by half after small jump", 16, policy.currentWindow());
 
         // Jump of 20 blocks should be large (doesn't trigger)
-        boolean triggered9 = policy.shouldTrigger(30L * CACHE_BLOCK_SIZE);
+        boolean triggered9 = policy.shouldTrigger(30L);
         assertFalse("Large jump should NOT trigger", triggered9);
     }
 
@@ -289,10 +289,10 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         policy.shouldTrigger(0);
-        policy.shouldTrigger(1L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(1L);
         int windowBefore = policy.currentWindow();
 
-        boolean triggered = policy.shouldTrigger(1L * CACHE_BLOCK_SIZE);
+        boolean triggered = policy.shouldTrigger(1L);
 
         assertFalse("Same position should NOT trigger", triggered);
         assertEquals("Window should not change", windowBefore, policy.currentWindow());
@@ -304,11 +304,11 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     public void testRepeatedSamePosition() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
-        policy.shouldTrigger(5L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(5L);
         int windowBefore = policy.currentWindow();
 
         for (int i = 0; i < 10; i++) {
-            boolean triggered = policy.shouldTrigger(5L * CACHE_BLOCK_SIZE);
+            boolean triggered = policy.shouldTrigger(5L);
             assertFalse("Repeated same position should not trigger", triggered);
         }
 
@@ -325,13 +325,13 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
 
         // Build up window
         policy.shouldTrigger(0);
-        policy.shouldTrigger(1L * CACHE_BLOCK_SIZE);
-        policy.shouldTrigger(2L * CACHE_BLOCK_SIZE);
-        policy.shouldTrigger(3L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(1L);
+        policy.shouldTrigger(2L);
+        policy.shouldTrigger(3L);
         int windowBefore = policy.currentWindow(); // Should be 32
 
         // Small backward: gap = -1
-        boolean triggered = policy.shouldTrigger(2L * CACHE_BLOCK_SIZE);
+        boolean triggered = policy.shouldTrigger(2L);
 
         assertFalse("Backward seek should NOT trigger", triggered);
         assertTrue("Window should decay (not reset)", policy.currentWindow() > 4);
@@ -346,25 +346,25 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
 
         // Build up window
         policy.shouldTrigger(0);
-        policy.shouldTrigger(1L * CACHE_BLOCK_SIZE);
-        policy.shouldTrigger(2L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(1L);
+        policy.shouldTrigger(2L);
         assertEquals("Window should be 16", 16, policy.currentWindow());
 
         // Large backward: from block 2 to block 0, gap = -2
         // absGap = 2, window/2 = 8, so absGap <= window/2 → decay (not reset)
         // Need larger backward to trigger reset
         // Jump from block 2 to far in past
-        policy.shouldTrigger(100L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(100L);
         int windowAfterForward = policy.currentWindow();
 
         // Now backward by more than window/2
         // If window is reset from forward jump, need to rebuild
-        policy.shouldTrigger(101L * CACHE_BLOCK_SIZE);
-        policy.shouldTrigger(102L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(101L);
+        policy.shouldTrigger(102L);
         int rebuiltWindow = policy.currentWindow();
 
         // Large backward: gap = -50 (absGap > window/2)
-        boolean triggered = policy.shouldTrigger(52L * CACHE_BLOCK_SIZE);
+        boolean triggered = policy.shouldTrigger(52L);
 
         assertFalse("Large backward should NOT trigger", triggered);
         // Should reset to initial if absGap > window/2
@@ -379,13 +379,13 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
 
         // Build window to 16
         policy.shouldTrigger(0);
-        policy.shouldTrigger(1L * CACHE_BLOCK_SIZE);
-        policy.shouldTrigger(2L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(1L);
+        policy.shouldTrigger(2L);
         assertEquals("Window should be 16", 16, policy.currentWindow());
 
         // Backward by exactly window/2 = 8 blocks
         // absGap = 8, window/2 = 8, so absGap <= window/2 → decay
-        boolean triggered = policy.shouldTrigger((2L - 8L) * CACHE_BLOCK_SIZE);
+        boolean triggered = policy.shouldTrigger(-6L);
 
         assertFalse("Backward at boundary should NOT trigger", triggered);
         assertTrue("Should decay not reset", policy.currentWindow() >= 4);
@@ -399,13 +399,13 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
 
         // Build window to 16
         policy.shouldTrigger(0);
-        policy.shouldTrigger(1L * CACHE_BLOCK_SIZE);
-        policy.shouldTrigger(2L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(1L);
+        policy.shouldTrigger(2L);
         assertEquals("Window should be 16", 16, policy.currentWindow());
 
         // Backward by window/2 + 1 = 9 blocks
         // absGap = 9, window/2 = 8, so absGap > window/2 → reset
-        boolean triggered = policy.shouldTrigger((2L - 9L) * CACHE_BLOCK_SIZE);
+        boolean triggered = policy.shouldTrigger(-7L);
 
         assertFalse("Backward beyond boundary should NOT trigger", triggered);
         assertEquals("Should reset to initial", 4, policy.currentWindow());
@@ -422,12 +422,12 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
         // Build window to 32
         policy.shouldTrigger(0);
         for (int i = 1; i <= 3; i++) {
-            policy.shouldTrigger(i * CACHE_BLOCK_SIZE);
+            policy.shouldTrigger(i);
         }
         assertEquals("Window should be 32", 32, policy.currentWindow());
 
         // Trigger small backward to cause decay
-        policy.shouldTrigger(2L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(2L);
 
         // Decay formula: max(initialWindow, window - max(1, window/4))
         // max(4, 32 - max(1, 8)) = max(4, 24) = 24
@@ -459,23 +459,23 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
         // Build to 64
         policy.shouldTrigger(0);
         for (int i = 1; i <= 4; i++) {
-            policy.shouldTrigger(i * CACHE_BLOCK_SIZE);
+            policy.shouldTrigger(i);
         }
         assertEquals("Window should be 64", 64, policy.currentWindow());
 
         // Cause multiple small backward seeks to trigger decay
         // After block 4, go back to 3, then 2, then 1
-        policy.shouldTrigger(3L * CACHE_BLOCK_SIZE); // gap = -1 (backward)
+        policy.shouldTrigger(3L); // gap = -1 (backward)
         int window1 = policy.currentWindow();
         assertTrue("Window should decay after first backward", window1 < 64);
         assertTrue("Window should stay above initial", window1 >= 4);
 
-        policy.shouldTrigger(2L * CACHE_BLOCK_SIZE); // gap = -1 (backward)
+        policy.shouldTrigger(2L); // gap = -1 (backward)
         int window2 = policy.currentWindow();
         assertTrue("Window should continue to decay", window2 <= window1);
         assertTrue("Window should stay above initial", window2 >= 4);
 
-        policy.shouldTrigger(1L * CACHE_BLOCK_SIZE); // gap = -1 (backward)
+        policy.shouldTrigger(1L); // gap = -1 (backward)
         int window3 = policy.currentWindow();
         assertTrue("Window should continue to decay", window3 <= window2);
         assertTrue("Window should stay above initial", window3 >= 4);
@@ -510,7 +510,7 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
         int lead1 = policy.leadBlocks();
 
         // Grow window
-        policy.shouldTrigger(1L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(1L);
         int lead2 = policy.leadBlocks();
 
         assertTrue("Lead should grow with window", lead2 > lead1);
@@ -540,7 +540,7 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
         // Build window to 32
         policy.shouldTrigger(0);
         for (int i = 1; i <= 3; i++) {
-            policy.shouldTrigger(i * CACHE_BLOCK_SIZE);
+            policy.shouldTrigger(i);
         }
         assertEquals("Window should be 32", 32, policy.currentWindow());
 
@@ -572,7 +572,7 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
         // Build window to 64
         policy.shouldTrigger(0);
         for (int i = 1; i <= 4; i++) {
-            policy.shouldTrigger(i * CACHE_BLOCK_SIZE);
+            policy.shouldTrigger(i);
         }
         assertEquals("Window should be 64", 64, policy.currentWindow());
 
@@ -588,8 +588,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         policy.shouldTrigger(0);
-        policy.shouldTrigger(1L * CACHE_BLOCK_SIZE);
-        policy.shouldTrigger(2L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(1L);
+        policy.shouldTrigger(2L);
         assertEquals("Window should be 16", 16, policy.currentWindow());
 
         policy.onQueueSaturated();
@@ -608,7 +608,7 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
         // Build window to 32
         policy.shouldTrigger(0);
         for (int i = 1; i <= 3; i++) {
-            policy.shouldTrigger(i * CACHE_BLOCK_SIZE);
+            policy.shouldTrigger(i);
         }
         assertEquals("Window should be 32", 32, policy.currentWindow());
 
@@ -640,8 +640,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
 
         // Build up state
         policy.shouldTrigger(0);
-        policy.shouldTrigger(1L * CACHE_BLOCK_SIZE);
-        policy.shouldTrigger(2L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(1L);
+        policy.shouldTrigger(2L);
         assertEquals("Window should be grown", 16, policy.currentWindow());
 
         policy.reset();
@@ -649,7 +649,7 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
         assertEquals("Window should reset to initial", 4, policy.currentWindow());
 
         // Next access should trigger (like first access)
-        boolean triggered = policy.shouldTrigger(100L * CACHE_BLOCK_SIZE);
+        boolean triggered = policy.shouldTrigger(100L);
         assertTrue("After reset, access should trigger", triggered);
     }
 
@@ -659,12 +659,12 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     public void testResetClearsHistory() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
-        policy.shouldTrigger(50L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(50L);
 
         policy.reset();
 
         // Large jump after reset should trigger (treated as first access)
-        boolean triggered = policy.shouldTrigger(1000L * CACHE_BLOCK_SIZE);
+        boolean triggered = policy.shouldTrigger(1000L);
         assertTrue("After reset, should trigger like first access", triggered);
     }
 
@@ -689,8 +689,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
                 try {
                     startLatch.await();
                     for (int i = 0; i < accessesPerThread; i++) {
-                        long offset = (threadId * accessesPerThread + i) * CACHE_BLOCK_SIZE;
-                        if (policy.shouldTrigger(offset)) {
+                        long blockIndex = threadId * accessesPerThread + i;
+                        if (policy.shouldTrigger(blockIndex)) {
                             triggerCount.incrementAndGet();
                         }
                     }
@@ -724,7 +724,7 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
 
         // Build up window
         for (int i = 0; i < 10; i++) {
-            policy.shouldTrigger(i * CACHE_BLOCK_SIZE);
+            policy.shouldTrigger(i);
         }
 
         int threadCount = 4;
@@ -749,7 +749,7 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
                                 policy.onCacheHitShrink();
                                 break;
                             case 3:
-                                policy.shouldTrigger((i + 100) * CACHE_BLOCK_SIZE);
+                                policy.shouldTrigger(i + 100);
                                 break;
                         }
                     }
@@ -782,18 +782,18 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
 
         // Sequential burst
         policy.shouldTrigger(0);
-        policy.shouldTrigger(1L * CACHE_BLOCK_SIZE);
-        policy.shouldTrigger(2L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(1L);
+        policy.shouldTrigger(2L);
         int windowAfterSeq = policy.currentWindow();
         assertTrue("Window should grow during sequential", windowAfterSeq > 4);
 
         // Random jump
-        policy.shouldTrigger(100L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(100L);
         assertEquals("Window should reset after large jump", 4, policy.currentWindow());
 
         // Sequential again
-        policy.shouldTrigger(101L * CACHE_BLOCK_SIZE);
-        policy.shouldTrigger(102L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(101L);
+        policy.shouldTrigger(102L);
         assertTrue("Window should grow again", policy.currentWindow() > 4);
     }
 
@@ -805,17 +805,17 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
 
         // Build up
         policy.shouldTrigger(0);
-        policy.shouldTrigger(1L * CACHE_BLOCK_SIZE);
-        policy.shouldTrigger(2L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(1L);
+        policy.shouldTrigger(2L);
 
         // Backward seek
         policy.shouldTrigger(0);
         int windowAfterBackward = policy.currentWindow();
 
         // Resume sequential
-        policy.shouldTrigger(1L * CACHE_BLOCK_SIZE);
-        policy.shouldTrigger(2L * CACHE_BLOCK_SIZE);
-        policy.shouldTrigger(3L * CACHE_BLOCK_SIZE);
+        policy.shouldTrigger(1L);
+        policy.shouldTrigger(2L);
+        policy.shouldTrigger(3L);
 
         assertTrue("Window should recover after resuming sequential", policy.currentWindow() > windowAfterBackward);
     }
@@ -828,7 +828,7 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
 
         // Grow window
         for (int i = 0; i < 5; i++) {
-            policy.shouldTrigger(i * CACHE_BLOCK_SIZE);
+            policy.shouldTrigger(i);
         }
         assertTrue("Window should be grown", policy.currentWindow() > 4);
 
@@ -838,7 +838,7 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
 
         // Try to grow again
         for (int i = 5; i < 10; i++) {
-            policy.shouldTrigger(i * CACHE_BLOCK_SIZE);
+            policy.shouldTrigger(i);
         }
         assertTrue("Window should grow again after pressure", policy.currentWindow() > 4);
     }
@@ -849,29 +849,29 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     public void testTypicalLucenePattern() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 8, 256, 8);
 
-        long offset = 0;
+        long blockIndex = 0;
         int triggerCount = 0;
 
         // Sequential read of posting list
         for (int i = 0; i < 50; i++) {
-            if (policy.shouldTrigger(offset)) {
+            if (policy.shouldTrigger(blockIndex)) {
                 triggerCount++;
             }
-            offset += CACHE_BLOCK_SIZE;
+            blockIndex++;
         }
 
         assertTrue("Should trigger many times during sequential", triggerCount > 10);
         assertTrue("Window should have grown", policy.currentWindow() > 8);
 
         // Jump to different posting list
-        offset = 1000L * CACHE_BLOCK_SIZE;
-        boolean jumpTriggered = policy.shouldTrigger(offset);
+        blockIndex = 1000L;
+        boolean jumpTriggered = policy.shouldTrigger(blockIndex);
         assertFalse("Large jump should not trigger", jumpTriggered);
 
         // Sequential again
         for (int i = 0; i < 20; i++) {
-            offset += CACHE_BLOCK_SIZE;
-            policy.shouldTrigger(offset);
+            blockIndex++;
+            policy.shouldTrigger(blockIndex);
         }
 
         assertTrue("Window should grow again after jump", policy.currentWindow() > 8);

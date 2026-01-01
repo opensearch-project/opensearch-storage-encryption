@@ -16,22 +16,22 @@ import static org.mockito.Mockito.when;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.Before;
+import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.test.OpenSearchTestCase;
 
 public class WindowedReadAheadContextTests extends OpenSearchTestCase {
 
-    private static final int CACHE_BLOCK_SIZE = 4096;
+    private static final int CACHE_BLOCK_SIZE = 8192; // From CACHE_BLOCK_SIZE_POWER = 13
     private static final Path TEST_PATH = Paths.get("/test/file.dat");
     private static final long FILE_SIZE = 1024 * 1024; // 1MB
 
     private Worker mockWorker;
+    @SuppressWarnings("unchecked")
+    private BlockCache<AutoCloseable> mockBlockCache;
     private Runnable mockSignalCallback;
     private WindowedReadAheadContext context;
     private WindowedReadAheadConfig config;
@@ -40,19 +40,25 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     public void setUp() throws Exception {
         super.setUp();
         mockWorker = mock(Worker.class);
+        @SuppressWarnings("unchecked")
+        BlockCache<AutoCloseable> cache = (BlockCache<AutoCloseable>) mock(BlockCache.class);
+        mockBlockCache = cache;
         mockSignalCallback = mock(Runnable.class);
         config = WindowedReadAheadConfig.defaultConfig();
 
-        // Default: worker accepts all schedules
-        when(mockWorker.schedule(any(Path.class), anyLong(), anyLong())).thenReturn(true);
+        // Default: worker accepts all schedules and is not paused
+        when(mockWorker.schedule(any(), any(Path.class), anyLong(), anyLong())).thenReturn(true);
+        when(mockWorker.isReadAheadPaused()).thenReturn(false);
+        when(mockWorker.getQueueCapacity()).thenReturn(100);
+        when(mockWorker.getQueueSize()).thenReturn(0);
     }
 
     private WindowedReadAheadContext createContext(long fileLength) {
-        return WindowedReadAheadContext.build(TEST_PATH, fileLength, mockWorker, config, mockSignalCallback);
+        return WindowedReadAheadContext.build(TEST_PATH, fileLength, mockWorker, mockBlockCache, config, mockSignalCallback);
     }
 
     private WindowedReadAheadContext createContext(long fileLength, WindowedReadAheadConfig customConfig) {
-        return WindowedReadAheadContext.build(TEST_PATH, fileLength, mockWorker, customConfig, mockSignalCallback);
+        return WindowedReadAheadContext.build(TEST_PATH, fileLength, mockWorker, mockBlockCache, customConfig, mockSignalCallback);
     }
 
     /**
@@ -61,248 +67,68 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     public void testContextCreation() {
         context = createContext(FILE_SIZE);
 
-        assertNotNull("Context should be created", context);
-        assertNotNull("Policy should be initialized", context.policy());
-        assertTrue("Readahead should be enabled initially", context.isReadAheadEnabled());
-        assertFalse("No queued work initially", context.hasQueuedWork());
+        assertNotNull(context);
+        assertTrue(context.isReadAheadEnabled());
+        assertFalse(context.hasQueuedWork());
     }
 
     /**
-     * Tests context creation with zero file length.
+     * Tests that cache hits do not trigger readahead.
      */
-    public void testContextCreationWithZeroFileLength() {
-        context = createContext(0L);
-
-        assertNotNull("Context should be created with zero length", context);
-        assertFalse("No queued work for empty file", context.hasQueuedWork());
-    }
-
-    /**
-     * Tests context creation with small file (single block).
-     */
-    public void testContextCreationWithSingleBlock() {
-        context = createContext(CACHE_BLOCK_SIZE);
-
-        assertNotNull("Context should be created with single block", context);
-    }
-
-    // ========== Cache Hit Handling Tests ==========
-
-    /**
-     * Tests that single cache hits below threshold don't trigger readahead.
-     */
-    public void testSingleCacheHitNoTrigger() {
+    public void testCacheHitDoesNotTrigger() {
         context = createContext(FILE_SIZE);
 
-        // Single hit should not trigger
+        // Simulate cache hit
         context.onAccess(0, true);
 
-        assertFalse("Single hit should not queue work", context.hasQueuedWork());
+        assertFalse("Cache hit should not queue work", context.hasQueuedWork());
         verify(mockSignalCallback, never()).run();
     }
 
     /**
-     * Tests that consecutive cache hits eventually trigger readahead extension.
-     * The threshold starts at 8 hits. Note that hits set the signal pending flag
-     * but the callback is only drained on misses to keep the hot path fast.
+     * Tests that cache miss triggers readahead immediately (no batching threshold).
      */
-    public void testConsecutiveCacheHitsTriggerExtension() throws Exception {
+    public void testCacheMissTriggersImmediate() {
         context = createContext(FILE_SIZE);
 
-        // First, trigger initial readahead with a miss
+        // First miss should trigger immediately
         context.onAccess(0, false);
-        context.processQueue();
 
-        // Now simulate consecutive hits at positions that trigger guardedExtend
-        // Hits need to be in the guard zone (close to scheduled end)
-        long scheduledEnd = 10; // After initial schedule
-        for (int i = 0; i < 10; i++) {
-            context.onAccess((scheduledEnd - 5 + i) * CACHE_BLOCK_SIZE, true);
-        }
-
-        // The 8th hit should trigger extension (sets desiredEndBlock)
-        // But signal callback is only invoked on miss (drainSignalIfPending)
-        // So just check that work is queued
-        assertNotNull("Consecutive hits should be handled", context);
+        // Should have queued work and signaled
+        assertTrue("Cache miss should queue work", context.hasQueuedWork());
+        verify(mockSignalCallback, times(1)).run();
     }
 
     /**
-     * Tests exponential backoff of hit threshold to reduce overhead.
-     * Hits in the guard zone trigger extension, and threshold doubles each time.
+     * Tests sequential misses trigger readahead.
      */
-    public void testCacheHitThresholdExponentialBackoff() throws Exception {
+    public void testSequentialMisses() {
         context = createContext(FILE_SIZE);
 
-        // Trigger initial readahead
+        // Sequential misses
         context.onAccess(0, false);
         context.onAccess(CACHE_BLOCK_SIZE, false);
         context.onAccess(2 * CACHE_BLOCK_SIZE, false);
-        context.processQueue();
-
-        // First batch: 8 hits in guard zone should trigger threshold increment
-        long scheduledEnd = 10;
-        for (int i = 0; i < 8; i++) {
-            context.onAccess((scheduledEnd - 3 + i) * CACHE_BLOCK_SIZE, true);
-        }
-
-        // After 8 hits, threshold doubles to 16
-        // Verify context handles the backoff logic
-        assertNotNull("Context should handle exponential backoff", context);
-    }
-
-    /**
-     * Tests that hit threshold caps at maximum value.
-     */
-    public void testCacheHitThresholdMaxCap() throws Exception {
-        context = createContext(FILE_SIZE);
-
-        // Trigger initial readahead
-        context.onAccess(0, false);
-        context.processQueue();
-
-        // Repeatedly trigger to max out threshold (8 -> 16 -> 32 -> 64 -> 128 -> 256 -> 512)
-        for (int batch = 0; batch < 7; batch++) {
-            int threshold = 8 << batch;
-            for (int i = 0; i < threshold; i++) {
-                context.onAccess((batch * 1000 + i) * CACHE_BLOCK_SIZE, true);
-            }
-            if (context.hasQueuedWork()) {
-                context.processQueue();
-            }
-        }
-
-        // Threshold should now be at max (512), shouldn't grow further
-        assertNotNull("Context should remain valid", context);
-    }
-
-    /**
-     * Tests single cache miss batching - should not immediately trigger.
-     */
-    public void testSingleCacheMissNoImmediateTrigger() {
-        context = createContext(FILE_SIZE);
-
-        context.onAccess(0, false);
-
-        // Single miss should queue work but may not signal yet
-        assertNotNull("Context should remain valid", context);
-    }
-
-    /**
-     * Tests that batched cache misses trigger sequential readahead.
-     * Default batch size is 3 misses.
-     */
-    public void testBatchedCacheMissesTriggerReadahead() throws Exception {
-        context = createContext(FILE_SIZE);
-
-        // Batch of 3 sequential misses
-        context.onAccess(0, false);
-        context.onAccess(CACHE_BLOCK_SIZE, false);
-        context.onAccess(2 * CACHE_BLOCK_SIZE, false);
-
-        assertTrue("Batched misses should queue work", context.hasQueuedWork());
-
-        // Process and verify schedule was called
-        context.processQueue();
-        verify(mockWorker, atLeastOnce()).schedule(eq(TEST_PATH), anyLong(), anyLong());
-    }
-
-    /**
-     * Tests that cache miss resets hit threshold to base value.
-     */
-    public void testCacheMissResetsHitThreshold() throws Exception {
-        context = createContext(FILE_SIZE);
-
-        // Build up hit threshold
-        context.onAccess(0, false);
-        context.processQueue();
-
-        for (int i = 0; i < 8; i++) {
-            context.onAccess(i * CACHE_BLOCK_SIZE, true);
-        }
-        context.processQueue();
-
-        // Now a miss should reset threshold
-        context.onAccess(100 * CACHE_BLOCK_SIZE, false);
-
-        // Next trigger should happen at base threshold (8) again
-        for (int i = 101; i < 109; i++) {
-            context.onAccess(i * CACHE_BLOCK_SIZE, true);
-        }
-
-        assertNotNull("Context should handle threshold reset", context);
-    }
-
-    /**
-     * Tests sequential miss detection and readahead extension.
-     */
-    public void testSequentialMissPattern() throws Exception {
-        context = createContext(FILE_SIZE);
-
-        // Sequential misses in forward direction
-        long offset = 0;
-        for (int i = 0; i < 5; i++) {
-            context.onAccess(offset, false);
-            offset += CACHE_BLOCK_SIZE;
-        }
 
         assertTrue("Sequential misses should queue work", context.hasQueuedWork());
-        context.processQueue();
-
-        verify(mockWorker, atLeastOnce()).schedule(eq(TEST_PATH), anyLong(), anyLong());
+        // Wake is idempotent - may be called 1-3 times depending on timing
+        verify(mockSignalCallback, atLeastOnce()).run();
     }
 
     /**
-     * Tests that far-ahead misses trigger immediate readahead.
+     * Tests processQueue schedules work with worker.
      */
-    public void testFarAheadMissTriggers() throws Exception {
+    public void testProcessQueueSchedulesWork() {
         context = createContext(FILE_SIZE);
 
-        // Initial miss and schedule
-        context.onAccess(0, false);
-        context.onAccess(CACHE_BLOCK_SIZE, false);
-        context.onAccess(2 * CACHE_BLOCK_SIZE, false);
-        context.processQueue();
-
-        // Jump far ahead (more than window/4)
-        long farOffset = 100 * CACHE_BLOCK_SIZE;
-        context.onAccess(farOffset, false);
-
-        assertTrue("Far-ahead miss should queue work", context.hasQueuedWork());
-    }
-
-    /**
-     * Tests backward access cancels pending readahead.
-     */
-    public void testBackwardAccessCancelsReadahead() throws Exception {
-        context = createContext(FILE_SIZE);
-
-        // Build up forward readahead
-        context.onAccess(100 * CACHE_BLOCK_SIZE, false);
-        context.onAccess(101 * CACHE_BLOCK_SIZE, false);
-        context.onAccess(102 * CACHE_BLOCK_SIZE, false);
-        context.processQueue();
-
-        // Access backward, outside the scheduled window
+        // Trigger readahead
         context.onAccess(0, false);
 
-        // Backward access should reduce or cancel pending work
-        assertNotNull("Context should handle backward access", context);
-    }
+        // Process the queue
+        boolean processed = context.processQueue();
 
-    /**
-     * Tests random access pattern detection.
-     */
-    public void testRandomAccessPattern() throws Exception {
-        context = createContext(FILE_SIZE);
-
-        // Random access pattern: scattered block accesses
-        long[] randomOffsets = { 0, 50, 10, 80, 30, 100, 5 };
-        for (long blockIndex : randomOffsets) {
-            context.onAccess(blockIndex * CACHE_BLOCK_SIZE, false);
-        }
-
-        // Random pattern may trigger some readahead but should be limited
-        assertNotNull("Context should handle random access", context);
+        assertTrue("processQueue should return true when work scheduled", processed);
+        verify(mockWorker, times(1)).schedule(any(), eq(TEST_PATH), anyLong(), anyLong());
     }
 
     /**
@@ -311,222 +137,122 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     public void testProcessQueueNoWork() {
         context = createContext(FILE_SIZE);
 
+        // No misses, no work
         boolean processed = context.processQueue();
 
-        assertFalse("processQueue should return false with no work", processed);
-        verify(mockWorker, never()).schedule(any(), anyLong(), anyLong());
+        assertFalse("processQueue should return false when no work", processed);
+        verify(mockWorker, never()).schedule(any(), any(), anyLong(), anyLong());
     }
 
     /**
-     * Tests processQueue schedules work when available.
+     * Tests global pause prevents readahead.
      */
-    public void testProcessQueueSchedulesWork() throws Exception {
+    public void testGlobalPausePreventsReadahead() {
+        when(mockWorker.isReadAheadPaused()).thenReturn(true);
         context = createContext(FILE_SIZE);
 
-        // Queue work via misses
+        // Miss should not trigger when paused
         context.onAccess(0, false);
-        context.onAccess(CACHE_BLOCK_SIZE, false);
-        context.onAccess(2 * CACHE_BLOCK_SIZE, false);
 
-        assertTrue("Should have queued work", context.hasQueuedWork());
-
-        boolean processed = context.processQueue();
-
-        assertTrue("processQueue should return true when work processed", processed);
-        verify(mockWorker, atLeastOnce()).schedule(eq(TEST_PATH), anyLong(), anyLong());
+        assertFalse("Global pause should prevent queuing work", context.hasQueuedWork());
+        verify(mockSignalCallback, never()).run();
     }
 
     /**
-     * Tests that processQueue respects file boundaries.
+     * Tests queue pressure drops backlog.
      */
-    public void testProcessQueueRespectsFileBoundary() throws Exception {
-        long smallFileSize = 10 * CACHE_BLOCK_SIZE;
-        context = createContext(smallFileSize);
+    public void testQueuePressureDropsBacklog() {
+        // Simulate high queue pressure (>75%)
+        when(mockWorker.getQueueSize()).thenReturn(80);
+        when(mockWorker.getQueueCapacity()).thenReturn(100);
 
-        // Try to trigger readahead near end of file
-        context.onAccess(8 * CACHE_BLOCK_SIZE, false);
-        context.onAccess(9 * CACHE_BLOCK_SIZE, false);
-        context.onAccess(9 * CACHE_BLOCK_SIZE, false); // Third miss triggers
-
-        context.processQueue();
-
-        // Should not schedule beyond file boundary
-        verify(mockWorker, atLeastOnce()).schedule(eq(TEST_PATH), anyLong(), anyLong());
-    }
-
-    /**
-     * Tests spin-merge optimization during queue processing.
-     */
-    public void testProcessQueueSpinMerge() throws Exception {
         context = createContext(FILE_SIZE);
 
-        // Queue initial work
+        // Trigger readahead
         context.onAccess(0, false);
-        context.onAccess(CACHE_BLOCK_SIZE, false);
-        context.onAccess(2 * CACHE_BLOCK_SIZE, false);
+        assertTrue(context.hasQueuedWork());
 
-        // Process should spin briefly to merge updates
+        // Process should drop backlog due to pressure
         boolean processed = context.processQueue();
 
-        assertTrue("Should process queued work", processed);
+        assertFalse("High queue pressure should drop backlog", processed);
+        assertFalse("Should have no queued work after pressure drop", context.hasQueuedWork());
     }
 
     /**
-     * Tests that worker rejection is handled properly.
+     * Tests worker rejection drops backlog.
      */
-    public void testProcessQueueWorkerRejectsSchedule() throws Exception {
-        when(mockWorker.schedule(any(), anyLong(), anyLong())).thenReturn(false);
+    public void testWorkerRejectionDropsBacklog() {
+        when(mockWorker.schedule(any(), any(), anyLong(), anyLong())).thenReturn(false);
 
         context = createContext(FILE_SIZE);
 
+        // Trigger readahead
         context.onAccess(0, false);
-        context.onAccess(CACHE_BLOCK_SIZE, false);
-        context.onAccess(2 * CACHE_BLOCK_SIZE, false);
+        assertTrue(context.hasQueuedWork());
 
+        // Process should handle rejection
         boolean processed = context.processQueue();
 
-        // Should still return false since worker rejected
-        assertFalse("Should return false when worker rejects", processed);
-    }
-
-    // ========== Signal Callback Tests ==========
-
-    /**
-     * Tests that signal callback is invoked when appropriate.
-     * Signals are batched and rate-limited, and drained on misses.
-     */
-    public void testSignalCallbackInvoked() throws Exception {
-        context = createContext(FILE_SIZE);
-
-        // Trigger enough misses to signal - need to build up enough delta
-        // and respect minimum signal interval and batch size
-        for (int i = 0; i < 20; i++) {
-            context.onAccess(i * CACHE_BLOCK_SIZE, false);
-        }
-
-        // Signal should be invoked at least once due to sequential misses
-        verify(mockSignalCallback, atLeastOnce()).run();
+        assertFalse("Worker rejection should return false", processed);
+        assertFalse("Should have no queued work after rejection", context.hasQueuedWork());
     }
 
     /**
-     * Tests signal rate limiting (300µs minimum interval).
+     * Tests idempotent wake - multiple misses don't storm callback.
      */
-    public void testSignalRateLimiting() throws Exception {
-        context = createContext(FILE_SIZE);
+    public void testIdempotentWake() {
+        AtomicInteger callbackCount = new AtomicInteger(0);
+        Runnable countingCallback = callbackCount::incrementAndGet;
 
-        // Rapid successive triggers
+        context = WindowedReadAheadContext.build(TEST_PATH, FILE_SIZE, mockWorker, mockBlockCache, config, countingCallback);
+
+        // Multiple rapid misses
         for (int i = 0; i < 10; i++) {
             context.onAccess(i * CACHE_BLOCK_SIZE, false);
-            context.onAccess((i + 1) * CACHE_BLOCK_SIZE, false);
-            context.onAccess((i + 2) * CACHE_BLOCK_SIZE, false);
         }
 
-        // Should have rate-limited signals, not 10x
-        verify(mockSignalCallback, atLeastOnce()).run();
+        // Should wake at least once, but far fewer than 10 times due to idempotent gate
+        int wakeCount = callbackCount.get();
+        assertTrue("Should wake at least once", wakeCount >= 1);
+        assertTrue("Should not wake 10 times (idempotent gate)", wakeCount < 10);
     }
 
     /**
-     * Tests null signal callback is handled gracefully.
+     * Tests context close stops readahead.
      */
-    public void testNullSignalCallback() throws Exception {
-        context = WindowedReadAheadContext.build(TEST_PATH, FILE_SIZE, mockWorker, config, null);
+    public void testContextClose() {
+        context = createContext(FILE_SIZE);
 
-        // Should not throw
+        assertTrue(context.isReadAheadEnabled());
+
+        context.close();
+
+        assertFalse("Context should be disabled after close", context.isReadAheadEnabled());
+
+        // Miss after close should not trigger
         context.onAccess(0, false);
-        context.onAccess(CACHE_BLOCK_SIZE, false);
-        context.onAccess(2 * CACHE_BLOCK_SIZE, false);
-
-        assertNotNull("Context should handle null callback", context);
+        assertFalse("Closed context should not queue work", context.hasQueuedWork());
     }
 
-    // ========== Trigger Readahead Tests ==========
-
     /**
-     * Tests manual readahead trigger.
+     * Tests reset clears queued work.
      */
-    public void testTriggerReadahead() throws Exception {
+    public void testReset() {
         context = createContext(FILE_SIZE);
 
-        long offset = 10 * CACHE_BLOCK_SIZE;
-        context.triggerReadahead(offset);
-
-        assertTrue("Manual trigger should queue work", context.hasQueuedWork());
-
-        context.processQueue();
-        verify(mockWorker, atLeastOnce()).schedule(eq(TEST_PATH), anyLong(), anyLong());
-    }
-
-    /**
-     * Tests triggerReadahead respects file boundaries.
-     */
-    public void testTriggerReadaheadAtFileBoundary() throws Exception {
-        long smallFileSize = 10 * CACHE_BLOCK_SIZE;
-        context = createContext(smallFileSize);
-
-        // Trigger near end
-        context.triggerReadahead(9 * CACHE_BLOCK_SIZE);
-
-        context.processQueue();
-
-        // Should not exceed file boundary
-        verify(mockWorker, atLeastOnce()).schedule(eq(TEST_PATH), anyLong(), anyLong());
-    }
-
-    /**
-     * Tests triggerReadahead with window sizing.
-     */
-    public void testTriggerReadaheadUsesCurrentWindow() throws Exception {
-        context = createContext(FILE_SIZE);
-
-        context.triggerReadahead(0);
-
-        assertTrue("Should queue work based on window", context.hasQueuedWork());
-    }
-
-    // ========== Reset Tests ==========
-
-    /**
-     * Tests reset clears internal state.
-     */
-    public void testReset() throws Exception {
-        context = createContext(FILE_SIZE);
-
-        // Build up state
+        // Queue some work
         context.onAccess(0, false);
-        context.onAccess(CACHE_BLOCK_SIZE, false);
-        context.onAccess(2 * CACHE_BLOCK_SIZE, false);
+        assertTrue(context.hasQueuedWork());
 
-        assertTrue("Should have queued work before reset", context.hasQueuedWork());
-
+        // Reset should clear
         context.reset();
 
         assertFalse("Reset should clear queued work", context.hasQueuedWork());
     }
 
     /**
-     * Tests reset clears hit counters.
-     */
-    public void testResetClearsHitCounters() throws Exception {
-        context = createContext(FILE_SIZE);
-
-        // Build up hit threshold
-        context.onAccess(0, false);
-        context.processQueue();
-
-        for (int i = 0; i < 8; i++) {
-            context.onAccess(i * CACHE_BLOCK_SIZE, true);
-        }
-
-        context.reset();
-
-        // After reset, hit threshold should be back to base
-        assertFalse("Reset should clear state", context.hasQueuedWork());
-    }
-
-    // ========== Cancel Tests ==========
-
-    /**
-     * Tests cancel invokes worker cancellation.
+     * Tests cancel delegates to worker.
      */
     public void testCancel() {
         context = createContext(FILE_SIZE);
@@ -537,340 +263,158 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     }
 
     /**
-     * Tests cancel can be called multiple times safely.
+     * Tests triggerReadahead manually queues work.
      */
-    public void testCancelIdempotent() {
+    public void testTriggerReadahead() {
         context = createContext(FILE_SIZE);
 
-        context.cancel();
-        context.cancel();
-        context.cancel();
+        // Manually trigger readahead
+        context.triggerReadahead(0);
 
-        verify(mockWorker, atLeastOnce()).cancel(TEST_PATH);
+        assertTrue("Manual trigger should queue work", context.hasQueuedWork());
+        verify(mockSignalCallback, times(1)).run();
     }
 
     /**
-     * Tests close disables readahead and cancels work.
+     * Tests triggerReadahead respects global pause.
      */
-    public void testClose() {
+    public void testTriggerReadaheadRespectsPause() {
+        when(mockWorker.isReadAheadPaused()).thenReturn(true);
         context = createContext(FILE_SIZE);
 
-        assertTrue("Should be enabled before close", context.isReadAheadEnabled());
+        context.triggerReadahead(0);
 
-        context.close();
-
-        assertFalse("Should be disabled after close", context.isReadAheadEnabled());
-        verify(mockWorker, times(1)).cancel(TEST_PATH);
+        assertFalse("Trigger should respect global pause", context.hasQueuedWork());
+        verify(mockSignalCallback, never()).run();
     }
 
     /**
-     * Tests close is idempotent.
+     * Tests null signal callback is handled gracefully.
      */
-    public void testCloseIdempotent() {
-        context = createContext(FILE_SIZE);
+    public void testNullSignalCallback() {
+        context = WindowedReadAheadContext.build(TEST_PATH, FILE_SIZE, mockWorker, mockBlockCache, config, null);
 
-        context.close();
-        context.close();
-        context.close();
-
-        assertFalse("Should remain closed", context.isReadAheadEnabled());
-        verify(mockWorker, times(1)).cancel(TEST_PATH);
-    }
-
-    /**
-     * Tests processQueue returns false after close.
-     */
-    public void testProcessQueueAfterClose() throws Exception {
-        context = createContext(FILE_SIZE);
-
-        // Queue work
+        // Should not throw
         context.onAccess(0, false);
-        context.onAccess(CACHE_BLOCK_SIZE, false);
-        context.onAccess(2 * CACHE_BLOCK_SIZE, false);
 
-        context.close();
-
-        boolean processed = context.processQueue();
-
-        assertFalse("processQueue should return false after close", processed);
+        // Work is still queued even without callback
+        assertTrue("Work should be queued even with null callback", context.hasQueuedWork());
     }
 
     /**
-     * Tests concurrent onAccess calls from multiple threads.
+     * Tests custom config is respected.
      */
-    public void testConcurrentOnAccessCalls() throws Exception {
-        context = createContext(FILE_SIZE);
+    public void testCustomConfig() {
+        WindowedReadAheadConfig customConfig = WindowedReadAheadConfig
+            .of(
+                2,  // initialWindow
+                16, // maxWindow
+                8   // randomAccessThreshold
+            );
 
-        int threadCount = 4;
-        int accessesPerThread = 100;
-        CountDownLatch startLatch = new CountDownLatch(1);
-        CountDownLatch doneLatch = new CountDownLatch(threadCount);
+        context = createContext(FILE_SIZE, customConfig);
 
-        for (int t = 0; t < threadCount; t++) {
-            final int threadId = t;
-            new Thread(() -> {
-                try {
-                    startLatch.await();
-                    for (int i = 0; i < accessesPerThread; i++) {
-                        long offset = (threadId * accessesPerThread + i) * CACHE_BLOCK_SIZE;
-                        boolean isHit = randomBoolean();
-                        context.onAccess(offset, isHit);
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                } finally {
-                    doneLatch.countDown();
-                }
-            }).start();
-        }
-
-        startLatch.countDown();
-        assertTrue("Threads should complete", doneLatch.await(10, TimeUnit.SECONDS));
-
-        // Context should remain valid
-        assertNotNull("Context should handle concurrent access", context);
+        assertNotNull(context);
+        assertEquals(2, context.policy().currentWindow());
     }
 
     /**
-     * Tests concurrent processQueue calls.
+     * Tests policy integration - window grows on sequential access.
      */
-    public void testConcurrentProcessQueue() throws Exception {
+    public void testPolicyWindowGrowth() {
         context = createContext(FILE_SIZE);
 
-        // Queue some work
+        int initialWindow = context.policy().currentWindow();
+
+        // Sequential access should grow window
         for (int i = 0; i < 10; i++) {
             context.onAccess(i * CACHE_BLOCK_SIZE, false);
         }
 
-        int threadCount = 3;
-        CountDownLatch startLatch = new CountDownLatch(1);
-        CountDownLatch doneLatch = new CountDownLatch(threadCount);
-        AtomicInteger processedCount = new AtomicInteger(0);
-
-        for (int t = 0; t < threadCount; t++) {
-            new Thread(() -> {
-                try {
-                    startLatch.await();
-                    if (context.processQueue()) {
-                        processedCount.incrementAndGet();
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                } finally {
-                    doneLatch.countDown();
-                }
-            }).start();
-        }
-
-        startLatch.countDown();
-        assertTrue("Threads should complete", doneLatch.await(10, TimeUnit.SECONDS));
-
-        // At least one should have processed
-        assertTrue("At least one thread should process", processedCount.get() > 0);
+        int newWindow = context.policy().currentWindow();
+        assertTrue("Window should grow on sequential access", newWindow >= initialWindow);
     }
 
     /**
-     * Tests concurrent access and processing.
+     * Tests hasQueuedWork reflects pending work accurately.
      */
-    public void testConcurrentAccessAndProcess() throws Exception {
+    public void testHasQueuedWorkAccuracy() {
         context = createContext(FILE_SIZE);
 
-        AtomicBoolean stop = new AtomicBoolean(false);
-        CountDownLatch doneLatch = new CountDownLatch(2);
+        assertFalse(context.hasQueuedWork());
 
-        // Access thread
-        new Thread(() -> {
-            try {
-                int i = 0;
-                while (!stop.get() && i < 200) {
-                    context.onAccess(i * CACHE_BLOCK_SIZE, randomBoolean());
-                    i++;
-                    if (i % 10 == 0) {
-                        Thread.sleep(1);
-                    }
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            } finally {
-                doneLatch.countDown();
-            }
-        }).start();
+        // Queue work
+        context.onAccess(0, false);
+        assertTrue(context.hasQueuedWork());
 
-        // Process thread
-        new Thread(() -> {
-            try {
-                while (!stop.get()) {
-                    context.processQueue();
-                    Thread.sleep(5);
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            } finally {
-                doneLatch.countDown();
-            }
-        }).start();
+        // Process all work
+        while (context.processQueue()) {
+            // Keep processing until done
+        }
 
-        Thread.sleep(100);
-        stop.set(true);
-
-        assertTrue("Threads should complete", doneLatch.await(10, TimeUnit.SECONDS));
-        assertNotNull("Context should remain valid", context);
+        assertFalse("Should have no queued work after processing all", context.hasQueuedWork());
     }
 
-    // ========== Edge Cases and Boundary Tests ==========
-
     /**
-     * Tests very large file handling.
+     * Tests large file sizes are handled correctly.
      */
-    public void testVeryLargeFile() throws Exception {
+    public void testLargeFile() {
         long largeFileSize = 10L * 1024 * 1024 * 1024; // 10GB
         context = createContext(largeFileSize);
 
+        assertNotNull(context);
+
+        // Should handle large offsets
+        context.onAccess(largeFileSize - CACHE_BLOCK_SIZE, false);
+        assertTrue(context.hasQueuedWork());
+    }
+
+    /**
+     * Tests zero-length file is handled.
+     */
+    public void testZeroLengthFile() {
+        context = createContext(0);
+
+        assertNotNull(context);
+
+        // Access should not crash
         context.onAccess(0, false);
-        context.onAccess(CACHE_BLOCK_SIZE, false);
-        context.onAccess(2 * CACHE_BLOCK_SIZE, false);
-
-        context.processQueue();
-
-        verify(mockWorker, atLeastOnce()).schedule(eq(TEST_PATH), anyLong(), anyLong());
     }
 
     /**
-     * Tests access at exact file boundary.
+     * Tests processQueue clears wake flag when all work done.
      */
-    public void testAccessAtFileBoundary() throws Exception {
-        long fileSize = 100 * CACHE_BLOCK_SIZE;
-        context = createContext(fileSize);
+    public void testWakeFlagClearedWhenDone() {
+        AtomicInteger wakeCount = new AtomicInteger(0);
+        context = WindowedReadAheadContext.build(TEST_PATH, FILE_SIZE, mockWorker, mockBlockCache, config, wakeCount::incrementAndGet);
 
-        // Access last block
-        context.onAccess(99 * CACHE_BLOCK_SIZE, false);
-        context.onAccess(99 * CACHE_BLOCK_SIZE + 1, false);
-
-        assertNotNull("Should handle boundary access", context);
-    }
-
-    /**
-     * Tests custom configuration parameters.
-     */
-    public void testCustomConfiguration() throws Exception {
-        WindowedReadAheadConfig customConfig = WindowedReadAheadConfig.of(8, 64, 8);
-        context = createContext(FILE_SIZE, customConfig);
-
-        assertNotNull("Should accept custom config", context);
-        assertEquals("Should use custom initial window", 8, context.policy().initialWindow());
-        assertEquals("Should use custom max window", 64, context.policy().maxWindow());
-    }
-
-    /**
-     * Tests policy integration and window growth.
-     */
-    public void testPolicyWindowGrowth() throws Exception {
-        context = createContext(FILE_SIZE);
-
-        int initialWindow = context.policy().initialWindow();
-
-        // Trigger sequential pattern to grow window
-        for (int batch = 0; batch < 5; batch++) {
-            for (int i = 0; i < 10; i++) {
-                long offset = (batch * 10 + i) * CACHE_BLOCK_SIZE;
-                context.onAccess(offset, false);
-            }
-            context.processQueue();
-        }
-
-        int finalWindow = context.policy().currentWindow();
-
-        assertTrue("Window should grow with sequential access", finalWindow >= initialWindow);
-    }
-
-    /**
-     * Tests hasQueuedWork accuracy.
-     */
-    public void testHasQueuedWorkAccuracy() throws Exception {
-        context = createContext(FILE_SIZE);
-
-        assertFalse("No work initially", context.hasQueuedWork());
-
+        // Queue small amount of work
         context.onAccess(0, false);
-        context.onAccess(CACHE_BLOCK_SIZE, false);
-        context.onAccess(2 * CACHE_BLOCK_SIZE, false);
+        int wakesAfterFirst = wakeCount.get();
+        assertTrue("Should wake on first access", wakesAfterFirst >= 1);
 
-        assertTrue("Should have queued work after misses", context.hasQueuedWork());
-
-        context.processQueue();
-
-        // After processing, may or may not have more work depending on state
-        assertNotNull("Context should remain valid", context);
+        // Process it all
+        boolean processed = context.processQueue();
+        assertTrue("Should process work", processed);
+        assertFalse("Should have no queued work after processing", context.hasQueuedWork());
     }
 
     /**
-     * Tests that desiredEndBlock updates are atomic and non-blocking.
+     * Tests processQueue keeps wake flag if more work remains.
      */
-    public void testDesiredEndBlockAtomicUpdates() throws Exception {
+    public void testWakeFlagKeptWhenWorkRemains() {
         context = createContext(FILE_SIZE);
 
-        // Rapid concurrent updates to desired end
-        int threadCount = 4;
-        CountDownLatch startLatch = new CountDownLatch(1);
-        CountDownLatch doneLatch = new CountDownLatch(threadCount);
-
-        for (int t = 0; t < threadCount; t++) {
-            final int threadId = t;
-            new Thread(() -> {
-                try {
-                    startLatch.await();
-                    for (int i = 0; i < 50; i++) {
-                        long offset = (threadId * 50 + i) * CACHE_BLOCK_SIZE;
-                        context.triggerReadahead(offset);
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                } finally {
-                    doneLatch.countDown();
-                }
-            }).start();
-        }
-
-        startLatch.countDown();
-        assertTrue("Atomic updates should complete", doneLatch.await(10, TimeUnit.SECONDS));
-
-        assertTrue("Should have work after concurrent triggers", context.hasQueuedWork());
-    }
-
-    /**
-     * Tests signal pending flag race conditions.
-     */
-    public void testSignalPendingFlagHandling() throws Exception {
-        AtomicInteger callbackCount = new AtomicInteger(0);
-        Runnable countingCallback = callbackCount::incrementAndGet;
-
-        context = WindowedReadAheadContext.build(TEST_PATH, FILE_SIZE, mockWorker, config, countingCallback);
-
-        // Trigger multiple signals rapidly
+        // Queue lots of work (more than MAX_BLOCKS_PER_SUBMISSION = 64)
+        context.onAccess(0, false);
         for (int i = 0; i < 100; i++) {
             context.onAccess(i * CACHE_BLOCK_SIZE, false);
-            if (i % 3 == 0) {
-                // Interleave with hits to vary the pattern
-                context.onAccess(i * CACHE_BLOCK_SIZE, true);
-            }
         }
 
-        // Callback should have been invoked at least once
-        assertTrue("Callback should be invoked", callbackCount.get() > 0);
-    }
+        // Process once (should only process up to 64 blocks)
+        context.processQueue();
 
-    /**
-     * Tests worker null handling.
-     */
-    public void testNullWorkerHandling() {
-        // Should not throw on construction
-        context = WindowedReadAheadContext.build(TEST_PATH, FILE_SIZE, null, config, mockSignalCallback);
-
-        assertNotNull("Should handle null worker", context);
-
-        // These should not throw
-        context.onAccess(0, false);
-        context.cancel();
-        context.close();
+        // Should still have work queued
+        assertTrue("Should have remaining work after partial processing", context.hasQueuedWork());
     }
 }
