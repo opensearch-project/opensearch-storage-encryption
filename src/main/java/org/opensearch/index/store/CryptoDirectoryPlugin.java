@@ -40,6 +40,7 @@ import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
 import org.opensearch.index.store.pool.PoolSizeCalculator;
+import org.opensearch.index.store.rest.RestClearBufferPoolCacheAction;
 import org.opensearch.index.store.rest.RestGetIndexCountForKeyAction;
 import org.opensearch.index.store.rest.RestRegisterCryptoAction;
 import org.opensearch.index.store.rest.RestUnregisterCryptoAction;
@@ -255,7 +256,13 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         IndexNameExpressionResolver indexNameExpressionResolver,
         Supplier<DiscoveryNodes> nodesInCluster
     ) {
-        return Arrays.asList(new RestRegisterCryptoAction(), new RestUnregisterCryptoAction(), new RestGetIndexCountForKeyAction());
+        return Arrays
+            .asList(
+                new RestRegisterCryptoAction(),
+                new RestUnregisterCryptoAction(),
+                new RestGetIndexCountForKeyAction(),
+                new RestClearBufferPoolCacheAction()
+            );
     }
 
     @Override

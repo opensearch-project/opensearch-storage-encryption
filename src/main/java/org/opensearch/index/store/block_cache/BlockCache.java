@@ -82,6 +82,12 @@ public interface BlockCache<T> {
     void clear();
 
     /**
+     * Clear all blocks from the cache that are not currently in use (refCount == 1).
+     * This is a safer alternative to clear() that avoids clearing blocks that are actively being used.
+     */
+    void clearSafely();
+
+    /**
      * Load multiple blocks for prefetch/readahead with a short timeout to fail fast when pool is under pressure.
      * Uses a 50ms timeout for pool segment acquisition - prefetch should not block critical I/O.
      *
