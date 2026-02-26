@@ -102,6 +102,11 @@ public class BlockSlotTinyCacheBenchmarkTests {
         }
 
         @Override
+        public void clearSafely() {
+            cache.clear();
+        }
+
+        @Override
         public Map<org.opensearch.index.store.block_cache.BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> loadForPrefetch(
             Path filePath,
             long startOffset,
@@ -196,6 +201,11 @@ public class BlockSlotTinyCacheBenchmarkTests {
         @Override
         public int getGeneration() {
             return segment.getGeneration();
+        }
+
+        @Override
+        public int getRefCount() {
+            return segment.getRefCount();
         }
     }
 

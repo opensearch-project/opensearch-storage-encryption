@@ -412,6 +412,17 @@ public class BlockSlotTinyCacheIntegrationTests extends OpenSearchTestCase {
         }
 
         @Override
+        public void clearSafely() {
+            cache.entrySet().removeIf(e -> {
+                if (e.getValue().value().getRefCount() == 1) {
+                    e.getValue().close();
+                    return true;
+                }
+                return false;
+            });
+        }
+
+        @Override
         public Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> loadForPrefetch(
             Path filePath,
             long startOffset,

@@ -289,6 +289,33 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     }
 
     /**
+     * Tests clearSafely only removes entries with refCount == 1.
+     */
+    public void testClearSafelyOnlyRemovesUnusedEntries() {
+        BlockCacheKey key1 = new FileBlockCacheKey(Paths.get("/test/file1.dat"), 0L);
+        BlockCacheKey key2 = new FileBlockCacheKey(Paths.get("/test/file2.dat"), 0L);
+        BlockCacheKey key3 = new FileBlockCacheKey(Paths.get("/test/file3.dat"), 0L);
+
+        BlockCacheValue<String> value1 = createMockValue("data1");
+        BlockCacheValue<String> value2 = createMockValue("data2");
+        BlockCacheValue<String> value3 = createMockValue("data3");
+
+        when(value1.getRefCount()).thenReturn(1);
+        when(value2.getRefCount()).thenReturn(2);
+        when(value3.getRefCount()).thenReturn(1);
+
+        blockCache.put(key1, value1);
+        blockCache.put(key2, value2);
+        blockCache.put(key3, value3);
+
+        blockCache.clearSafely();
+
+        assertNull("Entry with refCount=1 should be cleared", blockCache.get(key1));
+        assertNotNull("Entry with refCount=2 should remain", blockCache.get(key2));
+        assertNull("Entry with refCount=1 should be cleared", blockCache.get(key3));
+    }
+
+    /**
      * Tests prefetch loads value into cache.
      */
     public void testPrefetchLoadsValue() throws Exception {
