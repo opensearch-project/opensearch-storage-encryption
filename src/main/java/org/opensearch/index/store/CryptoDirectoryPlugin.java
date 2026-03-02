@@ -23,6 +23,7 @@ import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.SettingsFilter;
+import org.opensearch.common.util.concurrent.OpenSearchExecutors;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
@@ -56,6 +57,8 @@ import org.opensearch.rest.RestHandler;
 import org.opensearch.script.ScriptService;
 import org.opensearch.telemetry.metrics.MetricsRegistry;
 import org.opensearch.telemetry.tracing.Tracer;
+import org.opensearch.threadpool.ExecutorBuilder;
+import org.opensearch.threadpool.FixedExecutorBuilder;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.client.Client;
 import org.opensearch.watcher.ResourceWatcherService;
@@ -70,6 +73,8 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
      * Setting key for enabling the crypto plugin.
      */
     public static final String CRYPTO_PLUGIN_ENABLED = "plugins.crypto.enabled";
+
+    public static final String CRYPTO_PLUGIN_THREADPOOL_PREFETCH = "crypto_plugin_prefetch_threadpool";
 
     /**
      * Setting for controlling whether the crypto plugin is enabled.
@@ -149,6 +154,21 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         return settings;
     }
 
+    public List<ExecutorBuilder<?>> getExecutorBuilders(Settings settings) {
+        final int processorCount = OpenSearchExecutors.allocatedProcessors(settings);
+
+        return Arrays
+            .asList(
+                new FixedExecutorBuilder(
+                    settings,
+                    CRYPTO_PLUGIN_THREADPOOL_PREFETCH,
+                    processorCount,
+                    200,
+                    "plugins.crypto.threadpool.prefetch"
+                )
+            );
+    }
+
     /**
      * {@inheritDoc}
      */
@@ -198,9 +218,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
             log.debug("Crypto Directory Plugin is disabled. Skipping component initialization.");
             return Collections.emptyList();
         }
-
         this.nodeEnvironment = nodeEnvironment;
-
         // Store remote store parameters for CryptoEngineFactory to access
         CryptoDirectoryPlugin.repositoriesServiceSupplier = repositoriesServiceSupplier;
         // Create RemoteStoreSettings with node settings and cluster settings
@@ -221,6 +239,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         // Pool resources are lazily initialized on first cryptofs shard creation
         // This prevents allocation on dedicated master nodes which never create shards
         CryptoDirectoryFactory.setNodeSettings(environment.settings());
+        CryptoDirectoryFactory.setThreadPool(threadPool);
         CryptoMetricsService.initialize(metricsRegistry);
 
         return Collections.emptyList();

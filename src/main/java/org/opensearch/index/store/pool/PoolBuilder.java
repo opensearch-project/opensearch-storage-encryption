@@ -275,6 +275,7 @@ public final class PoolBuilder {
         int threads = ReadAheadSizingPolicy.calculateWorkerThreads(readAheadQueueSize);
 
         AtomicInteger threadId = new AtomicInteger();
+        // TODO: why not use OS's threadpool
         ExecutorService readAheadExecutor = Executors.newFixedThreadPool(threads, r -> {
             Thread t = new Thread(r, "readahead-worker-" + threadId.incrementAndGet());
             t.setDaemon(true);

@@ -151,6 +151,8 @@ public class BlockSlotTinyCacheIntegrationTests extends OpenSearchTestCase {
     /**
      * Test concurrent access to different block offsets.
      * Multiple threads accessing different blocks should not interfere.
+     *
+     * TODO: fix this flaky test
      */
     @Test
     public void testConcurrentAccessDifferentBlocks() throws Exception {

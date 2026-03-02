@@ -50,6 +50,7 @@ import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 import org.opensearch.index.store.pool.PoolBuilder;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.plugins.IndexStorePlugin;
+import org.opensearch.threadpool.ThreadPool;
 
 /**
  * Factory for creating encrypted filesystem directories with support for various storage types.
@@ -82,6 +83,11 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * Node settings used for lazy pool initialization.
      */
     private static volatile Settings nodeSettings;
+
+    /**
+     * ThreadPool used for prefetch operations.
+     */
+    private static volatile ThreadPool threadPool;
 
     /**
      * Lock for thread-safe initialization of shared resources.
@@ -516,7 +522,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             directoryCache,
             loader,
             readaheadWorker,
-            encryptionMetadataCache
+            encryptionMetadataCache,
+            threadPool.executor(CryptoDirectoryPlugin.CRYPTO_PLUGIN_THREADPOOL_PREFETCH)
         );
     }
 
@@ -528,6 +535,10 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      */
     public static void setNodeSettings(Settings settings) {
         nodeSettings = settings;
+    }
+
+    public static void setThreadPool(ThreadPool tp) {
+        threadPool = tp;
     }
 
     /**

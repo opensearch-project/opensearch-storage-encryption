@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.Provider;
 import java.time.Duration;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.logging.log4j.LogManager;
@@ -76,6 +77,7 @@ public class BufferPoolDirectory extends FSDirectory {
     private final Path dirPath;
     private final byte[] masterKeyBytes;
     private final EncryptionMetadataCache encryptionMetadataCache;
+    private final Executor prefetchExecutor;
 
     /**
      * Creates a new CryptoDirectIODirectory with the specified components.
@@ -99,7 +101,8 @@ public class BufferPoolDirectory extends FSDirectory {
         BlockCache<RefCountedMemorySegment> blockCache,
         BlockLoader<RefCountedMemorySegment> blockLoader,
         Worker worker,
-        EncryptionMetadataCache encryptionMetadataCache
+        EncryptionMetadataCache encryptionMetadataCache,
+        Executor prefetchExecutor
     )
         throws IOException {
         super(path, lockFactory);
@@ -110,6 +113,7 @@ public class BufferPoolDirectory extends FSDirectory {
         this.dirPath = getDirectory();
         this.masterKeyBytes = keyResolver.getDataKey().getEncoded();
         this.encryptionMetadataCache = encryptionMetadataCache;
+        this.prefetchExecutor = prefetchExecutor;
 
         // startCacheStatsTelemetry(); // uncomment for local testing
     }
@@ -141,7 +145,8 @@ public class BufferPoolDirectory extends FSDirectory {
                     blockCache,
                     readAheadManager,
                     readAheadContext,
-                    pinRegistry
+                    pinRegistry,
+                    prefetchExecutor
                 );
         } catch (Exception e) {
             CryptoMetricsService.getInstance().recordError(ErrorType.INDEX_INPUT_ERROR);

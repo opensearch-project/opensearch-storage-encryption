@@ -461,6 +461,6 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
 
     private CachedMemorySegmentIndexInput createInput(long length) {
         return CachedMemorySegmentIndexInput
-            .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache);
+            .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache, r -> r.run());
     }
 }
