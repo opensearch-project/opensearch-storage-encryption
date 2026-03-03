@@ -778,7 +778,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         return slice;
     }
 
-    // TODO: add a backoff mechanism
     @Override
     public void prefetch(long offset, long length) throws IOException {
         ensureOpen();
@@ -787,12 +786,21 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             final long startFileOffset = absoluteBaseOffset + offset;
             final long startBlockOffset = startFileOffset & ~CACHE_BLOCK_MASK;
 
+            // Check if first block is already cached
+            final FileBlockCacheKey firstBlockKey = new FileBlockCacheKey(path, startBlockOffset);
+            if (blockCache.get(firstBlockKey) != null) {
+                return;
+            }
+
+            // TODO: add a dedup mechanism, not sure if its needed if we're checking the cache
+
             final long endFileOffset = absoluteBaseOffset + offset + length;
             final long endBlockOffset = (endFileOffset + CACHE_BLOCK_MASK) & ~CACHE_BLOCK_MASK;
 
             final long blockCount = (endBlockOffset - startBlockOffset) >>> CACHE_BLOCK_SIZE_POWER;
 
             try {
+                // single IO call is made
                 blockCache.loadForPrefetch(path, startBlockOffset, blockCount);
             } catch (IOException e) {
                 LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", path, startBlockOffset, blockCount, e);

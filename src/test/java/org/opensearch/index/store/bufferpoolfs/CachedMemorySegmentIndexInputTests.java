@@ -1793,4 +1793,58 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         slice.close();
         input.close();
     }
+
+    /**
+     * Tests that prefetch skips loading when first block is already cached.
+     */
+    public void testPrefetchSkipsWhenFirstBlockCached() throws Exception {
+        long fileLength = BLOCK_SIZE * 3;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
+        BlockCacheValue<RefCountedMemorySegment> mockCacheValue = mock(BlockCacheValue.class);
+        
+        // Mock blockCache.get() to return a cached value for first block
+        FileBlockCacheKey firstBlockKey = new FileBlockCacheKey(testPath, 0L);
+        when(mockCache.get(eq(firstBlockKey))).thenReturn(mockCacheValue);
+        
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+        
+        input.prefetch(0, BLOCK_SIZE * 3);
+        
+        // Wait for async executor to complete
+        Thread.sleep(100);
+        
+        // Verify get() was called to check cache
+        verify(mockCache, times(1)).get(eq(firstBlockKey));
+        
+        // Verify loadForPrefetch was NOT called (skipped due to cache hit)
+        verify(mockCache, never()).loadForPrefetch(any(), anyLong(), anyLong());
+        
+        input.close();
+    }
+
+    /**
+     * Tests that prefetch proceeds with loading when first block is not cached.
+     */
+    public void testPrefetchLoadsWhenFirstBlockNotCached() throws Exception {
+        long fileLength = BLOCK_SIZE * 3;
+        
+        // Mock blockCache.get() to return null (cache miss)
+        FileBlockCacheKey firstBlockKey = new FileBlockCacheKey(testPath, 0L);
+        when(mockCache.get(eq(firstBlockKey))).thenReturn(null);
+        
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+        
+        input.prefetch(0, BLOCK_SIZE * 3);
+        
+        // Wait for async executor to complete
+        Thread.sleep(100);
+        
+        // Verify get() was called to check cache
+        verify(mockCache, times(1)).get(eq(firstBlockKey));
+        
+        // Verify loadForPrefetch WAS called (proceeded due to cache miss)
+        verify(mockCache, times(1)).loadForPrefetch(eq(testPath), eq(0L), eq(3L));
+        
+        input.close();
+    }
 }
