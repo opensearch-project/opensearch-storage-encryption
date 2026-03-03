@@ -23,7 +23,6 @@ import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.SettingsFilter;
-import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.concurrent.OpenSearchExecutors;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.index.Index;
@@ -60,7 +59,6 @@ import org.opensearch.telemetry.metrics.MetricsRegistry;
 import org.opensearch.telemetry.tracing.Tracer;
 import org.opensearch.threadpool.ExecutorBuilder;
 import org.opensearch.threadpool.FixedExecutorBuilder;
-import org.opensearch.threadpool.ScalingExecutorBuilder;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.client.Client;
 import org.opensearch.watcher.ResourceWatcherService;
@@ -159,17 +157,16 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
     public List<ExecutorBuilder<?>> getExecutorBuilders(Settings settings) {
         final int processorCount = OpenSearchExecutors.allocatedProcessors(settings);
 
-        return Arrays.asList(
-                //Prefetch is only called in saerch flow, which already has bounded threads
-                new ScalingExecutorBuilder(
-                        CRYPTO_PLUGIN_THREADPOOL_PREFETCH,
-                        processorCount * 2,
-                        processorCount * 10,
-                        TimeValue.timeValueMinutes(5),
-                        "plugins.crypto.threadpool.prefetch"
+        return Arrays
+            .asList(
+                new FixedExecutorBuilder(
+                    settings,
+                    CRYPTO_PLUGIN_THREADPOOL_PREFETCH,
+                    processorCount * 2,
+                    1000,
+                    "plugins.crypto.threadpool.prefetch"
                 )
-                // TODO: add read ahead
-        );
+            );
     }
 
     /**

@@ -14,6 +14,7 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.concurrent.Executor;
 
 import org.apache.logging.log4j.LogManager;
@@ -50,6 +51,8 @@ import org.opensearch.index.store.read_ahead.ReadaheadManager;
 @SuppressWarnings("preview")
 public class CachedMemorySegmentIndexInput extends IndexInput implements RandomAccessInput {
     private static final Logger LOGGER = LogManager.getLogger(CachedMemorySegmentIndexInput.class);
+    private static final int PREFETCH_CACHE_SIZE = 1 << 4;
+    private static final int PREFETCH_CACHE_MASK = PREFETCH_CACHE_SIZE - 1;
 
     static final ValueLayout.OfByte LAYOUT_BYTE = ValueLayout.JAVA_BYTE;
     static final ValueLayout.OfShort LAYOUT_LE_SHORT = ValueLayout.JAVA_SHORT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
@@ -84,6 +87,13 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     // each thread must use its own clone().
     private final BlockSlotTinyCache.CacheHitHolder cacheHitHolder = new BlockSlotTinyCache.CacheHitHolder();
 
+    // Prefetch optimization: track consecutive cache hits to avoid overhead
+    private int consecutivePrefetchHitCount = 0;
+
+    // Prefetch deduplication cache (shared across slices)
+    private final long[] prefetchCache;
+    private final int[] prefetchCacheIndex; // array wrapper for sharing across slices
+
     /**
      * Creates a new CachedMemorySegmentIndexInput instance.
      * 
@@ -106,6 +116,10 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         BlockSlotTinyCache blockSlotTinyCache,
         Executor prefetchExecutor
     ) {
+        long[] prefetchCache = new long[PREFETCH_CACHE_SIZE];
+        Arrays.fill(prefetchCache, -1);
+        int[] prefetchCacheIndex = new int[1];
+
         CachedMemorySegmentIndexInput input = new CachedMemorySegmentIndexInput(
             resourceDescription,
             path,
@@ -116,7 +130,9 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             readaheadContext,
             false,
             blockSlotTinyCache,
-            prefetchExecutor
+            prefetchExecutor,
+            prefetchCache,
+            prefetchCacheIndex
         );
         try {
             input.seek(0L);
@@ -136,7 +152,9 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         ReadaheadContext readaheadContext,
         boolean isSlice,
         BlockSlotTinyCache blockSlotTinyCache,
-        Executor prefetchExecutor
+        Executor prefetchExecutor,
+        long[] prefetchCache,
+        int[] prefetchCacheIndex
     ) {
         super(resourceDescription);
         this.path = path;
@@ -148,6 +166,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         this.isSlice = isSlice;
         this.blockSlotTinyCache = blockSlotTinyCache;
         this.prefetchExecutor = prefetchExecutor;
+        this.prefetchCache = prefetchCache;
+        this.prefetchCacheIndex = prefetchCacheIndex;
     }
 
     void ensureOpen() {
@@ -767,7 +787,9 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             readaheadContext,
             true,
             blockSlotTinyCache,
-            prefetchExecutor
+            prefetchExecutor,
+            this.prefetchCache,
+            this.prefetchCacheIndex
         );
 
         try {
@@ -783,21 +805,26 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     public void prefetch(long offset, long length) throws IOException {
         ensureOpen();
 
-        prefetchExecutor.execute(() -> {
-            final long startFileOffset = absoluteBaseOffset + offset;
-            final long startBlockOffset = startFileOffset & ~CACHE_BLOCK_MASK;
+        final long startFileOffset = absoluteBaseOffset + offset;
+        final long startBlockOffset = startFileOffset & ~CACHE_BLOCK_MASK;
 
+        // prefetch cache check similiar Lucene stored fields reader
+        for (long cached : prefetchCache) {
+            if (cached == startBlockOffset) {
+                return;
+            }
+        }
+        prefetchCache[prefetchCacheIndex[0]++ & PREFETCH_CACHE_MASK] = startBlockOffset;
+
+        prefetchExecutor.execute(() -> {
             // Check if first block is already cached
             final FileBlockCacheKey firstBlockKey = new FileBlockCacheKey(path, startBlockOffset);
             if (blockCache.get(firstBlockKey) != null) {
                 return;
             }
 
-            // TODO: add a dedup mechanism, not sure if its needed if we're checking the cache
-
             final long endFileOffset = absoluteBaseOffset + offset + length;
             final long endBlockOffset = (endFileOffset + CACHE_BLOCK_MASK) & ~CACHE_BLOCK_MASK;
-
             final long blockCount = (endBlockOffset - startBlockOffset) >>> CACHE_BLOCK_SIZE_POWER;
 
             try {
