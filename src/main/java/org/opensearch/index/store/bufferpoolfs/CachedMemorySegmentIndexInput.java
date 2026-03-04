@@ -16,6 +16,7 @@ import java.nio.ByteOrder;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -816,24 +817,28 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         }
         prefetchCache[prefetchCacheIndex[0]++ & PREFETCH_CACHE_MASK] = startBlockOffset;
 
-        prefetchExecutor.execute(() -> {
-            // Check if first block is already cached
-            final FileBlockCacheKey firstBlockKey = new FileBlockCacheKey(path, startBlockOffset);
-            if (blockCache.get(firstBlockKey) != null) {
-                return;
-            }
+        try {
+            prefetchExecutor.execute(() -> {
+                // Check if first block is already cached
+                final FileBlockCacheKey firstBlockKey = new FileBlockCacheKey(path, startBlockOffset);
+                if (blockCache.get(firstBlockKey) != null) {
+                    return;
+                }
 
-            final long endFileOffset = absoluteBaseOffset + offset + length;
-            final long endBlockOffset = (endFileOffset + CACHE_BLOCK_MASK) & ~CACHE_BLOCK_MASK;
-            final long blockCount = (endBlockOffset - startBlockOffset) >>> CACHE_BLOCK_SIZE_POWER;
+                final long endFileOffset = absoluteBaseOffset + offset + length;
+                final long endBlockOffset = (endFileOffset + CACHE_BLOCK_MASK) & ~CACHE_BLOCK_MASK;
+                final long blockCount = (endBlockOffset - startBlockOffset) >>> CACHE_BLOCK_SIZE_POWER;
 
-            try {
-                // single IO call is made
-                blockCache.loadForPrefetch(path, startBlockOffset, blockCount);
-            } catch (IOException e) {
-                LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", path, startBlockOffset, blockCount, e);
-            }
-        });
+                try {
+                    // single IO call is made
+                    blockCache.loadForPrefetch(path, startBlockOffset, blockCount);
+                } catch (IOException e) {
+                    LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", path, startBlockOffset, blockCount, e);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            LOGGER.info("prefetch task rejected: path={} offset={}", path, startBlockOffset);
+        }
     }
 
     @Override

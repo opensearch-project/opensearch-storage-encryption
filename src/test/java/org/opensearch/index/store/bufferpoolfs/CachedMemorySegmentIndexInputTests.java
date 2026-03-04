@@ -1737,4 +1737,29 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
 
         input.close();
     }
+
+    /**
+     * Tests that prefetch handles RejectedExecutionException gracefully.
+     */
+    public void testPrefetchHandlesRejectedExecutionException() throws IOException {
+        long fileLength = BLOCK_SIZE * 2;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
+        setupOneBlock(block0);
+
+        CachedMemorySegmentIndexInput input = CachedMemorySegmentIndexInput.newInstance(
+            "test",
+            testPath,
+            fileLength,
+            mockCache,
+            mockReadaheadManager,
+            mockReadaheadContext,
+            mockTinyCache,
+            r -> { throw new java.util.concurrent.RejectedExecutionException("Executor rejected"); }
+        );
+
+        // Should not throw exception
+        input.prefetch(0, BLOCK_SIZE);
+
+        input.close();
+    }
 }

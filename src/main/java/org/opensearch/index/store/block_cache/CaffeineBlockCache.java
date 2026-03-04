@@ -182,7 +182,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         Map<BlockCacheKey, BlockCacheValue<T>> loaded = new LinkedHashMap<>();
 
         V[] loadedBlocks;
-
+        // FIXME: check cache first
         try {
             // Use 50ms timeout for prefetch - fail fast when pool is under pressure
             loadedBlocks = blockLoader.load(filePath, startOffset, blockCount, 50);
