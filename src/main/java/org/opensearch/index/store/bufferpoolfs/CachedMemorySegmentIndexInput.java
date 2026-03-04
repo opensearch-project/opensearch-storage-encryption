@@ -27,7 +27,6 @@ import org.apache.lucene.util.GroupVIntUtil;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
-import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
 
@@ -819,18 +818,12 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
         try {
             prefetchExecutor.execute(() -> {
-                // Check if first block is already cached
-                final FileBlockCacheKey firstBlockKey = new FileBlockCacheKey(path, startBlockOffset);
-                if (blockCache.get(firstBlockKey) != null) {
-                    return;
-                }
-
                 final long endFileOffset = absoluteBaseOffset + offset + length;
                 final long endBlockOffset = (endFileOffset + CACHE_BLOCK_MASK) & ~CACHE_BLOCK_MASK;
                 final long blockCount = (endBlockOffset - startBlockOffset) >>> CACHE_BLOCK_SIZE_POWER;
 
                 try {
-                    // single IO call is made
+                    // cache check occurs inside
                     blockCache.loadForPrefetch(path, startBlockOffset, blockCount);
                 } catch (IOException e) {
                     LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", path, startBlockOffset, blockCount, e);

@@ -165,12 +165,12 @@ public final class PoolSizeCalculator {
     public static long calculateMaxCacheBlocks(Settings settings, long blockSize) {
         long poolSize = calculatePoolSize(settings);
         long maxBlocks = poolSize / blockSize;
-        
+
         long maxHeap = Runtime.getRuntime().maxMemory();
         long totalPhysical = OsProbe.getInstance().getTotalPhysicalMemorySize();
         long offHeap = Math.max(0, totalPhysical - maxHeap);
         double cacheToPoolRatio = calculateCacheToPoolRatio(offHeap, settings);
-        
+
         return (long) (maxBlocks * cacheToPoolRatio);
     }
 

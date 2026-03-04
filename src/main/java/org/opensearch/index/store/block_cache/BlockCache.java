@@ -84,6 +84,7 @@ public interface BlockCache<T> {
     /**
      * Load multiple blocks for prefetch/readahead with a short timeout to fail fast when pool is under pressure.
      * Uses a 50ms timeout for pool segment acquisition - prefetch should not block critical I/O.
+     * Checks cache first and only loads missing blocks, combining consecutive ranges into single bulk loads.
      *
      * @param filePath file to read from
      * @param startOffset starting file offset (should be block-aligned)

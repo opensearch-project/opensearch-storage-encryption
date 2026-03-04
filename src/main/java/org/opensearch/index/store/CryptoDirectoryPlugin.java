@@ -23,7 +23,6 @@ import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.SettingsFilter;
-import org.opensearch.common.util.concurrent.OpenSearchExecutors;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
@@ -176,11 +175,11 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         // Check for user overrides, otherwise calculate dynamically
         int queueSize = PREFETCH_QUEUE_SIZE_SETTING.get(settings);
         int threads = PREFETCH_THREAD_COUNT_SETTING.get(settings);
-        
+
         if (queueSize == -1 || threads == -1) {
             // Calculate cache blocks using PoolSizeCalculator
             long maxCacheBlocks = PoolSizeCalculator.calculateMaxCacheBlocks(settings, StaticConfigs.CACHE_BLOCK_SIZE);
-            
+
             // Use cache size to determine, but double it so we're more aggressive than read ahead
             if (queueSize == -1) {
                 queueSize = ReadAheadSizingPolicy.calculateQueueSize(maxCacheBlocks) * 2;
@@ -277,6 +276,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         CryptoDirectoryFactory.setThreadPool(threadPool);
         CryptoMetricsService.initialize(metricsRegistry);
 
+        log.info("Crypto Directory Plugin ready");
         return Collections.emptyList();
     }
 

@@ -8,6 +8,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -373,37 +374,36 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
         // Pre-populate cache
         blockCache.put(key0, existingValue);
 
-        BlockCacheValue<String>[] loadedValues = new BlockCacheValue[] { createMockValue("new"), createMockValue("block1") };
+        BlockCacheValue<String>[] loadedValues = new BlockCacheValue[] { createMockValue("block1") };
 
-        when(mockLoader.load(eq(path), eq(0L), eq(2L), anyLong())).thenReturn(loadedValues);
+        // Only block 1 should be loaded since block 0 is already cached
+        when(mockLoader.load(eq(path), eq(8192L), eq(1L), anyLong())).thenReturn(loadedValues);
 
         blockCache.loadForPrefetch(path, 0L, 2L);
 
         // Should still have existing value
         BlockCacheValue<String> cached = blockCache.get(key0);
         assertSame("Should keep existing cached value", existingValue, cached);
+
+        // Verify loader was NOT called for the cached block
+        verify(mockLoader, never()).load(eq(path), eq(0L), anyLong(), anyLong());
     }
 
     /**
-     * Tests loadBulk releases newly loaded segments that weren't cached.
+     * Tests loadBulk skips already-cached blocks.
      */
     public void testLoadBulkReleasesUnusedSegments() throws Exception {
         Path path = Paths.get("/test/file.dat");
         BlockCacheKey key0 = new FileBlockCacheKey(path, 0L);
         BlockCacheValue<String> existingValue = createMockValue("existing");
-        BlockCacheValue<String> newValue = createMockValue("new");
 
         // Pre-populate cache
         blockCache.put(key0, existingValue);
 
-        BlockCacheValue<String>[] loadedValues = new BlockCacheValue[] { newValue };
-
-        when(mockLoader.load(eq(path), eq(0L), eq(1L), anyLong())).thenReturn(loadedValues);
-
         blockCache.loadForPrefetch(path, 0L, 1L);
 
-        // Verify decRef was called on the unused segment
-        verify(newValue, times(1)).decRef();
+        // Verify loader was NOT called since block is already cached
+        verify(mockLoader, never()).load(any(), anyLong(), anyLong(), anyLong());
     }
 
     /**
