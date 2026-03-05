@@ -1424,7 +1424,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
 
     private CachedMemorySegmentIndexInput createInput(long length) {
         return CachedMemorySegmentIndexInput
-            .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache, r -> r.run());
+            .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache);
     }
 
     /**
@@ -1644,19 +1644,16 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         // Mock cache to return null (not cached) for all block checks
         when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(null);
 
-        // Test various lengths - with per-file dedup, each unique startBlockOffset is loaded once
+        // Test various lengths
         input.prefetch(0, 100);                    // startBlock=0, count=1
-        input.prefetch(0, BLOCK_SIZE);             // startBlock=0, count=1 (deduped)
-        input.prefetch(0, BLOCK_SIZE + 100);       // startBlock=0, count=2 (deduped)
-        input.prefetch(0, BLOCK_SIZE * 3);         // startBlock=0, count=3 (deduped)
-        input.prefetch(100, BLOCK_SIZE);           // startBlock=0, count=1 (deduped)
-        input.prefetch(BLOCK_SIZE + 100, BLOCK_SIZE * 2); // startBlock=BLOCK_SIZE, count=2 (new offset)
+        input.prefetch(0, BLOCK_SIZE);             // startBlock=0, count=1
+        input.prefetch(0, BLOCK_SIZE + 100);       // startBlock=0, count=2
+        input.prefetch(0, BLOCK_SIZE * 3);         // startBlock=0, count=3
+        input.prefetch(100, BLOCK_SIZE);           // startBlock=0, count=1
+        input.prefetch(BLOCK_SIZE + 100, BLOCK_SIZE * 2); // startBlock=BLOCK_SIZE, count=2
 
-        // Wait for async executor to complete
-        Thread.sleep(100);
-
-        // With per-file dedup, only 2 unique startBlockOffsets: 0 and BLOCK_SIZE
-        verify(mockCache, times(2)).loadMissingBlocks(eq(testPath), anyLong(), anyLong());
+        // Mock cache doesn't have deduplication, so all 6 calls go through
+        verify(mockCache, times(6)).loadMissingBlocks(eq(testPath), anyLong(), anyLong());
 
         input.close();
     }
@@ -1735,9 +1732,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         setupOneBlock(block0);
 
         CachedMemorySegmentIndexInput input = CachedMemorySegmentIndexInput
-            .newInstance("test", testPath, fileLength, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache, r -> {
-                throw new java.util.concurrent.RejectedExecutionException("Executor rejected");
-            });
+            .newInstance("test", testPath, fileLength, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache);
 
         // Should not throw exception
         input.prefetch(0, BLOCK_SIZE);

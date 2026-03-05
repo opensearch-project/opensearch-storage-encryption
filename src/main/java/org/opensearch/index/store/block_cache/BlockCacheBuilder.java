@@ -4,6 +4,8 @@
  */
 package org.opensearch.index.store.block_cache;
 
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
@@ -35,10 +37,12 @@ public final class BlockCacheBuilder {
     public static class CacheWithExecutor<T extends AutoCloseable, V> {
         private final CaffeineBlockCache<T, V> cache;
         private final ThreadPoolExecutor executor;
+        private final ConcurrentMap<BlockCacheKey, Boolean> prefetchCache;
 
-        CacheWithExecutor(CaffeineBlockCache<T, V> cache, ThreadPoolExecutor executor) {
+        CacheWithExecutor(CaffeineBlockCache<T, V> cache, ThreadPoolExecutor executor, ConcurrentMap<BlockCacheKey, Boolean> prefetchCache) {
             this.cache = cache;
             this.executor = executor;
+            this.prefetchCache = prefetchCache;
         }
 
         /**
@@ -58,6 +62,15 @@ public final class BlockCacheBuilder {
          */
         public ThreadPoolExecutor getExecutor() {
             return executor;
+        }
+
+        /**
+         * Returns the shared prefetch cache for deduplication.
+         *
+         * @return the prefetch cache map
+         */
+        public ConcurrentMap<BlockCacheKey, Boolean> getPrefetchCache() {
+            return prefetchCache;
         }
     }
 
@@ -100,10 +113,13 @@ public final class BlockCacheBuilder {
             })
             .build();
 
+        // Create shared prefetch cache for deduplication across all files
+        ConcurrentMap<BlockCacheKey, Boolean> prefetchCache = new ConcurrentHashMap<>();
+
         // Loader is null here because this creates a shared cache instance.
         // Per-directory caches will wrap this cache with their own loaders
         // that provide directory-specific decryption keys.
-        CaffeineBlockCache<T, V> caffeineBlockCache = new CaffeineBlockCache<>(cache, null, maxBlocks);
-        return new CacheWithExecutor<>(caffeineBlockCache, removalExec);
+        CaffeineBlockCache<T, V> caffeineBlockCache = new CaffeineBlockCache<>(cache, null, maxBlocks, prefetchCache);
+        return new CacheWithExecutor<>(caffeineBlockCache, removalExec, prefetchCache);
     }
 }

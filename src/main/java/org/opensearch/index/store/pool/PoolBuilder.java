@@ -53,6 +53,7 @@ public final class PoolBuilder {
         private final TelemetryThread telemetry;
         private final java.util.concurrent.ThreadPoolExecutor removalExecutor;
         private final ExecutorService readAheadExecutor;
+        private final java.util.concurrent.ConcurrentMap<org.opensearch.index.store.block_cache.BlockCacheKey, Boolean> prefetchCache;
 
         PoolResources(
             Pool<RefCountedMemorySegment> segmentPool,
@@ -62,7 +63,8 @@ public final class PoolBuilder {
             Worker sharedReadaheadWorker,
             TelemetryThread telemetry,
             java.util.concurrent.ThreadPoolExecutor removalExecutor,
-            ExecutorService readAheadExecutor
+            ExecutorService readAheadExecutor,
+            java.util.concurrent.ConcurrentMap<org.opensearch.index.store.block_cache.BlockCacheKey, Boolean> prefetchCache
         ) {
             this.segmentPool = segmentPool;
             this.blockCache = blockCache;
@@ -72,6 +74,7 @@ public final class PoolBuilder {
             this.telemetry = telemetry;
             this.removalExecutor = removalExecutor;
             this.readAheadExecutor = readAheadExecutor;
+            this.prefetchCache = prefetchCache;
         }
 
         /**
@@ -128,6 +131,15 @@ public final class PoolBuilder {
          */
         public ExecutorService getReadAheadExecutor() {
             return readAheadExecutor;
+        }
+
+        /**
+         * Returns the shared prefetch cache for deduplication.
+         *
+         * @return the prefetch cache map
+         */
+        public java.util.concurrent.ConcurrentMap<org.opensearch.index.store.block_cache.BlockCacheKey, Boolean> getPrefetchCache() {
+            return prefetchCache;
         }
 
         /**
@@ -300,7 +312,8 @@ public final class PoolBuilder {
             sharedReadaheadWorker,
             telemetry,
             removalExecutor,
-            readAheadExecutor
+            readAheadExecutor,
+            cacheWithExecutor.getPrefetchCache()
         );
     }
 }

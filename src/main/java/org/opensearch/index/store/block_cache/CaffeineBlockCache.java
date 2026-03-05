@@ -37,6 +37,8 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
 
     private final Cache<BlockCacheKey, BlockCacheValue<T>> cache;
     private final BlockLoader<V> blockLoader;
+    private final ConcurrentMap<BlockCacheKey, Boolean> prefetchCache;
+    private final java.util.concurrent.Executor prefetchExecutor;
 
     /**
      * Constructs a new CaffeineBlockCache with the specified cache and block loader.
@@ -46,8 +48,35 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      * @param maxBlocks the maximum number of blocks to cache (currently unused but kept for API compatibility)
      */
     public CaffeineBlockCache(Cache<BlockCacheKey, BlockCacheValue<T>> cache, BlockLoader<V> blockLoader, long maxBlocks) {
+        this(cache, blockLoader, maxBlocks, null, null);
+    }
+
+    /**
+     * Constructs a new CaffeineBlockCache with the specified cache, block loader, and prefetch cache.
+     *
+     * @param cache the underlying Caffeine cache instance
+     * @param blockLoader the loader used to load blocks when cache misses occur
+     * @param maxBlocks the maximum number of blocks to cache (currently unused but kept for API compatibility)
+     * @param prefetchCache optional shared cache for prefetch deduplication across all files
+     */
+    public CaffeineBlockCache(Cache<BlockCacheKey, BlockCacheValue<T>> cache, BlockLoader<V> blockLoader, long maxBlocks, ConcurrentMap<BlockCacheKey, Boolean> prefetchCache) {
+        this(cache, blockLoader, maxBlocks, prefetchCache, null);
+    }
+
+    /**
+     * Constructs a new CaffeineBlockCache with the specified cache, block loader, prefetch cache, and executor.
+     *
+     * @param cache the underlying Caffeine cache instance
+     * @param blockLoader the loader used to load blocks when cache misses occur
+     * @param maxBlocks the maximum number of blocks to cache (currently unused but kept for API compatibility)
+     * @param prefetchCache optional shared cache for prefetch deduplication across all files
+     * @param prefetchExecutor optional executor for async prefetch operations
+     */
+    public CaffeineBlockCache(Cache<BlockCacheKey, BlockCacheValue<T>> cache, BlockLoader<V> blockLoader, long maxBlocks, ConcurrentMap<BlockCacheKey, Boolean> prefetchCache, java.util.concurrent.Executor prefetchExecutor) {
         this.blockLoader = blockLoader;
         this.cache = cache;
+        this.prefetchCache = prefetchCache;
+        this.prefetchExecutor = prefetchExecutor;
     }
 
     @Override
@@ -140,6 +169,12 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         if (!keysToInvalidate.isEmpty()) {
             cache.invalidateAll(keysToInvalidate);
         }
+
+        // Clear prefetch cache entries for this file
+        if (prefetchCache != null) {
+            prefetchCache.keySet().removeIf(key -> 
+                key instanceof FileBlockCacheKey fk && fk.filePath().equals(normalized));
+        }
     }
 
     @Override
@@ -178,17 +213,42 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      */
     @Override
     public long loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException {
+        if (prefetchExecutor != null) {
+            // Async execution for prefetch
+            try {
+                prefetchExecutor.execute(() -> {
+                    try {
+                        loadMissingBlocksSync(filePath, startOffset, blockCount);
+                    } catch (Exception e) {
+                        LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", filePath, startOffset, blockCount, e);
+                    }
+                });
+            } catch (Exception e){
+                LOGGER.info("prefetch task rejected: path={} offset={} count={}", filePath, startOffset, blockCount, e.getMessage());
+
+            }
+            return 0;
+        } else {
+            // Sync execution for regular loads
+            return loadMissingBlocksSync(filePath, startOffset, blockCount);
+        }
+    }
+
+    private long loadMissingBlocksSync(Path filePath, long startOffset, long blockCount) throws IOException {
         long totalLoaded = 0;
 
         // Check which blocks are already cached
-        long[] missingOffsets = new long[(int) blockCount];
+        FileBlockCacheKey[] missingKeys = new FileBlockCacheKey[(int) blockCount];
         int missingCount = 0;
 
         for (int i = 0; i < blockCount; i++) {
             long blockOffset = startOffset + i * CACHE_BLOCK_SIZE;
-            BlockCacheKey key = createBlockKey(filePath, blockOffset);
-            if (cache.getIfPresent(key) == null) {
-                missingOffsets[missingCount++] = blockOffset;
+            FileBlockCacheKey key = (FileBlockCacheKey) createBlockKey(filePath, blockOffset);
+            //check if this block is already in progress
+            if (prefetchCache == null || prefetchCache.putIfAbsent(key, Boolean.TRUE) == null) {
+                if (cache.getIfPresent(key) == null) {
+                    missingKeys[missingCount++] = key;
+                }
             }
         }
 
@@ -199,17 +259,24 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         // Load consecutive ranges
         int rangeStart = 0;
         while (rangeStart < missingCount) {
-            long rangeStartOffset = missingOffsets[rangeStart];
+            long rangeStartOffset = missingKeys[rangeStart].offset();
             int rangeLength = 1;
 
             // Find consecutive blocks
             while (rangeStart + rangeLength < missingCount
-                && missingOffsets[rangeStart + rangeLength] == rangeStartOffset + rangeLength * CACHE_BLOCK_SIZE) {
+                && missingKeys[rangeStart + rangeLength].offset() == rangeStartOffset + rangeLength * CACHE_BLOCK_SIZE) {
                 rangeLength++;
             }
 
             long loadedFor = loadAllBlocks(filePath, rangeStartOffset, rangeLength);
             totalLoaded += loadedFor;
+
+            // Remove loaded blocks from prefetch cache
+            if (prefetchCache != null) {
+                for (int i = 0; i < rangeLength; i++) {
+                    prefetchCache.remove(missingKeys[rangeStart + i]);
+                }
+            }
 
             rangeStart += rangeLength;
         }

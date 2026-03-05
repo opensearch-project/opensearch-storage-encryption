@@ -79,14 +79,10 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     private int lastOffsetInBlock;
 
     private final BlockSlotTinyCache blockSlotTinyCache;
-    private final Executor prefetchExecutor;
 
     // Safe because IndexInput instances are not thread-safe per Lucene contract -
     // each thread must use its own clone().
     private final BlockSlotTinyCache.CacheHitHolder cacheHitHolder = new BlockSlotTinyCache.CacheHitHolder();
-
-    // Prefetch deduplication cache (shared at file level)
-    private final Map<Long, Boolean> prefetchCache;
 
     /**
      * Creates a new CachedMemorySegmentIndexInput instance.
@@ -107,8 +103,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         BlockCache<RefCountedMemorySegment> blockCache,
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
-        BlockSlotTinyCache blockSlotTinyCache,
-        Executor prefetchExecutor
+        BlockSlotTinyCache blockSlotTinyCache
     ) {
         CachedMemorySegmentIndexInput input = new CachedMemorySegmentIndexInput(
             resourceDescription,
@@ -119,9 +114,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             readaheadManager,
             readaheadContext,
             false,
-            blockSlotTinyCache,
-            prefetchExecutor,
-            new ConcurrentHashMap<>() // we only need to dedup within the same file
+            blockSlotTinyCache
         );
         try {
             input.seek(0L);
@@ -140,9 +133,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
         boolean isSlice,
-        BlockSlotTinyCache blockSlotTinyCache,
-        Executor prefetchExecutor,
-        Map<Long, Boolean> prefetchCache
+        BlockSlotTinyCache blockSlotTinyCache
     ) {
         super(resourceDescription);
         this.path = path;
@@ -153,8 +144,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         this.readaheadContext = readaheadContext;
         this.isSlice = isSlice;
         this.blockSlotTinyCache = blockSlotTinyCache;
-        this.prefetchExecutor = prefetchExecutor;
-        this.prefetchCache = prefetchCache;
     }
 
     void ensureOpen() {
@@ -773,9 +762,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             readaheadManager,
             readaheadContext,
             true,
-            blockSlotTinyCache,
-            prefetchExecutor,
-            prefetchCache
+            blockSlotTinyCache
         );
 
         try {
@@ -793,29 +780,11 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
         final long startFileOffset = absoluteBaseOffset + offset;
         final long startBlockOffset = startFileOffset & ~CACHE_BLOCK_MASK;
+        final long endFileOffset = absoluteBaseOffset + offset + length;
+        final long endBlockOffset = (endFileOffset + CACHE_BLOCK_MASK) & ~CACHE_BLOCK_MASK;
+        final long blockCount = (endBlockOffset - startBlockOffset) >>> CACHE_BLOCK_SIZE_POWER;
 
-        try {
-            prefetchExecutor.execute(() -> {
-                // Check if already in prefetch cache (per-file deduplication)
-                // Check in prefetch thread to avoid any contention on search threads
-                if (prefetchCache.putIfAbsent(startBlockOffset, Boolean.TRUE) != null) {
-                    return;
-                }
-
-                final long endFileOffset = absoluteBaseOffset + offset + length;
-                final long endBlockOffset = (endFileOffset + CACHE_BLOCK_MASK) & ~CACHE_BLOCK_MASK;
-                final long blockCount = (endBlockOffset - startBlockOffset) >>> CACHE_BLOCK_SIZE_POWER;
-
-                try {
-                    // cache check occurs inside
-                    blockCache.loadMissingBlocks(path, startBlockOffset, blockCount);
-                } catch (IOException e) {
-                    LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", path, startBlockOffset, blockCount, e);
-                }
-            });
-        } catch (RuntimeException e) {
-            LOGGER.info("prefetch task rejected: path={} offset={} message={}", path, startBlockOffset, e.getMessage());
-        }
+        blockCache.loadMissingBlocks(path, startBlockOffset, blockCount);
     }
 
     @Override
