@@ -549,7 +549,7 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     public void testLoadMissingBlocksAsync() throws Exception {
         java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newSingleThreadExecutor();
         java.util.concurrent.ConcurrentHashMap<BlockCacheKey, Boolean> prefetchCache = new java.util.concurrent.ConcurrentHashMap<>();
-        
+
         CaffeineBlockCache<String, BlockCacheValue<String>> asyncCache = new CaffeineBlockCache<>(
             caffeineCache,
             mockLoader,
@@ -560,14 +560,14 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
 
         Path testPath = Paths.get("/test/async.dat");
         BlockCacheValue<String> mockValue = createMockValue("test");
-        
+
         java.util.concurrent.CountDownLatch loadStarted = new java.util.concurrent.CountDownLatch(1);
         java.util.concurrent.CountDownLatch loadComplete = new java.util.concurrent.CountDownLatch(1);
-        
+
         when(mockLoader.load(any(), anyLong(), anyLong(), anyLong())).thenAnswer(invocation -> {
             loadStarted.countDown();
             loadComplete.await();
-            return new BlockCacheValue[]{mockValue};
+            return new BlockCacheValue[] { mockValue };
         });
 
         // Call loadMissingBlocks - should return immediately (async)
@@ -576,14 +576,14 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
 
         // Verify load started
         assertTrue("Load should start", loadStarted.await(1, java.util.concurrent.TimeUnit.SECONDS));
-        
+
         // Complete the load
         loadComplete.countDown();
-        
+
         // Wait for async execution to finish
         executor.shutdown();
         assertTrue("Executor should finish", executor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
-        
+
         verify(mockLoader, times(1)).load(any(), anyLong(), anyLong(), anyLong());
     }
 
@@ -593,7 +593,7 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     public void testLoadMissingBlocksAsyncDeduplication() throws Exception {
         java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(4);
         java.util.concurrent.ConcurrentHashMap<BlockCacheKey, Boolean> prefetchCache = new java.util.concurrent.ConcurrentHashMap<>();
-        
+
         CaffeineBlockCache<String, BlockCacheValue<String>> asyncCache = new CaffeineBlockCache<>(
             caffeineCache,
             mockLoader,
@@ -604,19 +604,19 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
 
         Path testPath = Paths.get("/test/dedup.dat");
         BlockCacheValue<String> mockValue = createMockValue("test");
-        
+
         java.util.concurrent.atomic.AtomicInteger loadCount = new java.util.concurrent.atomic.AtomicInteger(0);
-        
+
         when(mockLoader.load(any(), anyLong(), anyLong(), anyLong())).thenAnswer(invocation -> {
             loadCount.incrementAndGet();
-            return new BlockCacheValue[]{mockValue};
+            return new BlockCacheValue[] { mockValue };
         });
 
         // Make multiple concurrent calls to same offset
         int callCount = 100;
         java.util.concurrent.CountDownLatch startLatch = new java.util.concurrent.CountDownLatch(1);
         java.util.concurrent.CountDownLatch doneLatch = new java.util.concurrent.CountDownLatch(callCount);
-        
+
         for (int i = 0; i < callCount; i++) {
             executor.submit(() -> {
                 try {
@@ -632,10 +632,10 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
 
         startLatch.countDown();
         assertTrue("All calls should complete", doneLatch.await(10, java.util.concurrent.TimeUnit.SECONDS));
-        
+
         executor.shutdown();
         assertTrue("Executor should finish", executor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS));
-        
+
         // Should only load once due to deduplication
         assertEquals("Should only load once", 1, loadCount.get());
     }
@@ -645,7 +645,7 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
      */
     public void testLoadMissingBlocksCleanupPrefetchCache() throws Exception {
         java.util.concurrent.ConcurrentHashMap<BlockCacheKey, Boolean> prefetchCache = new java.util.concurrent.ConcurrentHashMap<>();
-        
+
         CaffeineBlockCache<String, BlockCacheValue<String>> cacheWithPrefetch = new CaffeineBlockCache<>(
             caffeineCache,
             mockLoader,
@@ -656,15 +656,15 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
 
         Path testPath = Paths.get("/test/cleanup.dat");
         BlockCacheValue<String> mockValue = createMockValue("test");
-        
-        when(mockLoader.load(any(), anyLong(), anyLong(), anyLong())).thenReturn(new BlockCacheValue[]{mockValue});
+
+        when(mockLoader.load(any(), anyLong(), anyLong(), anyLong())).thenReturn(new BlockCacheValue[] { mockValue });
 
         // Load blocks
         cacheWithPrefetch.loadMissingBlocks(testPath, 0L, 1L);
-        
+
         // Prefetch cache should be empty after loading
         assertEquals("Prefetch cache should be cleaned up", 0, prefetchCache.size());
-        
+
         verify(mockLoader, times(1)).load(any(), anyLong(), anyLong(), anyLong());
     }
 }

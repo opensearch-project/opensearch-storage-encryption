@@ -8,6 +8,7 @@ import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_
 
 import java.io.Closeable;
 import java.time.Duration;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -18,6 +19,7 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheBuilder;
+import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.index.store.read_ahead.impl.QueuingWorker;
 import org.opensearch.index.store.read_ahead.impl.ReadAheadSizingPolicy;
@@ -53,7 +55,7 @@ public final class PoolBuilder {
         private final TelemetryThread telemetry;
         private final java.util.concurrent.ThreadPoolExecutor removalExecutor;
         private final ExecutorService readAheadExecutor;
-        private final java.util.concurrent.ConcurrentMap<org.opensearch.index.store.block_cache.BlockCacheKey, Boolean> prefetchCache;
+        private final Map<org.opensearch.index.store.block_cache.BlockCacheKey, Boolean> prefetchCache;
 
         PoolResources(
             Pool<RefCountedMemorySegment> segmentPool,
@@ -64,7 +66,7 @@ public final class PoolBuilder {
             TelemetryThread telemetry,
             java.util.concurrent.ThreadPoolExecutor removalExecutor,
             ExecutorService readAheadExecutor,
-            java.util.concurrent.ConcurrentMap<org.opensearch.index.store.block_cache.BlockCacheKey, Boolean> prefetchCache
+            Map<org.opensearch.index.store.block_cache.BlockCacheKey, Boolean> prefetchCache
         ) {
             this.segmentPool = segmentPool;
             this.blockCache = blockCache;
@@ -138,7 +140,7 @@ public final class PoolBuilder {
          *
          * @return the prefetch cache map
          */
-        public java.util.concurrent.ConcurrentMap<org.opensearch.index.store.block_cache.BlockCacheKey, Boolean> getPrefetchCache() {
+        public Map<BlockCacheKey, Boolean> getPrefetchCache() {
             return prefetchCache;
         }
 

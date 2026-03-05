@@ -4,6 +4,7 @@
  */
 package org.opensearch.index.store.block_cache;
 
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -39,7 +40,11 @@ public final class BlockCacheBuilder {
         private final ThreadPoolExecutor executor;
         private final ConcurrentMap<BlockCacheKey, Boolean> prefetchCache;
 
-        CacheWithExecutor(CaffeineBlockCache<T, V> cache, ThreadPoolExecutor executor, ConcurrentMap<BlockCacheKey, Boolean> prefetchCache) {
+        CacheWithExecutor(
+            CaffeineBlockCache<T, V> cache,
+            ThreadPoolExecutor executor,
+            ConcurrentMap<BlockCacheKey, Boolean> prefetchCache
+        ) {
             this.cache = cache;
             this.executor = executor;
             this.prefetchCache = prefetchCache;
@@ -69,7 +74,7 @@ public final class BlockCacheBuilder {
          *
          * @return the prefetch cache map
          */
-        public ConcurrentMap<BlockCacheKey, Boolean> getPrefetchCache() {
+        public Map<BlockCacheKey, Boolean> getPrefetchCache() {
             return prefetchCache;
         }
     }

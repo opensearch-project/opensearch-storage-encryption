@@ -15,7 +15,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.Provider;
 import java.time.Duration;
-import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.logging.log4j.LogManager;

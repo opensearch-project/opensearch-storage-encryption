@@ -488,8 +488,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 blockCacheA,
                 blockLoaderA,
                 readAheadWorkerA,
-                encryptionMetadataCache,
-                executorA
+                encryptionMetadataCache
             )
         ) {
             // Write data
@@ -644,8 +643,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 blockCacheA,
                 blockLoaderA,
                 readAheadWorkerA,
-                encryptionMetadataCache,
-                executorA
+                encryptionMetadataCache
             )
         ) {
             // Write data
