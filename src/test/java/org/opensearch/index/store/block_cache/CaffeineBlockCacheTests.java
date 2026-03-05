@@ -17,7 +17,6 @@ import java.io.IOException;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Map;
 
 import org.junit.Before;
 import org.opensearch.index.store.CaffeineThreadLeakFilter;
@@ -336,9 +335,9 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
 
         when(mockLoader.load(eq(path), eq(startOffset), eq(blockCount), anyLong())).thenReturn(loadedValues);
 
-        Map<BlockCacheKey, BlockCacheValue<String>> result = blockCache.loadForPrefetch(path, startOffset, blockCount);
+        long result = blockCache.loadMissingBlocks(path, startOffset, blockCount);
 
-        assertEquals("Should load 3 blocks", 3, result.size());
+        assertEquals("Should load 3 blocks", 3L, result);
         verify(mockLoader, times(1)).load(eq(path), eq(startOffset), eq(blockCount), anyLong());
     }
 
@@ -354,7 +353,7 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
 
         when(mockLoader.load(eq(path), eq(startOffset), eq(blockCount), anyLong())).thenReturn(loadedValues);
 
-        blockCache.loadForPrefetch(path, startOffset, blockCount);
+        blockCache.loadMissingBlocks(path, startOffset, blockCount);
 
         BlockCacheKey key0 = new FileBlockCacheKey(path, 0L);
         BlockCacheKey key1 = new FileBlockCacheKey(path, 8192L); // CACHE_BLOCK_SIZE = 8192
@@ -379,7 +378,7 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
         // Only block 1 should be loaded since block 0 is already cached
         when(mockLoader.load(eq(path), eq(8192L), eq(1L), anyLong())).thenReturn(loadedValues);
 
-        blockCache.loadForPrefetch(path, 0L, 2L);
+        blockCache.loadMissingBlocks(path, 0L, 2L);
 
         // Should still have existing value
         BlockCacheValue<String> cached = blockCache.get(key0);
@@ -400,7 +399,7 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
         // Pre-populate cache
         blockCache.put(key0, existingValue);
 
-        blockCache.loadForPrefetch(path, 0L, 1L);
+        blockCache.loadMissingBlocks(path, 0L, 1L);
 
         // Verify loader was NOT called since block is already cached
         verify(mockLoader, never()).load(any(), anyLong(), anyLong(), anyLong());
@@ -414,7 +413,7 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
 
         when(mockLoader.load(any(Path.class), anyLong(), anyLong(), anyLong())).thenThrow(new IOException("Bulk load failed"));
 
-        expectThrows(IOException.class, () -> blockCache.loadForPrefetch(path, 0L, 3L));
+        expectThrows(IOException.class, () -> blockCache.loadMissingBlocks(path, 0L, 3L));
     }
 
     /**
@@ -426,7 +425,7 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
         when(mockLoader.load(any(Path.class), anyLong(), anyLong(), anyLong()))
             .thenThrow(new BlockLoader.PoolPressureException("Pool exhausted"));
 
-        expectThrows(IOException.class, () -> blockCache.loadForPrefetch(path, 0L, 3L));
+        expectThrows(IOException.class, () -> blockCache.loadMissingBlocks(path, 0L, 3L));
     }
 
     /**

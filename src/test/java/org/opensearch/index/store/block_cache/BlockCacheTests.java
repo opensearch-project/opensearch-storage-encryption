@@ -19,7 +19,6 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Map;
 
 import org.junit.After;
 import org.junit.Before;
@@ -276,10 +275,9 @@ public class BlockCacheTests extends OpenSearchTestCase {
         RefCountedMemorySegment[] segments = new RefCountedMemorySegment[] { refSegment1, refSegment2, refSegment3 };
         when(mockLoader.load(any(Path.class), any(Long.class), any(Long.class), anyLong())).thenReturn(segments);
 
-        Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> result = blockCache.loadForPrefetch(filePath, startOffset, blockCount);
+        long result = blockCache.loadMissingBlocks(filePath, startOffset, blockCount);
 
-        assertNotNull(result);
-        assertEquals(3, result.size());
+        assertEquals(3L, result);
     }
 
     public void testMultipleCacheOperations() {

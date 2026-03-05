@@ -17,7 +17,6 @@ import java.lang.foreign.ValueLayout;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -476,7 +475,7 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
         CountDownLatch firstTaskRunning = new CountDownLatch(1);
 
         BlockCache<RefCountedMemorySegment> trackingCache = mock(BlockCache.class);
-        when(trackingCache.loadForPrefetch(any(), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(trackingCache.loadMissingBlocks(any(), anyLong(), anyLong())).thenAnswer(invocation -> {
             loadCallCount.incrementAndGet();
             firstTaskRunning.countDown();
             try {
@@ -484,7 +483,7 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            return Collections.emptyMap();
+            return 0L;
         });
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -517,7 +516,7 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
         CountDownLatch firstTaskRunning = new CountDownLatch(1);
 
         BlockCache<RefCountedMemorySegment> trackingCache = mock(BlockCache.class);
-        when(trackingCache.loadForPrefetch(any(), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(trackingCache.loadMissingBlocks(any(), anyLong(), anyLong())).thenAnswer(invocation -> {
             loadCallCount.incrementAndGet();
             firstTaskRunning.countDown();
             try {
@@ -525,7 +524,7 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            return Collections.emptyMap();
+            return 0L;
         });
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -558,9 +557,9 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
         AtomicInteger loadCallCount = new AtomicInteger(0);
 
         BlockCache<RefCountedMemorySegment> trackingCache = mock(BlockCache.class);
-        when(trackingCache.loadForPrefetch(any(), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(trackingCache.loadMissingBlocks(any(), anyLong(), anyLong())).thenAnswer(invocation -> {
             loadCallCount.incrementAndGet();
-            return Collections.emptyMap();
+            return 0L;
         });
 
         ExecutorService prefetchExecutor = Executors.newFixedThreadPool(4);

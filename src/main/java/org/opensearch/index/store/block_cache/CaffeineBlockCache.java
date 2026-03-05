@@ -9,8 +9,6 @@ import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
-import java.util.LinkedHashMap;
-import java.util.Map;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -175,12 +173,12 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      * @param filePath file to read from
      * @param startOffset starting file offset (should be block-aligned)
      * @param blockCount number of blocks to read
-     * @return map of cache keys to cache values for blocks that were loaded (not including already-cached blocks)
+     * @return count of blocks that were loaded (not including already-cached blocks)
      * @throws IOException if loading fails (including specific BlockLoader exceptions)
      */
     @Override
-    public Map<BlockCacheKey, BlockCacheValue<T>> loadForPrefetch(Path filePath, long startOffset, long blockCount) throws IOException {
-        Map<BlockCacheKey, BlockCacheValue<T>> loaded = new LinkedHashMap<>();
+    public long loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException {
+        long totalLoaded = 0;
 
         // Check which blocks are already cached
         long[] missingOffsets = new long[(int) blockCount];
@@ -195,7 +193,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         }
 
         if (missingCount == 0) {
-            return loaded; // All blocks already cached
+            return totalLoaded; // All blocks already cached
         }
 
         // Load consecutive ranges
@@ -210,37 +208,65 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 rangeLength++;
             }
 
-            // Load this consecutive range
-            try {
-                V[] loadedBlocks = blockLoader.load(filePath, rangeStartOffset, rangeLength, 50);
-
-                for (int i = 0; i < loadedBlocks.length; i++) {
-                    long blockOffset = rangeStartOffset + i * CACHE_BLOCK_SIZE;
-                    BlockCacheKey key = createBlockKey(filePath, blockOffset);
-
-                    @SuppressWarnings("unchecked")
-                    BlockCacheValue<T> wrapped = (BlockCacheValue<T>) loadedBlocks[i];
-
-                    if (cache.asMap().putIfAbsent(key, wrapped) == null) {
-                        loaded.put(key, wrapped);
-                    } else {
-                        wrapped.decRef();
-                    }
-                }
-            } catch (Exception e) {
-                try {
-                    handleLoadException(createBlockKey(filePath, rangeStartOffset), e);
-                } catch (UncheckedIOException uie) {
-                    throw uie.getCause();
-                } catch (RuntimeException re) {
-                    throw new IOException("Failed bulk load: " + filePath, re);
-                }
-            }
+            long loadedFor = loadAllBlocks(filePath, rangeStartOffset, rangeLength);
+            totalLoaded += loadedFor;
 
             rangeStart += rangeLength;
         }
 
-        return loaded;
+        return totalLoaded;
+    }
+
+    /**
+     * Bulk load multiple blocks efficiently using a single I/O operation.
+     * Similar to getOrLoad() but for a contiguous range of blocks.
+     *
+     * @param filePath file to read from
+     * @param startOffset starting file offset (should be block-aligned)
+     * @param blockCount number of blocks to read
+     * @throws IOException if loading fails (including specific BlockLoader exceptions)
+     */
+    @Override
+    public long loadAllBlocks(Path filePath, long startOffset, long blockCount) throws IOException {
+        long loadedCount = 0;
+
+        V[] loadedBlocks;
+
+        try {
+            // Use 50ms timeout for prefetch - fail fast when pool is under pressure
+            loadedBlocks = blockLoader.load(filePath, startOffset, blockCount, 50);
+
+            for (int i = 0; i < loadedBlocks.length; i++) {
+                V block = loadedBlocks[i];
+
+                long blockOffset = startOffset + i * CACHE_BLOCK_SIZE;
+                BlockCacheKey key = createBlockKey(filePath, blockOffset);
+
+                // Direct cast - BlockLoader contract guarantees V is BlockCacheValue<T>
+                @SuppressWarnings("unchecked")
+                BlockCacheValue<T> wrapped = (BlockCacheValue<T>) block;
+
+                if (cache.asMap().putIfAbsent(key, wrapped) == null) {
+                    // Successfully inserted into cache
+                    loadedCount++;
+                } else {
+                    // already cached → release our newly loaded segment as we won't use it
+                    // we use decRef() not close() - this segment was never inserted into cache,
+                    // so we shouldn't increment generation.
+                    wrapped.decRef();
+                }
+            }
+
+        } catch (Exception e) {
+            try {
+                handleLoadException(createBlockKey(filePath, startOffset), e);
+            } catch (UncheckedIOException uie) {
+                throw uie.getCause();
+            } catch (RuntimeException re) {
+                throw new IOException("Failed bulk load: " + filePath, re);
+            }
+        }
+        return loadedCount;
     }
 
     // Helper method to create appropriate cache key for file blocks

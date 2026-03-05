@@ -794,20 +794,21 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         final long startFileOffset = absoluteBaseOffset + offset;
         final long startBlockOffset = startFileOffset & ~CACHE_BLOCK_MASK;
 
-        // Check if already in prefetch cache (per-file deduplication)
-        if (prefetchCache.putIfAbsent(startBlockOffset, Boolean.TRUE) != null) {
-            return;
-        }
-
         try {
             prefetchExecutor.execute(() -> {
+                // Check if already in prefetch cache (per-file deduplication)
+                // Check in prefetch thread to avoid any contention on search threads
+                if (prefetchCache.putIfAbsent(startBlockOffset, Boolean.TRUE) != null) {
+                    return;
+                }
+
                 final long endFileOffset = absoluteBaseOffset + offset + length;
                 final long endBlockOffset = (endFileOffset + CACHE_BLOCK_MASK) & ~CACHE_BLOCK_MASK;
                 final long blockCount = (endBlockOffset - startBlockOffset) >>> CACHE_BLOCK_SIZE_POWER;
 
                 try {
                     // cache check occurs inside
-                    blockCache.loadForPrefetch(path, startBlockOffset, blockCount);
+                    blockCache.loadMissingBlocks(path, startBlockOffset, blockCount);
                 } catch (IOException e) {
                     LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", path, startBlockOffset, blockCount, e);
                 }

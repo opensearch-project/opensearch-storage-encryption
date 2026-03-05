@@ -21,14 +21,10 @@ import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
 
 import org.junit.Before;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
-import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
@@ -1571,7 +1567,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         slice.prefetch(0, BLOCK_SIZE);
 
         // Absolute start block offset = BLOCK_SIZE, count = 1
-        verify(mockCache, times(1)).loadForPrefetch(eq(testPath), eq((long) BLOCK_SIZE), eq(1L));
+        verify(mockCache, times(1)).loadMissingBlocks(eq(testPath), eq((long) BLOCK_SIZE), eq(1L));
 
         slice.close();
         input.close();
@@ -1593,7 +1589,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
 
         // absoluteBaseOffset = BLOCK_SIZE + 100, offset = 50
         // startFileOffset = BLOCK_SIZE + 150, startBlockOffset = BLOCK_SIZE (block-aligned)
-        verify(mockCache, times(1)).loadForPrefetch(eq(testPath), eq((long) BLOCK_SIZE), anyLong());
+        verify(mockCache, times(1)).loadMissingBlocks(eq(testPath), eq((long) BLOCK_SIZE), anyLong());
 
         slice2.close();
         slice1.close();
@@ -1613,7 +1609,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         input.prefetch(100, 200);
 
         // startFileOffset=100, startBlockOffset=0 (block-aligned down)
-        verify(mockCache, times(1)).loadForPrefetch(eq(testPath), eq(0L), anyLong());
+        verify(mockCache, times(1)).loadMissingBlocks(eq(testPath), eq(0L), anyLong());
 
         input.close();
     }
@@ -1630,7 +1626,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
 
         input.prefetch(0, BLOCK_SIZE * 3);
 
-        verify(mockCache, times(1)).loadForPrefetch(eq(testPath), eq(0L), eq(3L));
+        verify(mockCache, times(1)).loadMissingBlocks(eq(testPath), eq(0L), eq(3L));
 
         input.close();
     }
@@ -1660,7 +1656,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         Thread.sleep(100);
 
         // With per-file dedup, only 2 unique startBlockOffsets: 0 and BLOCK_SIZE
-        verify(mockCache, times(2)).loadForPrefetch(eq(testPath), anyLong(), anyLong());
+        verify(mockCache, times(2)).loadMissingBlocks(eq(testPath), anyLong(), anyLong());
 
         input.close();
     }
@@ -1691,8 +1687,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         long fileLength = BLOCK_SIZE * 3;
 
         // With cache-first optimization, loadForPrefetch checks cache internally
-        // and returns empty map when all blocks are cached
-        when(mockCache.loadForPrefetch(eq(testPath), eq(0L), eq(3L))).thenReturn(Collections.emptyMap());
+        // and returns 0 when all blocks are cached
+        when(mockCache.loadMissingBlocks(eq(testPath), eq(0L), eq(3L))).thenReturn(0L);
 
         CachedMemorySegmentIndexInput input = createInput(fileLength);
 
@@ -1702,7 +1698,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         Thread.sleep(100);
 
         // Verify loadForPrefetch was called (it checks cache internally)
-        verify(mockCache, times(1)).loadForPrefetch(eq(testPath), eq(0L), eq(3L));
+        verify(mockCache, times(1)).loadMissingBlocks(eq(testPath), eq(0L), eq(3L));
 
         input.close();
     }
@@ -1714,9 +1710,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         long fileLength = BLOCK_SIZE * 3;
 
         // With cache-first optimization, loadForPrefetch checks cache internally
-        // and returns map of loaded blocks
-        Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> loadedBlocks = new HashMap<>();
-        when(mockCache.loadForPrefetch(eq(testPath), eq(0L), eq(3L))).thenReturn(loadedBlocks);
+        // and returns count of loaded blocks
+        when(mockCache.loadMissingBlocks(eq(testPath), eq(0L), eq(3L))).thenReturn(3L);
 
         CachedMemorySegmentIndexInput input = createInput(fileLength);
 
@@ -1726,7 +1721,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         Thread.sleep(100);
 
         // Verify loadForPrefetch was called (it checks cache and loads internally)
-        verify(mockCache, times(1)).loadForPrefetch(eq(testPath), eq(0L), eq(3L));
+        verify(mockCache, times(1)).loadMissingBlocks(eq(testPath), eq(0L), eq(3L));
 
         input.close();
     }
