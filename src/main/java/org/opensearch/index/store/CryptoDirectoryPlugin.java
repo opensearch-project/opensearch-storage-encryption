@@ -23,6 +23,7 @@ import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.SettingsFilter;
+import org.opensearch.common.util.concurrent.OpenSearchExecutors;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
@@ -35,13 +36,11 @@ import org.opensearch.index.shard.IndexEventListener;
 import org.opensearch.index.store.action.GetIndexCountForKeyAction;
 import org.opensearch.index.store.action.TransportGetIndexCountForKeyAction;
 import org.opensearch.index.store.block_cache.BlockCache;
-import org.opensearch.index.store.bufferpoolfs.StaticConfigs;
 import org.opensearch.index.store.key.MasterKeyHealthMonitor;
 import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
 import org.opensearch.index.store.pool.PoolSizeCalculator;
-import org.opensearch.index.store.read_ahead.impl.ReadAheadSizingPolicy;
 import org.opensearch.index.store.rest.RestGetIndexCountForKeyAction;
 import org.opensearch.index.store.rest.RestRegisterCryptoAction;
 import org.opensearch.index.store.rest.RestUnregisterCryptoAction;
@@ -176,17 +175,11 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         int queueSize = PREFETCH_QUEUE_SIZE_SETTING.get(settings);
         int threads = PREFETCH_THREAD_COUNT_SETTING.get(settings);
 
-        if (queueSize == -1 || threads == -1) {
-            // Calculate cache blocks using PoolSizeCalculator
-            long maxCacheBlocks = PoolSizeCalculator.calculateMaxCacheBlocks(settings, StaticConfigs.CACHE_BLOCK_SIZE);
-
-            // Use cache size to determine, but double it so we're more aggressive than read ahead
-            if (queueSize == -1) {
-                queueSize = ReadAheadSizingPolicy.calculateQueueSize(maxCacheBlocks) * 2;
-            }
-            if (threads == -1) {
-                threads = ReadAheadSizingPolicy.calculateWorkerThreads(queueSize) * 2;
-            }
+        if (threads == -1) {
+            threads = OpenSearchExecutors.allocatedProcessors(settings) * 4;
+        }
+        if (queueSize == -1) {
+            queueSize = threads * 1000;
         }
 
         log.info("Prefetch thread pool configured: threads={}, queueSize={}", threads, queueSize);

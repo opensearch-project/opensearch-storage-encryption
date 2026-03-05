@@ -16,7 +16,6 @@ import java.nio.ByteOrder;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.concurrent.Executor;
-import java.util.concurrent.RejectedExecutionException;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -86,9 +85,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     // Safe because IndexInput instances are not thread-safe per Lucene contract -
     // each thread must use its own clone().
     private final BlockSlotTinyCache.CacheHitHolder cacheHitHolder = new BlockSlotTinyCache.CacheHitHolder();
-
-    // Prefetch optimization: track consecutive cache hits to avoid overhead
-    private int consecutivePrefetchHitCount = 0;
 
     // Prefetch deduplication cache (shared across slices)
     private final long[] prefetchCache;
@@ -829,8 +825,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
                     LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", path, startBlockOffset, blockCount, e);
                 }
             });
-        } catch (RejectedExecutionException e) {
-            LOGGER.info("prefetch task rejected: path={} offset={}", path, startBlockOffset);
+        } catch (RuntimeException e) {
+            LOGGER.info("prefetch task rejected: path={} offset={} message={}", path, startBlockOffset, e.getMessage());
         }
     }
 

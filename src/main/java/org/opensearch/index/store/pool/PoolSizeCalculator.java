@@ -155,24 +155,5 @@ public final class PoolSizeCalculator {
         return calculated;
     }
 
-    /**
-     * Calculates the maximum number of cache blocks based on pool size and cache-to-pool ratio.
-     *
-     * @param settings the node settings for configuration
-     * @param blockSize the size of each cache block in bytes
-     * @return the maximum number of cache blocks
-     */
-    public static long calculateMaxCacheBlocks(Settings settings, long blockSize) {
-        long poolSize = calculatePoolSize(settings);
-        long maxBlocks = poolSize / blockSize;
-
-        long maxHeap = Runtime.getRuntime().maxMemory();
-        long totalPhysical = OsProbe.getInstance().getTotalPhysicalMemorySize();
-        long offHeap = Math.max(0, totalPhysical - maxHeap);
-        double cacheToPoolRatio = calculateCacheToPoolRatio(offHeap, settings);
-
-        return (long) (maxBlocks * cacheToPoolRatio);
-    }
-
     private PoolSizeCalculator() {}
 }
