@@ -14,7 +14,8 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
-import java.util.Arrays;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 
 import org.apache.logging.log4j.LogManager;
@@ -50,8 +51,6 @@ import org.opensearch.index.store.read_ahead.ReadaheadManager;
 @SuppressWarnings("preview")
 public class CachedMemorySegmentIndexInput extends IndexInput implements RandomAccessInput {
     private static final Logger LOGGER = LogManager.getLogger(CachedMemorySegmentIndexInput.class);
-    private static final int PREFETCH_CACHE_SIZE = 1 << 4;
-    private static final int PREFETCH_CACHE_MASK = PREFETCH_CACHE_SIZE - 1;
 
     static final ValueLayout.OfByte LAYOUT_BYTE = ValueLayout.JAVA_BYTE;
     static final ValueLayout.OfShort LAYOUT_LE_SHORT = ValueLayout.JAVA_SHORT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
@@ -86,9 +85,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     // each thread must use its own clone().
     private final BlockSlotTinyCache.CacheHitHolder cacheHitHolder = new BlockSlotTinyCache.CacheHitHolder();
 
-    // Prefetch deduplication cache (shared across slices)
-    private final long[] prefetchCache;
-    private final int[] prefetchCacheIndex; // array wrapper for sharing across slices
+    // Prefetch deduplication cache (shared at file level)
+    private final Map<Long, Boolean> prefetchCache;
 
     /**
      * Creates a new CachedMemorySegmentIndexInput instance.
@@ -112,10 +110,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         BlockSlotTinyCache blockSlotTinyCache,
         Executor prefetchExecutor
     ) {
-        long[] prefetchCache = new long[PREFETCH_CACHE_SIZE];
-        Arrays.fill(prefetchCache, -1);
-        int[] prefetchCacheIndex = new int[1];
-
         CachedMemorySegmentIndexInput input = new CachedMemorySegmentIndexInput(
             resourceDescription,
             path,
@@ -127,8 +121,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             false,
             blockSlotTinyCache,
             prefetchExecutor,
-            prefetchCache,
-            prefetchCacheIndex
+            new ConcurrentHashMap<>() // we only need to dedup within the same file
         );
         try {
             input.seek(0L);
@@ -149,8 +142,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         boolean isSlice,
         BlockSlotTinyCache blockSlotTinyCache,
         Executor prefetchExecutor,
-        long[] prefetchCache,
-        int[] prefetchCacheIndex
+        Map<Long, Boolean> prefetchCache
     ) {
         super(resourceDescription);
         this.path = path;
@@ -163,7 +155,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         this.blockSlotTinyCache = blockSlotTinyCache;
         this.prefetchExecutor = prefetchExecutor;
         this.prefetchCache = prefetchCache;
-        this.prefetchCacheIndex = prefetchCacheIndex;
     }
 
     void ensureOpen() {
@@ -784,8 +775,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             true,
             blockSlotTinyCache,
             prefetchExecutor,
-            this.prefetchCache,
-            this.prefetchCacheIndex
+            prefetchCache
         );
 
         try {
@@ -804,13 +794,10 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         final long startFileOffset = absoluteBaseOffset + offset;
         final long startBlockOffset = startFileOffset & ~CACHE_BLOCK_MASK;
 
-        // prefetch cache check similiar Lucene stored fields reader
-        for (long cached : prefetchCache) {
-            if (cached == startBlockOffset) {
-                return;
-            }
+        // Check if already in prefetch cache (per-file deduplication)
+        if (prefetchCache.putIfAbsent(startBlockOffset, Boolean.TRUE) != null) {
+            return;
         }
-        prefetchCache[prefetchCacheIndex[0]++ & PREFETCH_CACHE_MASK] = startBlockOffset;
 
         try {
             prefetchExecutor.execute(() -> {

@@ -1648,19 +1648,18 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         // Mock cache to return null (not cached) for all block checks
         when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(null);
 
-        // Test various lengths
-        input.prefetch(0, 100);                    // Less than one block - startBlock=0, count=1
-        input.prefetch(0, BLOCK_SIZE);             // Exactly one block - startBlock=0, count=1 (deduped)
-        input.prefetch(0, BLOCK_SIZE + 100);       // Spans 2 blocks - startBlock=0, count=2 (deduped)
-        input.prefetch(0, BLOCK_SIZE * 3);         // Spans 3 blocks - startBlock=0, count=3 (deduped)
-        input.prefetch(100, BLOCK_SIZE);           // Non-aligned offset - startBlock=0, count=1 (deduped)
-        input.prefetch(BLOCK_SIZE + 100, BLOCK_SIZE * 2); // Middle of file - startBlock=BLOCK_SIZE, count=2
+        // Test various lengths - with per-file dedup, each unique startBlockOffset is loaded once
+        input.prefetch(0, 100);                    // startBlock=0, count=1
+        input.prefetch(0, BLOCK_SIZE);             // startBlock=0, count=1 (deduped)
+        input.prefetch(0, BLOCK_SIZE + 100);       // startBlock=0, count=2 (deduped)
+        input.prefetch(0, BLOCK_SIZE * 3);         // startBlock=0, count=3 (deduped)
+        input.prefetch(100, BLOCK_SIZE);           // startBlock=0, count=1 (deduped)
+        input.prefetch(BLOCK_SIZE + 100, BLOCK_SIZE * 2); // startBlock=BLOCK_SIZE, count=2 (new offset)
 
         // Wait for async executor to complete
         Thread.sleep(100);
 
-        // With cache-first optimization, loadForPrefetch checks cache internally
-        // Verify loadForPrefetch was called 2 times (once per unique block)
+        // With per-file dedup, only 2 unique startBlockOffsets: 0 and BLOCK_SIZE
         verify(mockCache, times(2)).loadForPrefetch(eq(testPath), anyLong(), anyLong());
 
         input.close();

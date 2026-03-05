@@ -5,6 +5,7 @@
 package org.opensearch.index.store.bufferpoolfs;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -16,6 +17,7 @@ import java.lang.foreign.ValueLayout;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -462,5 +464,147 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
     private CachedMemorySegmentIndexInput createInput(long length) {
         return CachedMemorySegmentIndexInput
             .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache, r -> r.run());
+    }
+
+    public void testPrefetchDeduplicationPerFile() throws Exception {
+        long fileLength = BLOCK_SIZE * 10;
+        MemorySegment block = Arena.ofAuto().allocate(BLOCK_SIZE);
+        setupBlock(0, block);
+
+        AtomicInteger loadCallCount = new AtomicInteger(0);
+        CountDownLatch taskStartLatch = new CountDownLatch(1);
+        CountDownLatch firstTaskRunning = new CountDownLatch(1);
+
+        BlockCache<RefCountedMemorySegment> trackingCache = mock(BlockCache.class);
+        when(trackingCache.loadForPrefetch(any(), anyLong(), anyLong())).thenAnswer(invocation -> {
+            loadCallCount.incrementAndGet();
+            firstTaskRunning.countDown();
+            try {
+                taskStartLatch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return Collections.emptyMap();
+        });
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        CachedMemorySegmentIndexInput input = CachedMemorySegmentIndexInput
+            .newInstance("test", testPath, fileLength, trackingCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache, executor);
+
+        input.prefetch(0, BLOCK_SIZE);
+        assertTrue("First task should start", firstTaskRunning.await(1, TimeUnit.SECONDS));
+
+        // These should be deduplicated while first task is running
+        input.prefetch(0, BLOCK_SIZE);
+        input.prefetch(0, BLOCK_SIZE);
+
+        taskStartLatch.countDown();
+        executor.shutdown();
+        assertTrue("Executor should finish", executor.awaitTermination(5, TimeUnit.SECONDS));
+
+        assertEquals("Same offset should be deduplicated", 1, loadCallCount.get());
+
+        input.close();
+    }
+
+    public void testPrefetchDeduplicationAcrossSlices() throws Exception {
+        long fileLength = BLOCK_SIZE * 10;
+        MemorySegment block = Arena.ofAuto().allocate(BLOCK_SIZE);
+        setupBlock(0, block);
+
+        AtomicInteger loadCallCount = new AtomicInteger(0);
+        CountDownLatch taskStartLatch = new CountDownLatch(1);
+        CountDownLatch firstTaskRunning = new CountDownLatch(1);
+
+        BlockCache<RefCountedMemorySegment> trackingCache = mock(BlockCache.class);
+        when(trackingCache.loadForPrefetch(any(), anyLong(), anyLong())).thenAnswer(invocation -> {
+            loadCallCount.incrementAndGet();
+            firstTaskRunning.countDown();
+            try {
+                taskStartLatch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return Collections.emptyMap();
+        });
+
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        CachedMemorySegmentIndexInput input = CachedMemorySegmentIndexInput
+            .newInstance("test", testPath, fileLength, trackingCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache, executor);
+
+        CachedMemorySegmentIndexInput slice1 = input.slice("slice1", 0, BLOCK_SIZE * 5);
+
+        input.prefetch(0, BLOCK_SIZE);
+        assertTrue("First task should start", firstTaskRunning.await(1, TimeUnit.SECONDS));
+
+        // Slice prefetch of same offset should be deduplicated
+        slice1.prefetch(0, BLOCK_SIZE);
+
+        taskStartLatch.countDown();
+        executor.shutdown();
+        assertTrue("Executor should finish", executor.awaitTermination(5, TimeUnit.SECONDS));
+
+        assertEquals("Slice prefetch should be deduplicated", 1, loadCallCount.get());
+
+        slice1.close();
+        input.close();
+    }
+
+    public void testPrefetchDeduplicationConcurrentSameFile() throws Exception {
+        long fileLength = BLOCK_SIZE * 100;
+        MemorySegment block = Arena.ofAuto().allocate(BLOCK_SIZE);
+        setupBlock(0, block);
+
+        AtomicInteger loadCallCount = new AtomicInteger(0);
+
+        BlockCache<RefCountedMemorySegment> trackingCache = mock(BlockCache.class);
+        when(trackingCache.loadForPrefetch(any(), anyLong(), anyLong())).thenAnswer(invocation -> {
+            loadCallCount.incrementAndGet();
+            return Collections.emptyMap();
+        });
+
+        ExecutorService prefetchExecutor = Executors.newFixedThreadPool(4);
+        CachedMemorySegmentIndexInput input = CachedMemorySegmentIndexInput
+            .newInstance(
+                "test",
+                testPath,
+                fileLength,
+                trackingCache,
+                mockReadaheadManager,
+                mockReadaheadContext,
+                mockTinyCache,
+                prefetchExecutor
+            );
+
+        int threadCount = 10;
+        int prefetchesPerThread = 100;
+        ExecutorService testExecutor = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(threadCount);
+
+        for (int i = 0; i < threadCount; i++) {
+            testExecutor.submit(() -> {
+                try {
+                    startLatch.await();
+                    for (int j = 0; j < prefetchesPerThread; j++) {
+                        input.prefetch(0, BLOCK_SIZE);
+                    }
+                } catch (Exception e) {
+                    fail("Unexpected exception: " + e.getMessage());
+                } finally {
+                    doneLatch.countDown();
+                }
+            });
+        }
+
+        startLatch.countDown();
+        assertTrue("Threads should complete", doneLatch.await(10, TimeUnit.SECONDS));
+        testExecutor.shutdown();
+        prefetchExecutor.shutdown();
+        assertTrue("Prefetch executor should finish", prefetchExecutor.awaitTermination(10, TimeUnit.SECONDS));
+
+        assertEquals("Concurrent prefetches should be deduplicated", 1, loadCallCount.get());
+
+        input.close();
     }
 }
