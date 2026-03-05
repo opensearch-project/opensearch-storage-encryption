@@ -2,4 +2,7 @@
 grant {
     // kms client opens socket connections for to kms
     permission java.net.SocketPermission "*", "connect,resolve";
+
+    // Allow writing file open stats for debugging
+    permission java.io.FilePermission "${user.home}/file_open_stats.csv", "read,write";
 };

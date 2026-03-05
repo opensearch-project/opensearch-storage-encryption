@@ -23,6 +23,7 @@ import java.util.concurrent.TimeUnit;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.cache.FileChannelCache;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.cipher.MemorySegmentDecryptor;
 import org.opensearch.index.store.footer.EncryptionFooter;
@@ -89,11 +90,14 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
         RefCountedMemorySegment[] result = new RefCountedMemorySegment[(int) blockCount];
         long readLength = blockCount << CACHE_BLOCK_SIZE_POWER;
 
-        try (
-            Arena arena = Arena.ofConfined();
-            FileChannel channel = FileChannel.open(filePath, StandardOpenOption.READ, DirectIOReaderUtil.getDirectOpenOption())
+        // Get filesystem block size for Direct I/O alignment
+        // EBS: typically 4KB-8KB, EFS/NFS: typically 1MB
+        int blockSize = Math.toIntExact(Files.getFileStore(filePath).getBlockSize());
+        FileChannel channel = FileChannelCache.getOrOpen(filePath, StandardOpenOption.READ, DirectIOReaderUtil.getDirectOpenOption());
+        try (Arena arena = Arena.ofConfined();
+        // FileChannel channel = FileChannel.open(filePath, StandardOpenOption.READ, DirectIOReaderUtil.getDirectOpenOption())
         ) {
-            MemorySegment readBytes = directIOReadAligned(channel, startOffset, readLength, arena);
+            MemorySegment readBytes = directIOReadAligned(channel, startOffset, readLength, arena, blockSize);
             long bytesRead = readBytes.byteSize();
 
             String normalizedPath = filePath.toAbsolutePath().normalize().toString();
@@ -183,25 +187,28 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
         }
 
         // Cache miss - read from disk
-        try (FileChannel channel = FileChannel.open(filePath, StandardOpenOption.READ)) {
-            long fileSize = channel.size();
-            if (fileSize < EncryptionMetadataTrailer.MIN_FOOTER_SIZE) {
-                throw new IOException("File too small to contain footer: " + filePath);
-            }
+        // FileOpenTracker.trackOpen(filePath.toAbsolutePath().toString());
 
-            // Read minimum footer to check OSEF magic bytes
-            ByteBuffer minBuffer = ByteBuffer.allocate(EncryptionMetadataTrailer.MIN_FOOTER_SIZE);
-            channel.read(minBuffer, fileSize - EncryptionMetadataTrailer.MIN_FOOTER_SIZE);
-            byte[] minFooterBytes = minBuffer.array();
-
-            // Check if this is an OSEF file
-            if (!isValidOSEFFile(minFooterBytes)) {
-                // Not an OSEF file
-                throw new IOException("Not an OSEF file -" + filePath);
-            }
-
-            return EncryptionFooter.readViaFileChannel(normalizedPath, channel, masterKey, encryptionMetadataCache);
+        FileChannel channel = FileChannelCache.getOrOpen(filePath, StandardOpenOption.READ);
+        // try (FileChannel channel = FileChannel.open(filePath, StandardOpenOption.READ)) {
+        long fileSize = channel.size();
+        if (fileSize < EncryptionMetadataTrailer.MIN_FOOTER_SIZE) {
+            throw new IOException("File too small to contain footer: " + filePath);
         }
+
+        // Read minimum footer to check OSEF magic bytes
+        ByteBuffer minBuffer = ByteBuffer.allocate(EncryptionMetadataTrailer.MIN_FOOTER_SIZE);
+        channel.read(minBuffer, fileSize - EncryptionMetadataTrailer.MIN_FOOTER_SIZE);
+        byte[] minFooterBytes = minBuffer.array();
+
+        // Check if this is an OSEF file
+        if (!isValidOSEFFile(minFooterBytes)) {
+            // Not an OSEF file
+            throw new IOException("Not an OSEF file -" + filePath);
+        }
+
+        return EncryptionFooter.readViaFileChannel(normalizedPath, channel, masterKey, encryptionMetadataCache);
+        // }
     }
 
     /**

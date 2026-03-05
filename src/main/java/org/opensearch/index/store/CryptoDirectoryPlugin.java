@@ -35,10 +35,12 @@ import org.opensearch.index.shard.IndexEventListener;
 import org.opensearch.index.store.action.GetIndexCountForKeyAction;
 import org.opensearch.index.store.action.TransportGetIndexCountForKeyAction;
 import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.cache.FileChannelCache;
 import org.opensearch.index.store.key.MasterKeyHealthMonitor;
 import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
+import org.opensearch.index.store.metrics.FileOpenTracker;
 import org.opensearch.index.store.pool.PoolSizeCalculator;
 import org.opensearch.index.store.rest.RestGetIndexCountForKeyAction;
 import org.opensearch.index.store.rest.RestRegisterCryptoAction;
@@ -206,6 +208,10 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
             log.debug("Crypto Directory Plugin is disabled. No cleanup needed.");
             return;
         }
+
+        FileOpenTracker.logStats();
+        log.info("FileChannelCache stats: {}", FileChannelCache.stats());
+        FileChannelCache.closeAll();
 
         MasterKeyHealthMonitor.shutdown();
         // Close shared pool resources if they were initialized

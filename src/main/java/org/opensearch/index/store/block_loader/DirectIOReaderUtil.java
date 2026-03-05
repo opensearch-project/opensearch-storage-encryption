@@ -4,14 +4,15 @@
  */
 package org.opensearch.index.store.block_loader;
 
-import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.DIRECT_IO_ALIGNMENT;
-
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.FileStore;
+import java.nio.file.Files;
 import java.nio.file.OpenOption;
+import java.nio.file.Path;
 import java.util.Arrays;
 
 import org.opensearch.common.SuppressForbidden;
@@ -63,6 +64,9 @@ public class DirectIOReaderUtil {
      * Reads data using Direct I/O with proper alignment.
      * <p>
      * Direct I/O requires alignment to storage device sector boundaries.
+     * Alignment is determined by the filesystem's block size, which varies:
+     * - EBS/local: typically 4KB-8KB
+     * - EFS/NFS: typically 1MB or larger
      * </p>
      *
      * <p><b>File Layout:</b></p>
@@ -92,11 +96,13 @@ public class DirectIOReaderUtil {
      * @param offset the byte offset in the file to start reading from
      * @param length the number of bytes to read
      * @param arena the memory arena for allocating the result segment
+     * @param blockSize the filesystem block size for alignment (from Files.getFileStore().getBlockSize())
      * @return a memory segment containing the read data
      * @throws IOException if the read operation fails
      */
-    public static MemorySegment directIOReadAligned(FileChannel channel, long offset, long length, Arena arena) throws IOException {
-        int alignment = Math.max(DIRECT_IO_ALIGNMENT, PanamaNativeAccess.getPageSize());
+    public static MemorySegment directIOReadAligned(FileChannel channel, long offset, long length, Arena arena, int blockSize)
+        throws IOException {
+        int alignment = Math.max(blockSize, PanamaNativeAccess.getPageSize());
 
         // Require alignment to be a power of 2
         if ((alignment & (alignment - 1)) != 0) {
@@ -150,5 +156,25 @@ public class DirectIOReaderUtil {
         }
         buf.flip();
         return MemorySegment.ofBuffer(buf).reinterpret(size, arena, null);
+    }
+
+    /**
+     * Check if Direct I/O is supported on the given path.
+     * 
+     * <p>Direct I/O doesn't work reliably with NFS/EFS filesystems due to Java FileChannel's
+     * strict alignment enforcement. NFS-based filesystems report large block sizes (e.g., 1MB)
+     * that cause alignment errors with FileChannel's Direct I/O validation.
+     * 
+     * @param path the file path to check
+     * @return true if Direct I/O is supported, false otherwise
+     * @throws IOException if filesystem type cannot be determined
+     */
+    public static boolean supportsDirectIO(Path path) throws IOException {
+        FileStore store = Files.getFileStore(path);
+        String fsType = store.type().toLowerCase();
+
+        // NFS-based filesystems report large block sizes that cause alignment errors
+        // Common network filesystem types: nfs, nfs4, cifs, smb
+        return !fsType.contains("nfs") && !fsType.contains("cifs") && !fsType.contains("smb");
     }
 }

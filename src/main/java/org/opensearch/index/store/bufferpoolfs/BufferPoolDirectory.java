@@ -30,17 +30,20 @@ import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.block_loader.BlockLoader;
+import org.opensearch.index.store.cache.FileChannelCache;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.footer.EncryptionFooter;
 import org.opensearch.index.store.footer.EncryptionMetadataTrailer;
 import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
 import org.opensearch.index.store.metrics.ErrorType;
+import org.opensearch.index.store.metrics.FileOpenTracker;
 import org.opensearch.index.store.pool.Pool;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
 import org.opensearch.index.store.read_ahead.Worker;
-import org.opensearch.index.store.read_ahead.impl.ReadaheadManagerImpl;
+import org.opensearch.index.store.read_ahead.impl.NoOpReadaheadContext;
+import org.opensearch.index.store.read_ahead.impl.NoOpReadaheadManager;
 
 /**
  * A high-performance FSDirectory implementation that combines Direct I/O operations with encryption.
@@ -129,8 +132,11 @@ public class BufferPoolDirectory extends FSDirectory {
             // Calculate content length with OSEF validation
             long contentLength = calculateContentLengthWithValidation(file, rawFileSize);
 
-            ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker, blockCache);
-            ReadaheadContext readAheadContext = readAheadManager.register(file, contentLength);
+            // ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker, blockCache);
+            // ReadaheadContext readAheadContext = readAheadManager.register(file, contentLength);
+            ReadaheadManager readAheadManager = NoOpReadaheadManager.INSTANCE;
+            ReadaheadContext readAheadContext = NoOpReadaheadContext.INSTANCE;
+
             BlockSlotTinyCache pinRegistry = new BlockSlotTinyCache(blockCache, file, contentLength);
 
             return CachedMemorySegmentIndexInput
@@ -158,6 +164,8 @@ public class BufferPoolDirectory extends FSDirectory {
 
             ensureOpen();
             Path path = directory.resolve(name);
+
+            FileOpenTracker.trackOpen(path.toAbsolutePath().toString());
             OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
             return new BufferIOWithCaching(
@@ -185,6 +193,8 @@ public class BufferPoolDirectory extends FSDirectory {
         ensureOpen();
         String name = getTempFileName(prefix, suffix, nextTempFileCounter.getAndIncrement());
         Path path = directory.resolve(name);
+
+        FileOpenTracker.trackOpen(path.toAbsolutePath().toString());
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
         return new BufferIOWithCaching(
@@ -212,6 +222,8 @@ public class BufferPoolDirectory extends FSDirectory {
         if (blockCache != null) {
             blockCache.invalidateByPathPrefix(dirPath);
         }
+
+        FileChannelCache.invalidateDirectory(dirPath);
     }
 
     @Override
@@ -238,6 +250,10 @@ public class BufferPoolDirectory extends FSDirectory {
                 LOGGER.warn("Failed to get file size for clearing cache for deleting shard", e);
             }
         }
+
+        Path filePath = directory.resolve(name);
+        FileChannelCache.invalidate(filePath);
+
         super.deleteFile(name);
         encryptionMetadataCache.invalidateFile(EncryptionMetadataCache.normalizePath(file));
     }
@@ -260,7 +276,10 @@ public class BufferPoolDirectory extends FSDirectory {
         }
 
         // Cache miss - read footer from disk (happens during file open before cache populated)
-        try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
+        // FileOpenTracker.trackOpen(file.toAbsolutePath().toString());
+        FileChannel channel = FileChannelCache.getOrOpen(file, StandardOpenOption.READ);
+        // try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
+        try {
             EncryptionFooter footer = EncryptionFooter.readViaFileChannel(normalizedPath, channel, masterKeyBytes, encryptionMetadataCache);
 
             // Metadata is already cached by readViaFileChannel

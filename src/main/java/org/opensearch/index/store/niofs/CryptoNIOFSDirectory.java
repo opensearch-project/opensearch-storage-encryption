@@ -18,13 +18,14 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.apache.lucene.store.NIOFSDirectory;
-import org.opensearch.common.util.io.IOUtils;
+import org.opensearch.index.store.cache.FileChannelCache;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.footer.EncryptionFooter;
 import org.opensearch.index.store.footer.EncryptionMetadataTrailer;
 import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
 import org.opensearch.index.store.metrics.ErrorType;
+import org.opensearch.index.store.metrics.FileOpenTracker;
 
 /**
  * A NioFS directory implementation that encrypts files to be stored based on a
@@ -77,7 +78,11 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
             ensureOpen();
             ensureCanRead(name);
             Path path = getDirectory().resolve(name);
-            FileChannel fc = FileChannel.open(path, StandardOpenOption.READ);
+
+            FileChannel fc = FileChannelCache.getOrOpen(path, StandardOpenOption.READ);
+
+            // FileOpenTracker.trackOpen(path.toAbsolutePath().toString());
+            // FileChannel fc = FileChannel.open(path, StandardOpenOption.READ);
             boolean success = false;
 
             try {
@@ -93,7 +98,7 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
                 return indexInput;
             } finally {
                 if (!success) {
-                    IOUtils.closeWhileHandlingException(fc);
+                    // IOUtils.closeWhileHandlingException(fc);
                 }
             }
         } catch (Exception e) {
@@ -112,6 +117,7 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
             ensureOpen();
             Path path = directory.resolve(name);
 
+            FileOpenTracker.trackOpen(path.toAbsolutePath().toString());
             OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
             return new CryptoOutputStreamIndexOutput(
@@ -139,6 +145,8 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         ensureOpen();
         String name = getTempFileName(prefix, suffix, nextTempFileCounter.getAndIncrement());
         Path path = directory.resolve(name);
+
+        FileOpenTracker.trackOpen(path.toAbsolutePath().toString());
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
         return new CryptoOutputStreamIndexOutput(
@@ -175,26 +183,32 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         }
 
         // read footer from disk with OSEF validation
-        try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
-            try {
-                EncryptionFooter footer = EncryptionFooter
-                    .readViaFileChannel(normalizedPath, channel, keyResolver.getDataKey().getEncoded(), encryptionMetadataCache);
-                return fileSize - footer.getFooterLength();
-            } catch (EncryptionFooter.NotOSEFFileException e) {
-                return fileSize;
-            }
+        FileChannel channel = FileChannelCache.getOrOpen(path, StandardOpenOption.READ);
+        // FileOpenTracker.trackOpen(path.toAbsolutePath().toString());
+        // try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
+        try {
+            EncryptionFooter footer = EncryptionFooter
+                .readViaFileChannel(normalizedPath, channel, keyResolver.getDataKey().getEncoded(), encryptionMetadataCache);
+            return fileSize - footer.getFooterLength();
+        } catch (EncryptionFooter.NotOSEFFileException e) {
+            return fileSize;
         }
+        // }
     }
 
     @Override
     public synchronized void close() throws IOException {
         isOpen = false;
         deletePendingFiles();
+        FileChannelCache.invalidateDirectory(dirPath);
         encryptionMetadataCache.invalidateDirectory();
     }
 
     @Override
     public void deleteFile(String name) throws IOException {
+        Path path = dirPath.resolve(name);
+        FileChannelCache.invalidate(path);
+
         super.deleteFile(name);
         encryptionMetadataCache.invalidateFile(EncryptionMetadataCache.normalizePath(dirPath.resolve(name)));
     }

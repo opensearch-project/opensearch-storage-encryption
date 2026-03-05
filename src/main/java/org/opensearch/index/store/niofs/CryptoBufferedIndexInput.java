@@ -21,6 +21,8 @@ import javax.crypto.ShortBufferException;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.BufferedIndexInput;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
@@ -37,6 +39,7 @@ import org.opensearch.index.store.key.KeyResolver;
  * @opensearch.internal
  */
 final class CryptoBufferedIndexInput extends BufferedIndexInput {
+    private static final Logger LOGGER = LogManager.getLogger(CryptoBufferedIndexInput.class);
     private static final byte[] ZERO_SKIP = new byte[1 << AesCipherFactory.AES_BLOCK_SIZE_BYTES_IN_POWER];
     private static final ByteBuffer EMPTY_BYTEBUFFER = ByteBuffer.allocate(0);
     private static final int CHUNK_SIZE = 16_384;
@@ -132,8 +135,10 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
 
     @Override
     public void close() throws IOException {
+        // Channel is managed by FileChannelCache — do NOT close it here.
+        // FileChannelCache closes channels on invalidate() (file deletion) and closeAll() (shutdown).
         if (!isClone) {
-            channel.close();
+            LOGGER.info("close() called for file: {}", normalizedFilePath);
         }
     }
 
