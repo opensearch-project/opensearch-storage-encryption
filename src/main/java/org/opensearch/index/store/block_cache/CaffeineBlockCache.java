@@ -259,6 +259,8 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
             if (prefetchCache == null || prefetchCache.putIfAbsent(key, Boolean.TRUE) == null) {
                 if (cache.getIfPresent(key) == null) {
                     missingKeys[missingCount++] = key;
+                } else if (prefetchCache != null) {
+                    prefetchCache.remove(key);
                 }
             }
         }
@@ -279,13 +281,15 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 rangeLength++;
             }
 
-            long loadedFor = loadAllBlocks(filePath, rangeStartOffset, rangeLength);
-            totalLoaded += loadedFor;
-
-            // Remove loaded blocks from prefetch cache
-            if (prefetchCache != null) {
-                for (int i = 0; i < rangeLength; i++) {
-                    prefetchCache.remove(missingKeys[rangeStart + i]);
+            try {
+                long loadedFor = loadAllBlocks(filePath, rangeStartOffset, rangeLength);
+                totalLoaded += loadedFor;
+            } finally {
+                // Always remove from prefetch cache, even on exception, to prevent unbounded growth
+                if (prefetchCache != null) {
+                    for (int i = 0; i < rangeLength; i++) {
+                        prefetchCache.remove(missingKeys[rangeStart + i]);
+                    }
                 }
             }
 
