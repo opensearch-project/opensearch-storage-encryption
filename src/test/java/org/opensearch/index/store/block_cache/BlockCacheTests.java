@@ -19,6 +19,9 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.After;
 import org.junit.Before;
@@ -42,6 +45,7 @@ public class BlockCacheTests extends OpenSearchTestCase {
 
     private Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache;
     private CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCache;
+    private ExecutorService defaultExecutor;
     private Arena arena;
 
     @Before
@@ -50,6 +54,7 @@ public class BlockCacheTests extends OpenSearchTestCase {
         MockitoAnnotations.openMocks(this);
 
         arena = Arena.ofConfined();
+        defaultExecutor = Executors.newSingleThreadExecutor();
 
         caffeineCache = Caffeine.newBuilder().maximumSize(100).removalListener((key, value, cause) -> {
             if (value != null) {
@@ -57,11 +62,15 @@ public class BlockCacheTests extends OpenSearchTestCase {
             }
         }).build();
 
-        blockCache = new CaffeineBlockCache<>(caffeineCache, mockLoader, 100);
+        blockCache = new CaffeineBlockCache<>(caffeineCache, mockLoader, 100, new PrefetchTracker(defaultExecutor));
     }
 
     @After
     public void tearDown() throws Exception {
+        if (defaultExecutor != null) {
+            defaultExecutor.shutdown();
+            defaultExecutor.awaitTermination(5, TimeUnit.SECONDS);
+        }
         if (caffeineCache != null) {
             caffeineCache.invalidateAll();
         }
@@ -275,9 +284,7 @@ public class BlockCacheTests extends OpenSearchTestCase {
         RefCountedMemorySegment[] segments = new RefCountedMemorySegment[] { refSegment1, refSegment2, refSegment3 };
         when(mockLoader.load(any(Path.class), any(Long.class), any(Long.class), anyLong())).thenReturn(segments);
 
-        long result = blockCache.loadMissingBlocks(filePath, startOffset, blockCount);
-
-        assertEquals(3L, result);
+        blockCache.loadMissingBlocks(filePath, startOffset, blockCount);
     }
 
     public void testMultipleCacheOperations() {
@@ -344,7 +351,8 @@ public class BlockCacheTests extends OpenSearchTestCase {
         CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> smallBlockCache = new CaffeineBlockCache<>(
             smallCache,
             mockLoader,
-            5
+            5,
+            new PrefetchTracker(defaultExecutor)
         );
 
         Path filePath = Paths.get("/test/file.txt");

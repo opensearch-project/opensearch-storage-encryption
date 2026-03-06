@@ -101,8 +101,8 @@ public class BlockSlotTinyCacheBenchmarkTests {
         }
 
         @Override
-        public long loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException {
-            return loadAllBlocks(filePath, startOffset, blockCount);
+        public void loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException {
+            loadAllBlocks(filePath, startOffset, blockCount);
         }
 
         @Override
@@ -120,6 +120,11 @@ public class BlockSlotTinyCacheBenchmarkTests {
         @Override
         public String cacheStats() {
             return "MockCache[size=" + cache.size() + "]";
+        }
+
+        @Override
+        public String prefetchStats() {
+            return "Prefetch[disabled]";
         }
 
         @Override

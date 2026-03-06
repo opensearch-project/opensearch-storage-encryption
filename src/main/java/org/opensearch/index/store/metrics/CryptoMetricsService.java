@@ -21,16 +21,19 @@ public class CryptoMetricsService {
     private final MetricsRegistry metricsRegistry;
     private final Histogram poolStatsHistogram;
     private final Histogram cacheStatsHistogram;
+    private final Histogram prefetchStatsHistogram;
     private final Counter errorCounter;
 
     // Metric names
     private static final String POOL_STATS_NAME = "crypto.pool.stats";
     private static final String CACHE_STATS_NAME = "crypto.cache.stats";
+    private static final String PREFETCH_STATS_NAME = "crypto.prefetch.stats";
     private static final String ERROR_COUNTER_NAME = "crypto.error.total";
 
     // Metric descriptions
     private static final String POOL_STATS_DESC = "Crypto Pool statistics";
     private static final String CACHE_STATS_DESC = "Crypto Cache statistics";
+    private static final String PREFETCH_STATS_DESC = "Crypto Prefetch statistics";
     private static final String ERROR_COUNTER_DESC = "Total crypto operation errors";
 
     // Units
@@ -53,6 +56,7 @@ public class CryptoMetricsService {
         this.errorCounter = createCounter(ERROR_COUNTER_NAME, ERROR_COUNTER_DESC, COUNT_UNIT);
         this.poolStatsHistogram = createHistogram(POOL_STATS_NAME, POOL_STATS_DESC, COUNT_UNIT);
         this.cacheStatsHistogram = createHistogram(CACHE_STATS_NAME, CACHE_STATS_DESC, COUNT_UNIT);
+        this.prefetchStatsHistogram = createHistogram(PREFETCH_STATS_NAME, PREFETCH_STATS_DESC, COUNT_UNIT);
     }
 
     /**
@@ -118,6 +122,27 @@ public class CryptoMetricsService {
         cacheStatsHistogram.record(loads, Tags.create().addTag(STAT_TYPE_TAG, "loads"));
         cacheStatsHistogram.record(evictions, Tags.create().addTag(STAT_TYPE_TAG, "evictions"));
         cacheStatsHistogram.record(avgLoadTimeMs, Tags.create().addTag(STAT_TYPE_TAG, "avg_load_time"));
+    }
+
+    /**
+     * Records prefetch statistics as separate time series.
+     * @param calls number of loadMissingBlocks calls
+     * @param requested total blocks requested
+     * @param loaded total blocks loaded
+     * @param deduped total blocks deduped
+     * @param cacheHit total cache hits during prefetch
+     * @param inflight current inflight count
+     */
+    public void recordPrefetchStats(long calls, long requested, long loaded, long deduped, long cacheHit, int inflight) {
+        if (prefetchStatsHistogram == null)
+            return;
+
+        prefetchStatsHistogram.record(calls, Tags.create().addTag(STAT_TYPE_TAG, "calls"));
+        prefetchStatsHistogram.record(requested, Tags.create().addTag(STAT_TYPE_TAG, "requested"));
+        prefetchStatsHistogram.record(loaded, Tags.create().addTag(STAT_TYPE_TAG, "loaded"));
+        prefetchStatsHistogram.record(deduped, Tags.create().addTag(STAT_TYPE_TAG, "deduped"));
+        prefetchStatsHistogram.record(cacheHit, Tags.create().addTag(STAT_TYPE_TAG, "cache_hit"));
+        prefetchStatsHistogram.record(inflight, Tags.create().addTag(STAT_TYPE_TAG, "inflight"));
     }
 
     /**

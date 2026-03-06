@@ -414,8 +414,8 @@ public class BlockSlotTinyCacheIntegrationTests extends OpenSearchTestCase {
         }
 
         @Override
-        public long loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException {
-            return loadAllBlocks(filePath, startOffset, blockCount);
+        public void loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException {
+            loadAllBlocks(filePath, startOffset, blockCount);
         }
 
         @Override
@@ -433,6 +433,11 @@ public class BlockSlotTinyCacheIntegrationTests extends OpenSearchTestCase {
         @Override
         public String cacheStats() {
             return "SimulatedCache: size=" + cache.size() + ", evictions=" + evictionCounter.get();
+        }
+
+        @Override
+        public String prefetchStats() {
+            return "Prefetch[disabled]";
         }
 
         @Override

@@ -507,8 +507,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             sharedCaffeineCache.getCache(),
             loader,
             resources.getMaxCacheBlocks(),
-            resources.getPrefetchCache(),
-            threadPool.executor(CryptoDirectoryPlugin.CRYPTO_PLUGIN_THREADPOOL_PREFETCH)
+            resources.getPrefetchCache()
         );
 
         // Use the shared node-wide read-ahead worker
@@ -571,7 +570,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                         throw new IllegalStateException("Node settings must be set before initializing pool resources");
                     }
                     LOGGER.info("Lazily initializing shared pool resources on first cryptofs shard creation");
-                    poolResources = PoolBuilder.build(nodeSettings);
+                    poolResources = PoolBuilder.build(nodeSettings, threadPool);
                 }
             }
         }

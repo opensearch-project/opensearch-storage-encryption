@@ -8,6 +8,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -1684,8 +1685,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         long fileLength = BLOCK_SIZE * 3;
 
         // With cache-first optimization, loadForPrefetch checks cache internally
-        // and returns 0 when all blocks are cached
-        when(mockCache.loadMissingBlocks(eq(testPath), eq(0L), eq(3L))).thenReturn(0L);
+        doNothing().when(mockCache).loadMissingBlocks(eq(testPath), eq(0L), eq(3L));
 
         CachedMemorySegmentIndexInput input = createInput(fileLength);
 
@@ -1707,8 +1707,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         long fileLength = BLOCK_SIZE * 3;
 
         // With cache-first optimization, loadForPrefetch checks cache internally
-        // and returns count of loaded blocks
-        when(mockCache.loadMissingBlocks(eq(testPath), eq(0L), eq(3L))).thenReturn(3L);
+        doNothing().when(mockCache).loadMissingBlocks(eq(testPath), eq(0L), eq(3L));
 
         CachedMemorySegmentIndexInput input = createInput(fileLength);
 

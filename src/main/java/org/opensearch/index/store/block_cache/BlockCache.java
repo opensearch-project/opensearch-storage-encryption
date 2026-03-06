@@ -88,10 +88,9 @@ public interface BlockCache<T> {
      * @param filePath file to read from
      * @param startOffset starting file offset (should be block-aligned)
      * @param blockCount number of blocks to read
-     * @return count of blocks that were successfully loaded into the cache (excludes already-cached blocks)
      * @throws IOException if loading fails (including pool timeout, which is expected under pressure)
      */
-    long loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException;
+    void loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException;
 
     /**
      * Load multiple blocks for readahead with a short timeout to fail fast when pool is under pressure.
@@ -112,6 +111,13 @@ public interface BlockCache<T> {
      * @return string representation of cache statistics including hit/miss ratios, sizes, etc.
      */
     String cacheStats();
+
+    /**
+     * Returns prefetch statistics as a formatted string.
+     *
+     * @return string representation of prefetch statistics including dedup and load counts
+     */
+    String prefetchStats();
 
     /**
      * record cache stats
