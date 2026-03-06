@@ -4,7 +4,6 @@
  */
 package org.opensearch.index.store.block_cache;
 
-import java.nio.file.Path;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
