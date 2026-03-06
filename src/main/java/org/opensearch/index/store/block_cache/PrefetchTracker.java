@@ -62,10 +62,6 @@ public class PrefetchTracker {
         inflight.remove(key);
     }
 
-    public void removeByFile(Path normalizedPath) {
-        inflight.keySet().removeIf(key -> key instanceof FileBlockCacheKey fk && fk.filePath().equals(normalizedPath));
-    }
-
     public int size() {
         return inflight.size();
     }
