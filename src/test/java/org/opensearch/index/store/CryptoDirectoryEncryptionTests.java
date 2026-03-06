@@ -466,13 +466,15 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
             .recordStats()
             .build();
 
+        ExecutorService executorA = Executors.newFixedThreadPool(4);
+
         CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
             caffeineCache,
             blockLoaderA,
-            1000
+            1000,
+            new PrefetchTracker(executorA)
         );
 
-        ExecutorService executorA = Executors.newFixedThreadPool(4);
         Worker readAheadWorkerA = new QueuingWorker(
             100, // queue capacity
             executorA
@@ -622,13 +624,15 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
             .recordStats()
             .build();
 
+        ExecutorService executorA = Executors.newFixedThreadPool(4);
+
         CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
             caffeineCache,
             blockLoaderA,
-            1000
+            1000,
+            new PrefetchTracker(executorA)
         );
 
-        ExecutorService executorA = Executors.newFixedThreadPool(4);
         Worker readAheadWorkerA = new QueuingWorker(
             100, // queue capacity
             executorA
