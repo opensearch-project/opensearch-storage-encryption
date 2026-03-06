@@ -67,7 +67,7 @@ public final class BlockCacheBuilder {
          *
          * @return the prefetch tracker
          */
-        public PrefetchTracker getPrefetchCache() {
+        public PrefetchTracker getPrefetchTracker() {
             return prefetchTracker;
         }
     }

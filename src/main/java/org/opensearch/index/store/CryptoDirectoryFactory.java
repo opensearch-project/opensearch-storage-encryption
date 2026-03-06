@@ -507,7 +507,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             sharedCaffeineCache.getCache(),
             loader,
             resources.getMaxCacheBlocks(),
-            resources.getPrefetchCache()
+            resources.getPrefetchTracker()
         );
 
         // Use the shared node-wide read-ahead worker

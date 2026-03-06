@@ -87,11 +87,11 @@ public class PrefetchTracker {
     }
 
     public String stats() {
-        long calls = loadMissingBlocksCalls.getAndSet(0);
-        long requested = blocksRequested.getAndSet(0);
-        long loaded = blocksLoaded.getAndSet(0);
-        long deduped = blocksDeduped.getAndSet(0);
-        long cacheHit = blocksCacheHit.getAndSet(0);
+        long calls = loadMissingBlocksCalls.get();
+        long requested = blocksRequested.get();
+        long loaded = blocksLoaded.get();
+        long deduped = blocksDeduped.get();
+        long cacheHit = blocksCacheHit.get();
         double loadRatio = requested > 0 ? (100.0 * loaded / requested) : 0;
         return String
             .format(
@@ -127,7 +127,7 @@ public class PrefetchTracker {
     }
 
     // Testing only
-    public void resetStats() {
+    void resetStats() {
         loadMissingBlocksCalls.set(0);
         blocksRequested.set(0);
         blocksLoaded.set(0);

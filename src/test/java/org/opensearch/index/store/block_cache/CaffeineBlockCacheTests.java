@@ -689,6 +689,34 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests that prefetch cache entries are cleaned up after loading.
      */
+    public void testLoadMissingBlocksCacheHitCleansPrefetchTracker() throws Exception {
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        PrefetchTracker prefetchTracker = new PrefetchTracker(executor);
+
+        CaffeineBlockCache<String, BlockCacheValue<String>> cacheWithPrefetch = new CaffeineBlockCache<>(
+            caffeineCache,
+            mockLoader,
+            MAX_BLOCKS,
+            prefetchTracker
+        );
+
+        Path testPath = Paths.get("/test/cachehit.dat");
+        BlockCacheValue<String> mockValue = createMockValue("cached");
+
+        // Pre-populate cache so the block is already present
+        FileBlockCacheKey key = new FileBlockCacheKey(testPath, 0L);
+        caffeineCache.put(key, mockValue);
+
+        // Load the same block (async) — should hit cache, not call loader
+        cacheWithPrefetch.loadMissingBlocks(testPath, 0L, 1L);
+
+        executor.shutdown();
+        assertTrue("Executor should finish", executor.awaitTermination(5, TimeUnit.SECONDS));
+
+        assertEquals("Prefetch tracker should be empty after cache hit", 0, prefetchTracker.size());
+        verify(mockLoader, never()).load(any(), anyLong(), anyLong(), anyLong());
+    }
+
     public void testLoadMissingBlocksCleanupPrefetchCache() throws Exception {
         ExecutorService executor = Executors.newSingleThreadExecutor();
         PrefetchTracker prefetchTracker = new PrefetchTracker(executor);

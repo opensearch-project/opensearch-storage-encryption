@@ -123,11 +123,6 @@ public class BlockSlotTinyCacheBenchmarkTests {
         }
 
         @Override
-        public String prefetchStats() {
-            return "Prefetch[disabled]";
-        }
-
-        @Override
         public void recordStats() {
             // No-op for benchmark
         }

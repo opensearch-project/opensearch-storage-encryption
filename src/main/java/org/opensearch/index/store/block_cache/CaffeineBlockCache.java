@@ -215,6 +215,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 if (cache.getIfPresent(key) == null) {
                     missingKeys[missingCount++] = key;
                 } else {
+                    prefetchTracker.remove(key);
                     cacheHitCount++;
                 }
             }
@@ -337,11 +338,6 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 stats.evictionCount(),
                 stats.averageLoadPenalty() / 1_000_000.0  // Convert to ms
             );
-    }
-
-    @Override
-    public String prefetchStats() {
-        return prefetchTracker.stats();
     }
 
     /**

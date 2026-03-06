@@ -113,13 +113,6 @@ public interface BlockCache<T> {
     String cacheStats();
 
     /**
-     * Returns prefetch statistics as a formatted string.
-     *
-     * @return string representation of prefetch statistics including dedup and load counts
-     */
-    String prefetchStats();
-
-    /**
      * record cache stats
      */
     void recordStats();

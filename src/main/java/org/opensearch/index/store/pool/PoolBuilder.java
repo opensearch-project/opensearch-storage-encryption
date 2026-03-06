@@ -141,7 +141,7 @@ public final class PoolBuilder {
          *
          * @return the prefetch tracker
          */
-        public PrefetchTracker getPrefetchCache() {
+        public PrefetchTracker getPrefetchTracker() {
             return prefetchTracker;
         }
 
@@ -321,7 +321,7 @@ public final class PoolBuilder {
             telemetry,
             removalExecutor,
             readAheadExecutor,
-            cacheWithExecutor.getPrefetchCache()
+            cacheWithExecutor.getPrefetchTracker()
         );
     }
 }
