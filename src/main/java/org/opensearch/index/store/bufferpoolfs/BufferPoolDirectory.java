@@ -76,9 +76,12 @@ public class BufferPoolDirectory extends FSDirectory {
     private final Path dirPath;
     private final byte[] masterKeyBytes;
     private final EncryptionMetadataCache encryptionMetadataCache;
+    private final WriteCacheMode writeCacheMode;
 
     /**
      * Creates a new CryptoDirectIODirectory with the specified components.
+     * Write cache mode is resolved from {@code -Dtests.cacheMode} system property,
+     * defaulting to {@link WriteCacheMode#WRITE_THROUGH} when unset.
      *
      * @param path the directory path
      * @param lockFactory the lock factory for coordinating access
@@ -88,6 +91,7 @@ public class BufferPoolDirectory extends FSDirectory {
      * @param blockCache cache for storing decrypted blocks
      * @param blockLoader loader for reading blocks from storage
      * @param worker background worker for read-ahead operations
+     * @param encryptionMetadataCache the encryption metadata cache
      * @throws IOException if the directory cannot be created or accessed
      */
     public BufferPoolDirectory(
@@ -102,6 +106,48 @@ public class BufferPoolDirectory extends FSDirectory {
         EncryptionMetadataCache encryptionMetadataCache
     )
         throws IOException {
+        this(
+            path,
+            lockFactory,
+            provider,
+            keyResolver,
+            memorySegmentPool,
+            blockCache,
+            blockLoader,
+            worker,
+            encryptionMetadataCache,
+            WriteCacheMode.fromSystemProperty()
+        );
+    }
+
+    /**
+     * Creates a new CryptoDirectIODirectory with the specified components and write cache mode.
+     *
+     * @param path the directory path
+     * @param lockFactory the lock factory for coordinating access
+     * @param provider the security provider for cryptographic operations
+     * @param keyResolver resolver for encryption keys and initialization vectors
+     * @param memorySegmentPool pool for managing off-heap memory segments
+     * @param blockCache cache for storing decrypted blocks
+     * @param blockLoader loader for reading blocks from storage
+     * @param worker background worker for read-ahead operations
+     * @param encryptionMetadataCache the encryption metadata cache
+     * @param writeCacheMode controls whether writes populate the block cache
+     * @throws IOException if the directory cannot be created or accessed
+     */
+    public BufferPoolDirectory(
+        Path path,
+        LockFactory lockFactory,
+        Provider provider,
+        KeyResolver keyResolver,
+        Pool<RefCountedMemorySegment> memorySegmentPool,
+        BlockCache<RefCountedMemorySegment> blockCache,
+        BlockLoader<RefCountedMemorySegment> blockLoader,
+        Worker worker,
+        EncryptionMetadataCache encryptionMetadataCache,
+        WriteCacheMode writeCacheMode
+    )
+        throws IOException {
         super(path, lockFactory);
         this.memorySegmentPool = memorySegmentPool;
         this.blockCache = blockCache;
@@ -110,6 +156,7 @@ public class BufferPoolDirectory extends FSDirectory {
         this.dirPath = getDirectory();
         this.masterKeyBytes = keyResolver.getDataKey().getEncoded();
         this.encryptionMetadataCache = encryptionMetadataCache;
+        this.writeCacheMode = writeCacheMode;
 
         // startCacheStatsTelemetry(); // uncomment for local testing
     }
@@ -160,16 +207,7 @@ public class BufferPoolDirectory extends FSDirectory {
             Path path = directory.resolve(name);
             OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-            return new BufferIOWithCaching(
-                name,
-                path,
-                fos,
-                masterKeyBytes,
-                this.memorySegmentPool,
-                this.blockCache,
-                this.provider,
-                this.encryptionMetadataCache
-            );
+            return createIndexOutput(name, path, fos);
         } catch (Exception e) {
             CryptoMetricsService.getInstance().recordError(ErrorType.INDEX_OUTPUT_ERROR);
             throw e;
@@ -187,16 +225,24 @@ public class BufferPoolDirectory extends FSDirectory {
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-        return new BufferIOWithCaching(
-            name,
-            path,
-            fos,
-            masterKeyBytes,
-            this.memorySegmentPool,
-            this.blockCache,
-            this.provider,
-            this.encryptionMetadataCache
-        );
+        return createIndexOutput(name, path, fos);
+    }
+
+    private IndexOutput createIndexOutput(String name, Path path, OutputStream fos) throws IOException {
+        if (writeCacheMode == WriteCacheMode.WRITE_THROUGH) {
+            return new BufferIOWithCaching(
+                name,
+                path,
+                fos,
+                masterKeyBytes,
+                this.memorySegmentPool,
+                this.blockCache,
+                this.provider,
+                this.encryptionMetadataCache
+            );
+        } else {
+            return new BufferIOEncryptOnly(name, path, fos, masterKeyBytes, this.provider, this.encryptionMetadataCache);
+        }
     }
 
     // only close resources owned by this directory type.
