@@ -466,13 +466,21 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
         );
 
         Path testPath = Paths.get("/test/fail.dat");
-        when(mockLoader.load(any(), anyLong(), anyLong(), anyLong())).thenThrow(new IOException("load failed"));
 
-        cacheWithPrefetch.loadMissingBlocks(testPath, 0L, 2L);
+        // Pre-cache block at offset 8192 to split 3 blocks into two ranges: [0] and [16384]
+        caffeineCache.put(new FileBlockCacheKey(testPath, 8192L), createMockValue("cached"));
+
+        BlockCacheValue<String> loadedValue = createMockValue("loaded");
+        // First range (offset 0) fails, second range (offset 16384) should still succeed
+        when(mockLoader.load(eq(testPath), eq(0L), eq(1L), anyLong())).thenThrow(new IOException("load failed"));
+        when(mockLoader.load(eq(testPath), eq(16384L), eq(1L), anyLong())).thenReturn(new BlockCacheValue[] { loadedValue });
+
+        cacheWithPrefetch.loadMissingBlocks(testPath, 0L, 3L);
 
         executor.shutdown();
         assertTrue("Executor should finish", executor.awaitTermination(5, TimeUnit.SECONDS));
 
+        assertNotNull("Second range should load despite first range failure", caffeineCache.getIfPresent(new FileBlockCacheKey(testPath, 16384L)));
         assertEquals("Prefetch tracker should be cleaned up even after load failure", 0, prefetchTracker.size());
     }
 

@@ -243,6 +243,8 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
             try {
                 long loadedFor = loadAllBlocks(filePath, rangeStartOffset, rangeLength);
                 totalLoaded += loadedFor;
+            } catch (Exception e) {
+                LOGGER.warn("failed to prefetch block: path={} offset={} count={}", filePath, rangeStartOffset, rangeLength, e);
             } finally {
                 // Remove loaded blocks from prefetch tracker
                 for (int i = 0; i < rangeLength; i++) {
