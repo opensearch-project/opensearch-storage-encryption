@@ -240,15 +240,15 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 && missingKeys[rangeStart + rangeLength].offset() == rangeStartOffset + rangeLength * CACHE_BLOCK_SIZE) {
                 rangeLength++;
             }
-
-            long loadedFor = loadAllBlocks(filePath, rangeStartOffset, rangeLength);
-            totalLoaded += loadedFor;
-
-            // Remove loaded blocks from prefetch tracker
-            for (int i = 0; i < rangeLength; i++) {
-                prefetchTracker.remove(missingKeys[rangeStart + i]);
+            try {
+                long loadedFor = loadAllBlocks(filePath, rangeStartOffset, rangeLength);
+                totalLoaded += loadedFor;
+            } finally {
+                // Remove loaded blocks from prefetch tracker
+                for (int i = 0; i < rangeLength; i++) {
+                    prefetchTracker.remove(missingKeys[rangeStart + i]);
+                }
             }
-
             rangeStart += rangeLength;
         }
 

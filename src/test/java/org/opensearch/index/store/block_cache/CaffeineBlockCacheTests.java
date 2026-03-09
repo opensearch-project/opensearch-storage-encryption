@@ -454,6 +454,28 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
         assertTrue("Load should be attempted", loadAttempted.await(5, TimeUnit.SECONDS));
     }
 
+    public void testLoadMissingBlocksCleansPrefetchTrackerOnLoadFailure() throws Exception {
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        PrefetchTracker prefetchTracker = new PrefetchTracker(executor);
+
+        CaffeineBlockCache<String, BlockCacheValue<String>> cacheWithPrefetch = new CaffeineBlockCache<>(
+            caffeineCache,
+            mockLoader,
+            MAX_BLOCKS,
+            prefetchTracker
+        );
+
+        Path testPath = Paths.get("/test/fail.dat");
+        when(mockLoader.load(any(), anyLong(), anyLong(), anyLong())).thenThrow(new IOException("load failed"));
+
+        cacheWithPrefetch.loadMissingBlocks(testPath, 0L, 2L);
+
+        executor.shutdown();
+        assertTrue("Executor should finish", executor.awaitTermination(5, TimeUnit.SECONDS));
+
+        assertEquals("Prefetch tracker should be cleaned up even after load failure", 0, prefetchTracker.size());
+    }
+
     /**
      * Tests loadForPrefetch handles PoolPressureException.
      */
