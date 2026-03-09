@@ -480,7 +480,10 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
         executor.shutdown();
         assertTrue("Executor should finish", executor.awaitTermination(5, TimeUnit.SECONDS));
 
-        assertNotNull("Second range should load despite first range failure", caffeineCache.getIfPresent(new FileBlockCacheKey(testPath, 16384L)));
+        assertNotNull(
+            "Second range should load despite first range failure",
+            caffeineCache.getIfPresent(new FileBlockCacheKey(testPath, 16384L))
+        );
         assertEquals("Prefetch tracker should be cleaned up even after load failure", 0, prefetchTracker.size());
     }
 
