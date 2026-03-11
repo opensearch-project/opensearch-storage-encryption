@@ -23,6 +23,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.index.store.CryptoDirectoryFactory;
 import org.opensearch.index.store.DummyKeyProvider;
 import org.opensearch.index.store.PanamaNativeAccess;
 import org.opensearch.index.store.block_cache.BlockCache;
@@ -61,10 +62,14 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
     private PoolBuilder.PoolResources poolResources;
     private KeyResolver keyResolver;
     private EncryptionMetadataCache encryptionMetadataCache;
+    private boolean originalWriteCacheEnabled;
 
     @Before
     public void setUp() throws Exception {
         super.setUp();
+        // Save and disable write-through cache so reads go through the BlockLoader (Direct I/O)
+        originalWriteCacheEnabled = CryptoDirectoryFactory.isWriteCacheEnabled();
+        CryptoDirectoryFactory.setNodeSettings(Settings.builder().put("node.store.crypto.write_cache_enabled", false).build());
         Path path = createTempDir();
         Provider provider = Security.getProvider(DEFAULT_CRYPTO_PROVIDER);
         MasterKeyProvider keyProvider = DummyKeyProvider.create();
@@ -121,6 +126,8 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
     @After
     public void tearDown() throws Exception {
         PanamaNativeAccess.clearFileSystemBlockSizeOverride();
+        CryptoDirectoryFactory
+            .setNodeSettings(Settings.builder().put("node.store.crypto.write_cache_enabled", originalWriteCacheEnabled).build());
         this.bufferPoolDirectory.close();
         this.poolResources.close();
         super.tearDown();
@@ -471,81 +478,82 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
     }
 
     /**
-     * Simulates a filesystem whose reported block size (512 bytes) is smaller than the
-     * cache block size (8 KB). Reads are performed through the full {@link BufferPoolDirectory}
-     * path (write → cache → IndexInput) to verify end-to-end correctness when the I/O
-     * alignment granularity is finer than the cache block granularity.
+     * Simulates a filesystem whose block size (4 KB) is smaller than the cache block
+     * size (8 KB). A single cache block is loaded via the {@link CryptoDirectIOBlockLoader}
+     * and verified for byte-level correctness. This exercises the alignment path where
+     * the I/O alignment is finer-grained than the cache block granularity.
      *
-     * <p>Note: Direct I/O alignment is enforced by the OS kernel at the real filesystem
-     * block size, so we exercise the smaller-override scenario through the directory's
-     * cached read path rather than calling the loader directly.
+     * <p>Note: The override must be ≥ the real filesystem block size for Direct I/O to
+     * succeed (the OS kernel enforces the real block size). On APFS/ext4 this is 4096.
      */
-    public void testSingleBlockReadWithSmallerFsBlockSize() throws Exception {
-        PanamaNativeAccess.setFileSystemBlockSizeOverride(512); // 512 B < CACHE_BLOCK_SIZE (8 KB)
+    public void testSingleBlockLoadWithSmallerFsBlockSize() throws Exception {
+        PanamaNativeAccess.setFileSystemBlockSizeOverride(4096); // 4 KB < CACHE_BLOCK_SIZE (8 KB)
 
-        int fileSize = CACHE_BLOCK_SIZE; // exactly one cache block
+        int fileSize = CACHE_BLOCK_SIZE * 4;
         byte[] expected = buildDeterministicPattern(fileSize);
 
         String fileName = "test_single_block_small_fs";
         writeFile(fileName, expected);
 
-        try (IndexInput input = bufferPoolDirectory.openInput(fileName, IOContext.DEFAULT)) {
-            assertEquals(fileSize, input.length());
-            byte[] actual = new byte[fileSize];
-            input.readBytes(actual, 0, fileSize);
+        Path filePath = bufferPoolDirectory.getDirectory().resolve(fileName);
+        Pool<RefCountedMemorySegment> pool = poolResources.getSegmentPool();
+        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encryptionMetadataCache);
 
-            for (int i = 0; i < fileSize; i++) {
-                if (expected[i] != actual[i]) {
-                    fail(
-                        "Corruption at offset "
-                            + i
-                            + " with 512B FS block size override"
-                            + " expected=0x"
-                            + String.format("%02X", expected[i] & 0xFF)
-                            + " actual=0x"
-                            + String.format("%02X", actual[i] & 0xFF)
-                    );
-                }
+        RefCountedMemorySegment[] blocks = loader.load(filePath, 0, 1, 5000);
+        try {
+            assertNotNull("Block 0 should not be null", blocks[0]);
+            MemorySegment seg = blocks[0].segment();
+            for (int i = 0; i < CACHE_BLOCK_SIZE; i++) {
+                byte actual = seg.get(LAYOUT_BYTE, i);
+                assertEquals("Corruption at offset " + i + " with 4KB FS block size", expected[i], actual);
+            }
+        } finally {
+            for (RefCountedMemorySegment b : blocks) {
+                if (b != null)
+                    b.close();
             }
         }
     }
 
     /**
-     * Simulates a filesystem whose reported block size (4 KB) is smaller than the cache
-     * block size (8 KB) and reads data spanning multiple cache blocks. This mirrors
-     * common ext4/xfs setups where the FS block size is 4096 but the cache operates
-     * at 8192-byte granularity.
+     * Simulates a filesystem whose block size (4 KB) is smaller than the cache block
+     * size (8 KB) and loads multiple cache blocks via the {@link CryptoDirectIOBlockLoader}.
+     * This mirrors common ext4/xfs setups where the FS block size is 4096 but the cache
+     * operates at 8192-byte granularity.
      */
-    public void testMultiBlockReadWithSmallerFsBlockSize() throws Exception {
+    public void testMultiBlockLoadWithSmallerFsBlockSize() throws Exception {
         PanamaNativeAccess.setFileSystemBlockSizeOverride(4096); // 4 KB < CACHE_BLOCK_SIZE (8 KB)
 
         int blockCount = 4;
-        int fileSize = CACHE_BLOCK_SIZE * blockCount + 37; // +37 for partial trailing block
+        int fileSize = CACHE_BLOCK_SIZE * blockCount * 2;
         byte[] expected = buildDeterministicPattern(fileSize);
 
         String fileName = "test_multi_block_small_fs";
         writeFile(fileName, expected);
 
-        try (IndexInput input = bufferPoolDirectory.openInput(fileName, IOContext.DEFAULT)) {
-            assertEquals(fileSize, input.length());
-            byte[] actual = new byte[fileSize];
-            input.readBytes(actual, 0, fileSize);
+        Path filePath = bufferPoolDirectory.getDirectory().resolve(fileName);
+        Pool<RefCountedMemorySegment> pool = poolResources.getSegmentPool();
+        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encryptionMetadataCache);
 
-            for (int i = 0; i < fileSize; i++) {
-                if (expected[i] != actual[i]) {
-                    fail(
-                        "Corruption at offset "
-                            + i
-                            + " (cache block "
-                            + (i / CACHE_BLOCK_SIZE)
-                            + ")"
-                            + " with 4KB FS block size override"
-                            + " expected=0x"
-                            + String.format("%02X", expected[i] & 0xFF)
-                            + " actual=0x"
-                            + String.format("%02X", actual[i] & 0xFF)
+        RefCountedMemorySegment[] blocks = loader.load(filePath, 0, blockCount, 5000);
+        try {
+            for (int b = 0; b < blockCount; b++) {
+                assertNotNull("Block " + b + " should not be null", blocks[b]);
+                MemorySegment seg = blocks[b].segment();
+                int blockStart = b * CACHE_BLOCK_SIZE;
+                for (int i = 0; i < CACHE_BLOCK_SIZE && (blockStart + i) < fileSize; i++) {
+                    byte actual = seg.get(LAYOUT_BYTE, i);
+                    assertEquals(
+                        "Block " + b + " corruption at offset " + i + " (file offset " + (blockStart + i) + ") with 4KB FS block size",
+                        expected[blockStart + i],
+                        actual
                     );
                 }
+            }
+        } finally {
+            for (RefCountedMemorySegment b : blocks) {
+                if (b != null)
+                    b.close();
             }
         }
     }
