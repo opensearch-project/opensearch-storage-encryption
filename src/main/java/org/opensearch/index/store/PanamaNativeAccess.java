@@ -4,6 +4,7 @@
  */
 package org.opensearch.index.store;
 
+import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
@@ -11,6 +12,9 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
+import java.nio.file.FileStore;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Optional;
 
 import org.apache.logging.log4j.LogManager;
@@ -141,6 +145,29 @@ public final class PanamaNativeAccess {
             LOGGER.debug("Failed to get page size via native call, using fallback", e);
             return FALLBACK_PAGE_SIZE;
         }
+    }
+
+    /**
+     * Returns the filesystem block size for the given path.
+     *
+     * <p>For Direct I/O, buffers and offsets must be aligned to the filesystem's
+     * logical block size, not the kernel's virtual memory page size. This method
+     * queries the actual filesystem block size via {@link FileStore#getBlockSize()}.
+     *
+     * @param path the path whose filesystem block size is queried
+     * @return the filesystem block size in bytes, or the page size as fallback
+     */
+    public static int getFileSystemBlockSize(Path path) {
+        try {
+            FileStore store = Files.getFileStore(path);
+            long blockSize = store.getBlockSize();
+            if (blockSize > 0 && blockSize <= Integer.MAX_VALUE && (blockSize & (blockSize - 1)) == 0) {
+                return (int) blockSize;
+            }
+        } catch (IOException e) {
+            LOGGER.debug("Failed to get filesystem block size for {}, falling back to page size", path, e);
+        }
+        return getPageSize();
     }
 
     /**

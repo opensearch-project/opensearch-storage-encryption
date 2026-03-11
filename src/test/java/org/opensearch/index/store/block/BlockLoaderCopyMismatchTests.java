@@ -7,6 +7,7 @@ package org.opensearch.index.store.block;
 import static org.opensearch.index.store.CryptoDirectoryFactory.DEFAULT_CRYPTO_PROVIDER;
 import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE;
 
+import java.io.IOException;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.file.Path;
@@ -16,13 +17,12 @@ import java.security.Security;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.FSLockFactory;
 import org.apache.lucene.store.IOContext;
+import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.junit.After;
 import org.junit.Before;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
-import org.opensearch.index.store.CaffeineThreadLeakFilter;
-import org.opensearch.index.store.CryptoDirectoryFactory;
 import org.opensearch.index.store.DummyKeyProvider;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
@@ -38,33 +38,33 @@ import org.opensearch.index.store.pool.PoolBuilder;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.test.OpenSearchTestCase;
 
-import com.carrotsearch.randomizedtesting.annotations.ThreadLeakFilters;
 import com.carrotsearch.randomizedtesting.annotations.ThreadLeakScope;
 
 /**
- * Verifies that {@link CryptoDirectIOBlockLoader#load} correctly copies decrypted
- * data into pooled {@link RefCountedMemorySegment} instances. A write-then-load
- * round-trip is performed and the loaded bytes are compared against the original
- * plaintext to detect any copy-offset or length mismatch.
+ * Reproduces the CorruptIndexException caused by the block size mismatch in
+ * {@link CryptoDirectIOBlockLoader#load}. The loader copies 32 KB chunks into
+ * pool segments that the cache treats as {@code CACHE_BLOCK_SIZE} (4 KB) blocks.
+ * This means each "block" in the cache actually contains data from a much larger
+ * region, and consecutive cache blocks skip large swaths of the file, causing
+ * Lucene to see scrambled bytes.
+ *
+ * The test writes a deterministic byte pattern through the encrypted write path,
+ * reads it back through the cached read path, and verifies byte-level correctness.
+ * With the current bug, the read data will diverge from the written data once the
+ * first cache block boundary is crossed.
  */
-@ThreadLeakFilters(filters = CaffeineThreadLeakFilter.class)
 @ThreadLeakScope(ThreadLeakScope.Scope.NONE)
 public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
 
-    private static final ValueLayout.OfByte LAYOUT_BYTE = ValueLayout.JAVA_BYTE;
-
     private BufferPoolDirectory bufferPoolDirectory;
     private PoolBuilder.PoolResources poolResources;
-    private BlockLoader<RefCountedMemorySegment> loader;
-    private Path dirPath;
-    private boolean originalWriteCacheEnabled;
+    private KeyResolver keyResolver;
+    private EncryptionMetadataCache encryptionMetadataCache;
 
     @Before
-    public void setup() throws Exception {
+    public void setUp() throws Exception {
         super.setUp();
-        originalWriteCacheEnabled = CryptoDirectoryFactory.isWriteCacheEnabled();
-
-        dirPath = createTempDir();
+        Path path = createTempDir();
         Provider provider = Security.getProvider(DEFAULT_CRYPTO_PROVIDER);
         MasterKeyProvider keyProvider = DummyKeyProvider.create();
 
@@ -74,38 +74,38 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
             .put("node.store.crypto.pool_size_percentage", 0.05)
             .put("node.store.crypto.warmup_percentage", 0.0)
             .put("node.store.crypto.cache_to_pool_ratio", 0.8)
-            .put("node.store.crypto.write_cache_enabled", false)
             .build();
-
-        CryptoDirectoryFactory.setNodeSettings(nodeSettings);
 
         this.poolResources = PoolBuilder.build(nodeSettings);
         Pool<RefCountedMemorySegment> segmentPool = poolResources.getSegmentPool();
 
         String indexUuid = randomAlphaOfLength(10);
         String indexName = randomAlphaOfLength(10);
-        FSDirectory fsDirectory = FSDirectory.open(dirPath);
+        FSDirectory fsDirectory = FSDirectory.open(path);
         int shardId = 0;
 
         KeyResolver keyResolver = new TestKeyResolver(indexUuid, indexName, fsDirectory, provider, keyProvider, shardId);
-        EncryptionMetadataCache encryptionMetadataCache = EncryptionMetadataCacheRegistry.getOrCreateCache(indexUuid, shardId, indexName);
+        this.keyResolver = keyResolver;
 
-        this.loader = new CryptoDirectIOBlockLoader(segmentPool, keyResolver, encryptionMetadataCache);
+        EncryptionMetadataCache encryptionMetadataCache = EncryptionMetadataCacheRegistry.getOrCreateCache(indexUuid, shardId, indexName);
+        this.encryptionMetadataCache = encryptionMetadataCache;
+
+        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(segmentPool, keyResolver, encryptionMetadataCache);
 
         Worker worker = poolResources.getSharedReadaheadWorker();
 
         @SuppressWarnings("unchecked")
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> sharedCaffeineCache =
+        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> sharedCache =
             (CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment>) poolResources.getBlockCache();
 
         BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
-            sharedCaffeineCache.getCache(),
+            sharedCache.getCache(),
             loader,
             poolResources.getMaxCacheBlocks()
         );
 
         this.bufferPoolDirectory = new BufferPoolDirectory(
-            dirPath,
+            path,
             FSLockFactory.getDefault(),
             provider,
             keyResolver,
@@ -118,130 +118,299 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
     }
 
     @After
-    public void cleanup() throws Exception {
-        try {
-            this.bufferPoolDirectory.close();
-            this.poolResources.close();
-        } finally {
-            CryptoDirectoryFactory
-                .setNodeSettings(Settings.builder().put("node.store.crypto.write_cache_enabled", originalWriteCacheEnabled).build());
-        }
+    public void tearDown() throws Exception {
+        this.bufferPoolDirectory.close();
+        this.poolResources.close();
+        super.tearDown();
     }
 
     /**
-     * Writes a known byte pattern spanning multiple cache blocks, then loads
-     * each block via the loader and asserts every byte matches the original.
+     * Writes a file whose content is a repeating deterministic pattern, then reads
+     * it back via the cached IndexInput and asserts byte-level equality.
+     *
+     * The file size is chosen to span many cache blocks (several multiples of 32 KB)
+     * so the 32 KB-vs-CACHE_BLOCK_SIZE copy mismatch in the loader is exercised.
+     *
+     * Expected failure with the bug:
+     *   - readBytes returns wrong data after the first CACHE_BLOCK_SIZE bytes
+     *   - The mismatch manifests as skipped regions (28 KB gaps when CACHE_BLOCK_SIZE=4KB)
      */
-    public void testLoadedBlocksMatchWrittenData() throws Exception {
-        int blockCount = 3;
-        byte[] plaintext = new byte[CACHE_BLOCK_SIZE * blockCount];
-        random().nextBytes(plaintext);
+    public void testSequentialReadIntegrity() throws IOException {
+        // Use a size that spans many 32 KB loader chunks to exercise the mismatch.
+        // 256 KB = 8 loader chunks of 32 KB = 64 cache blocks of 4 KB
+        int fileSize = 256 * 1024 + 37; // +37 to test partial trailing block
 
-        String fileName = "copy_mismatch_" + randomAlphaOfLength(6);
-        IndexOutput out = bufferPoolDirectory.createOutput(fileName, IOContext.DEFAULT);
-        out.writeBytes(plaintext, plaintext.length);
-        out.close();
+        byte[] expected = buildDeterministicPattern(fileSize);
 
-        Path filePath = dirPath.resolve(fileName);
+        String fileName = "test_sequential_integrity";
+        writeFile(fileName, expected);
 
-        RefCountedMemorySegment[] loaded = loader.load(filePath, 0, blockCount);
-        try {
-            assertEquals("Expected " + blockCount + " segments", blockCount, loaded.length);
+        try (IndexInput input = bufferPoolDirectory.openInput(fileName, IOContext.DEFAULT)) {
+            assertEquals("IndexInput length must match written bytes", fileSize, input.length());
 
-            for (int b = 0; b < blockCount; b++) {
-                assertNotNull("Segment " + b + " must not be null", loaded[b]);
-                MemorySegment seg = loaded[b].segment();
+            byte[] actual = new byte[fileSize];
+            input.readBytes(actual, 0, fileSize);
 
-                for (int i = 0; i < CACHE_BLOCK_SIZE; i++) {
-                    int globalIndex = b * CACHE_BLOCK_SIZE + i;
-                    byte expected = plaintext[globalIndex];
-                    byte actual = seg.get(LAYOUT_BYTE, i);
-                    assertEquals("Byte mismatch at block " + b + " offset " + i + " (global " + globalIndex + ")", expected, actual);
-                }
-            }
-        } finally {
-            for (RefCountedMemorySegment seg : loaded) {
-                if (seg != null) {
-                    seg.close();
-                }
-            }
-        }
-    }
-
-    /**
-     * Writes a single cache block and verifies the loaded content matches exactly.
-     */
-    public void testSingleBlockRoundTrip() throws Exception {
-        byte[] plaintext = new byte[CACHE_BLOCK_SIZE];
-        random().nextBytes(plaintext);
-
-        String fileName = "single_block_" + randomAlphaOfLength(6);
-        IndexOutput out = bufferPoolDirectory.createOutput(fileName, IOContext.DEFAULT);
-        out.writeBytes(plaintext, plaintext.length);
-        out.close();
-
-        Path filePath = dirPath.resolve(fileName);
-
-        RefCountedMemorySegment[] loaded = loader.load(filePath, 0, 1);
-        try {
-            assertEquals(1, loaded.length);
-            assertNotNull(loaded[0]);
-
-            MemorySegment seg = loaded[0].segment();
-            for (int i = 0; i < CACHE_BLOCK_SIZE; i++) {
-                assertEquals("Byte mismatch at offset " + i, plaintext[i], seg.get(LAYOUT_BYTE, i));
-            }
-        } finally {
-            if (loaded[0] != null) {
-                loaded[0].close();
-            }
-        }
-    }
-
-    /**
-     * Loads blocks starting at a non-zero (but block-aligned) offset and
-     * verifies the content matches the corresponding region of the plaintext.
-     */
-    public void testLoadAtNonZeroOffset() throws Exception {
-        int totalBlocks = 5;
-        byte[] plaintext = new byte[CACHE_BLOCK_SIZE * totalBlocks];
-        random().nextBytes(plaintext);
-
-        String fileName = "offset_load_" + randomAlphaOfLength(6);
-        IndexOutput out = bufferPoolDirectory.createOutput(fileName, IOContext.DEFAULT);
-        out.writeBytes(plaintext, plaintext.length);
-        out.close();
-
-        Path filePath = dirPath.resolve(fileName);
-
-        // Load blocks 2 and 3 (0-indexed)
-        int startBlock = 2;
-        int loadCount = 2;
-        long startOffset = (long) startBlock * CACHE_BLOCK_SIZE;
-
-        RefCountedMemorySegment[] loaded = loader.load(filePath, startOffset, loadCount);
-        try {
-            assertEquals(loadCount, loaded.length);
-
-            for (int b = 0; b < loadCount; b++) {
-                assertNotNull(loaded[b]);
-                MemorySegment seg = loaded[b].segment();
-
-                for (int i = 0; i < CACHE_BLOCK_SIZE; i++) {
-                    int globalIndex = (startBlock + b) * CACHE_BLOCK_SIZE + i;
-                    assertEquals(
-                        "Byte mismatch at block " + (startBlock + b) + " offset " + i,
-                        plaintext[globalIndex],
-                        seg.get(LAYOUT_BYTE, i)
+            // Find first mismatch for a clear error message
+            for (int i = 0; i < fileSize; i++) {
+                if (expected[i] != actual[i]) {
+                    fail(
+                        "Data corruption at byte offset "
+                            + i
+                            + " (cache block "
+                            + (i / CACHE_BLOCK_SIZE)
+                            + ", offset-in-block "
+                            + (i % CACHE_BLOCK_SIZE)
+                            + ")"
+                            + " expected=0x"
+                            + String.format("%02X", expected[i] & 0xFF)
+                            + " actual=0x"
+                            + String.format("%02X", actual[i] & 0xFF)
                     );
                 }
             }
-        } finally {
-            for (RefCountedMemorySegment seg : loaded) {
-                if (seg != null) {
-                    seg.close();
+        }
+    }
+
+    /**
+     * Same idea but exercises the slice + clone path, which is how Lucene reads
+     * compound files (.cfs). The stacktrace shows corruption inside a .cfs slice,
+     * so this directly mirrors the production failure.
+     */
+    public void testSliceReadIntegrity() throws IOException {
+        int fileSize = 512 * 1024 + 13;
+        byte[] expected = buildDeterministicPattern(fileSize);
+
+        String fileName = "test_slice_integrity";
+        writeFile(fileName, expected);
+
+        try (IndexInput input = bufferPoolDirectory.openInput(fileName, IOContext.DEFAULT)) {
+            // Simulate how Lucene opens a sub-file inside a .cfs:
+            // slice at an offset that is NOT cache-block-aligned
+            int sliceOffset = CACHE_BLOCK_SIZE + 17; // deliberately misaligned
+            int sliceLength = 128 * 1024;
+
+            IndexInput slice = input.slice("test-slice", sliceOffset, sliceLength);
+
+            byte[] actual = new byte[sliceLength];
+            slice.readBytes(actual, 0, sliceLength);
+
+            for (int i = 0; i < sliceLength; i++) {
+                int filePos = sliceOffset + i;
+                if (expected[filePos] != actual[i]) {
+                    fail(
+                        "Slice data corruption at slice offset "
+                            + i
+                            + " (file offset "
+                            + filePos
+                            + ")"
+                            + " expected=0x"
+                            + String.format("%02X", expected[filePos] & 0xFF)
+                            + " actual=0x"
+                            + String.format("%02X", actual[i] & 0xFF)
+                    );
                 }
             }
         }
+    }
+
+    /**
+     * Exercises random-access positional reads (readByte(pos), readInt(pos), readLong(pos))
+     * across cache block boundaries. These are used heavily by Lucene's terms dictionary
+     * and doc values readers — exactly the codepath in the stacktrace.
+     */
+    public void testRandomAccessReadIntegrity() throws IOException {
+        int fileSize = 256 * 1024;
+        byte[] expected = buildDeterministicPattern(fileSize);
+
+        String fileName = "test_random_access_integrity";
+        writeFile(fileName, expected);
+
+        try (IndexInput input = bufferPoolDirectory.openInput(fileName, IOContext.DEFAULT)) {
+            // Probe at positions that cross 32 KB boundaries (where the bug manifests)
+            int[] probeOffsets = {
+                0,                     // start of file
+                CACHE_BLOCK_SIZE - 1,  // end of first cache block
+                CACHE_BLOCK_SIZE,      // start of second cache block (first mismatch with bug)
+                CACHE_BLOCK_SIZE * 2,  // third cache block
+                32 * 1024,             // start of second 32KB loader chunk
+                32 * 1024 + 1,         // one byte into second loader chunk
+                64 * 1024,             // third loader chunk
+                fileSize - 8,          // near end of file
+            };
+
+            for (int offset : probeOffsets) {
+                if (offset >= fileSize)
+                    continue;
+
+                input.seek(offset);
+                byte actualByte = input.readByte();
+                assertEquals("readByte mismatch at offset " + offset, expected[offset], actualByte);
+            }
+
+            // Also test readBytes at a position that spans a 32KB boundary
+            int spanStart = 32 * 1024 - 16;
+            int spanLen = 32;
+            input.seek(spanStart);
+            byte[] spanBuf = new byte[spanLen];
+            input.readBytes(spanBuf, 0, spanLen);
+
+            for (int i = 0; i < spanLen; i++) {
+                assertEquals("Span read mismatch at file offset " + (spanStart + i), expected[spanStart + i], spanBuf[i]);
+            }
+        }
+    }
+
+    /**
+     * Exercises concurrent clone reads, similar to how multiple search threads
+     * read from the same IndexInput via clone(). Each clone should see consistent data.
+     */
+    public void testConcurrentCloneReadIntegrity() throws Exception {
+        int fileSize = 256 * 1024;
+        byte[] expected = buildDeterministicPattern(fileSize);
+
+        String fileName = "test_concurrent_clone_integrity";
+        writeFile(fileName, expected);
+
+        try (IndexInput input = bufferPoolDirectory.openInput(fileName, IOContext.DEFAULT)) {
+            int numThreads = 8;
+            java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(numThreads);
+            java.util.concurrent.atomic.AtomicReference<AssertionError> failure = new java.util.concurrent.atomic.AtomicReference<>();
+
+            for (int t = 0; t < numThreads; t++) {
+                final int threadId = t;
+                new Thread(() -> {
+                    try {
+                        IndexInput clone = input.clone();
+                        // Each thread reads a different region
+                        int regionStart = threadId * 32 * 1024;
+                        int regionLen = Math.min(32 * 1024, fileSize - regionStart);
+                        if (regionLen <= 0)
+                            return;
+
+                        clone.seek(regionStart);
+                        byte[] buf = new byte[regionLen];
+                        clone.readBytes(buf, 0, regionLen);
+
+                        for (int i = 0; i < regionLen; i++) {
+                            if (expected[regionStart + i] != buf[i]) {
+                                failure
+                                    .compareAndSet(
+                                        null,
+                                        new AssertionError(
+                                            "Thread "
+                                                + threadId
+                                                + ": corruption at file offset "
+                                                + (regionStart + i)
+                                                + " expected=0x"
+                                                + String.format("%02X", expected[regionStart + i] & 0xFF)
+                                                + " actual=0x"
+                                                + String.format("%02X", buf[i] & 0xFF)
+                                        )
+                                    );
+                                return;
+                            }
+                        }
+                    } catch (IOException e) {
+                        failure.compareAndSet(null, new AssertionError("Thread " + threadId + " IOException", e));
+                    } finally {
+                        latch.countDown();
+                    }
+                }).start();
+            }
+
+            latch.await();
+            if (failure.get() != null) {
+                throw failure.get();
+            }
+        }
+    }
+
+    /**
+     * Directly tests the BlockLoader with blockCount > 1, which is the exact path
+     * used by readahead/prefetch. This is where the 32KB-vs-CACHE_BLOCK_SIZE mismatch
+     * causes an IndexOutOfBoundsException because the loader tries to copy 32KB
+     * (the hardcoded blockSize) into a pool segment that is only CACHE_BLOCK_SIZE bytes.
+     *
+     * This reproduces the production failure: readahead loads multiple blocks, the copy
+     * loop uses the wrong chunk size, and the MemorySegment.copy overflows the pool segment.
+     */
+    public void testBlockLoaderMultiBlockLoadCorruption() throws Exception {
+        // First, write a file through the encrypted write path
+        int fileSize = 256 * 1024;
+        byte[] expected = buildDeterministicPattern(fileSize);
+
+        String fileName = "test_loader_multiblock";
+        writeFile(fileName, expected);
+
+        // Now directly invoke the loader with blockCount > 1, simulating readahead
+        Path filePath = bufferPoolDirectory.getDirectory().resolve(fileName);
+
+        // Request 2 cache blocks (2 * CACHE_BLOCK_SIZE = 8KB with power=12)
+        // The loader will try to copy min(32768, 8192) = 8192 bytes into a 4096-byte segment
+        int blockCount = 2;
+        try {
+            Pool<RefCountedMemorySegment> pool = poolResources.getSegmentPool();
+
+            BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encryptionMetadataCache);
+
+            RefCountedMemorySegment[] blocks = loader.load(filePath, 0, blockCount, 5000);
+
+            // If we get here without exception, verify the data is correct
+            for (int b = 0; b < blockCount; b++) {
+                assertNotNull("Block " + b + " should not be null", blocks[b]);
+                MemorySegment seg = blocks[b].segment();
+
+                int blockStart = b * CACHE_BLOCK_SIZE;
+                for (int i = 0; i < CACHE_BLOCK_SIZE && (blockStart + i) < fileSize; i++) {
+                    byte actual = seg.get(LAYOUT_BYTE, i);
+                    assertEquals(
+                        "Block " + b + " corruption at offset " + i + " (file offset " + (blockStart + i) + ")",
+                        expected[blockStart + i],
+                        actual
+                    );
+                }
+
+                blocks[b].close();
+            }
+        } catch (IndexOutOfBoundsException e) {
+            // This is the expected failure with the bug: the loader tries to copy
+            // 32KB (hardcoded blockSize) into a CACHE_BLOCK_SIZE (4KB) pool segment.
+            // The error message will show something like:
+            // "Out of bound access on segment ... limit: 4096; new length = 8192"
+            logger.info("Caught expected IndexOutOfBoundsException from multi-block load: {}", e.getMessage());
+            fail(
+                "BlockLoader multi-block load failed with IndexOutOfBoundsException. "
+                    + "The loader's copy loop uses hardcoded blockSize (32KB) instead of CACHE_BLOCK_SIZE ("
+                    + CACHE_BLOCK_SIZE
+                    + " bytes). Error: "
+                    + e.getMessage()
+            );
+        }
+    }
+
+    // ---- helpers ----
+
+    private static final ValueLayout.OfByte LAYOUT_BYTE = ValueLayout.JAVA_BYTE;
+
+    private void writeFile(String name, byte[] data) throws IOException {
+        try (IndexOutput output = bufferPoolDirectory.createOutput(name, IOContext.DEFAULT)) {
+            output.writeBytes(data, data.length);
+        }
+    }
+
+    /**
+     * Builds a byte array where each byte is deterministic based on its position.
+     * This makes it trivial to verify correctness: expected[i] = pattern(i).
+     * The pattern is designed so that adjacent cache blocks have visibly different
+     * content, making the 32KB skip immediately detectable.
+     */
+    private byte[] buildDeterministicPattern(int size) {
+        byte[] data = new byte[size];
+        for (int i = 0; i < size; i++) {
+            // Mix position bits so that bytes at offset N and offset N+32KB are different
+            data[i] = (byte) ((i * 31 + (i >>> 8) * 7 + (i >>> 16) * 13) & 0xFF);
+        }
+        return data;
     }
 }
