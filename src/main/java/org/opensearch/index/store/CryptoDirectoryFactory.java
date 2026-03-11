@@ -555,11 +555,13 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         // Initialize encryption context resolver
         encryptionContextResolver = EncryptionContextResolverFactory.create(service);
 
-        // Register dynamic setting update consumer
-        service.getClusterSettings().addSettingsUpdateConsumer(WRITE_CACHE_ENABLED_SETTING, value -> {
-            LOGGER.info("Updating write_cache_enabled to {}", value);
-            writeCacheEnabled = value;
-        });
+        if (service.getClusterSettings() != null) {
+            // Register dynamic setting update consumer
+            service.getClusterSettings().addSettingsUpdateConsumer(WRITE_CACHE_ENABLED_SETTING, value -> {
+                LOGGER.info("Updating write_cache_enabled to {}", value);
+                writeCacheEnabled = value;
+            });
+        }
     }
 
     /**
