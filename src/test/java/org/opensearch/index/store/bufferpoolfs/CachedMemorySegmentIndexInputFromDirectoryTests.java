@@ -26,7 +26,9 @@ import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.index.store.CaffeineThreadLeakFilter;
+import org.opensearch.index.store.CryptoDirectoryFactory;
 import org.opensearch.index.store.DummyKeyProvider;
+import org.opensearch.index.store.PanamaNativeAccess;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
@@ -50,6 +52,7 @@ public class CachedMemorySegmentIndexInputFromDirectoryTests extends BaseIndexIn
 
     BufferPoolDirectory bufferPoolDirectory;
     private PoolBuilder.PoolResources poolResources;
+    private boolean originalWriteCacheEnabled;
 
     private Settings createNodeSettings() {
         return Settings
@@ -92,6 +95,11 @@ public class CachedMemorySegmentIndexInputFromDirectoryTests extends BaseIndexIn
     @Before
     public void Setup() throws Exception {
         super.setUp();
+        // Save and disable write-through cache so reads go through the BlockLoader (Direct I/O)
+        originalWriteCacheEnabled = CryptoDirectoryFactory.isWriteCacheEnabled();
+        CryptoDirectoryFactory.setNodeSettings(Settings.builder().put("node.store.crypto.write_cache_enabled", false).build());
+        // Simulate FS block size (4 KB) smaller than cache block size (8 KB)
+        PanamaNativeAccess.setFileSystemBlockSizeOverride(4096);
         Path path = createTempDir();
         Provider provider = Security.getProvider(DEFAULT_CRYPTO_PROVIDER);
         MasterKeyProvider keyProvider = DummyKeyProvider.create();
@@ -135,6 +143,9 @@ public class CachedMemorySegmentIndexInputFromDirectoryTests extends BaseIndexIn
 
     @After
     public void close() throws IOException {
+        PanamaNativeAccess.clearFileSystemBlockSizeOverride();
+        CryptoDirectoryFactory
+            .setNodeSettings(Settings.builder().put("node.store.crypto.write_cache_enabled", originalWriteCacheEnabled).build());
         this.poolResources.close();
         this.bufferPoolDirectory.close();
     }
