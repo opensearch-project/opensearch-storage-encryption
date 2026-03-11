@@ -148,16 +148,54 @@ public final class PanamaNativeAccess {
     }
 
     /**
+     * Test-only override for the filesystem block size. When set to a positive value,
+     * {@link #getFileSystemBlockSize(Path)} returns this value instead of querying the
+     * actual filesystem. Reset to {@code -1} to restore normal behavior.
+     *
+     * <p>This field is intentionally package-private. Tests in other packages should use
+     * {@link #setFileSystemBlockSizeOverride(int)} and {@link #clearFileSystemBlockSizeOverride()}.
+     */
+    private static volatile int fsBlockSizeOverride = -1;
+
+    /**
+     * Sets a test-only override for the filesystem block size returned by
+     * {@link #getFileSystemBlockSize(Path)}. The value must be a positive power of 2.
+     *
+     * @param blockSize the override block size in bytes, must be a positive power of 2
+     * @throws IllegalArgumentException if blockSize is not a positive power of 2
+     */
+    public static void setFileSystemBlockSizeOverride(int blockSize) {
+        if (blockSize <= 0 || (blockSize & (blockSize - 1)) != 0) {
+            throw new IllegalArgumentException("blockSize must be a positive power of 2: " + blockSize);
+        }
+        fsBlockSizeOverride = blockSize;
+    }
+
+    /**
+     * Clears the test-only filesystem block size override, restoring normal behavior.
+     */
+    public static void clearFileSystemBlockSizeOverride() {
+        fsBlockSizeOverride = -1;
+    }
+
+    /**
      * Returns the filesystem block size for the given path.
      *
      * <p>For Direct I/O, buffers and offsets must be aligned to the filesystem's
      * logical block size, not the kernel's virtual memory page size. This method
      * queries the actual filesystem block size via {@link FileStore#getBlockSize()}.
      *
+     * <p>If a test override has been set via {@link #setFileSystemBlockSizeOverride(int)},
+     * that value is returned instead.
+     *
      * @param path the path whose filesystem block size is queried
      * @return the filesystem block size in bytes, or the page size as fallback
      */
     public static int getFileSystemBlockSize(Path path) {
+        int override = fsBlockSizeOverride;
+        if (override > 0) {
+            return override;
+        }
         try {
             FileStore store = Files.getFileStore(path);
             long blockSize = store.getBlockSize();

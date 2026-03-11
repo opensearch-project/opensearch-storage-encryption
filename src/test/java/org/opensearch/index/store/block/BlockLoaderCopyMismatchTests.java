@@ -24,6 +24,7 @@ import org.junit.Before;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.DummyKeyProvider;
+import org.opensearch.index.store.PanamaNativeAccess;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
@@ -119,6 +120,7 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
 
     @After
     public void tearDown() throws Exception {
+        PanamaNativeAccess.clearFileSystemBlockSizeOverride();
         this.bufferPoolDirectory.close();
         this.poolResources.close();
         super.tearDown();
@@ -386,6 +388,165 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
                     + " bytes). Error: "
                     + e.getMessage()
             );
+        }
+    }
+
+    // ---- FS block size vs cache block size mismatch tests ----
+
+    /**
+     * Simulates a filesystem whose block size (16 KB) is larger than the cache block
+     * size (8 KB). A single cache block is loaded and verified for byte-level correctness.
+     * This exercises the alignment path in {@code directIOReadAligned} where the I/O
+     * alignment exceeds the amount of data the cache actually needs per block.
+     */
+    public void testSingleBlockLoadWithLargerFsBlockSize() throws Exception {
+        PanamaNativeAccess.setFileSystemBlockSizeOverride(16384); // 16 KB > CACHE_BLOCK_SIZE (8 KB)
+
+        int fileSize = CACHE_BLOCK_SIZE * 4; // 32 KB — enough to have multiple blocks on disk
+        byte[] expected = buildDeterministicPattern(fileSize);
+
+        String fileName = "test_single_block_large_fs";
+        writeFile(fileName, expected);
+
+        Path filePath = bufferPoolDirectory.getDirectory().resolve(fileName);
+        Pool<RefCountedMemorySegment> pool = poolResources.getSegmentPool();
+        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encryptionMetadataCache);
+
+        RefCountedMemorySegment[] blocks = loader.load(filePath, 0, 1, 5000);
+        try {
+            assertNotNull("Block 0 should not be null", blocks[0]);
+            MemorySegment seg = blocks[0].segment();
+            for (int i = 0; i < CACHE_BLOCK_SIZE; i++) {
+                byte actual = seg.get(LAYOUT_BYTE, i);
+                assertEquals("Corruption at offset " + i + " with larger FS block size", expected[i], actual);
+            }
+        } finally {
+            for (RefCountedMemorySegment b : blocks) {
+                if (b != null)
+                    b.close();
+            }
+        }
+    }
+
+    /**
+     * Simulates a filesystem whose block size (32 KB) is larger than the cache block
+     * size (8 KB) and loads multiple cache blocks in one call. This is the readahead /
+     * prefetch path where the loader copies data into several pool segments.
+     */
+    public void testMultiBlockLoadWithLargerFsBlockSize() throws Exception {
+        PanamaNativeAccess.setFileSystemBlockSizeOverride(32768); // 32 KB > CACHE_BLOCK_SIZE (8 KB)
+
+        int blockCount = 4;
+        int fileSize = CACHE_BLOCK_SIZE * blockCount * 2; // plenty of data
+        byte[] expected = buildDeterministicPattern(fileSize);
+
+        String fileName = "test_multi_block_large_fs";
+        writeFile(fileName, expected);
+
+        Path filePath = bufferPoolDirectory.getDirectory().resolve(fileName);
+        Pool<RefCountedMemorySegment> pool = poolResources.getSegmentPool();
+        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encryptionMetadataCache);
+
+        RefCountedMemorySegment[] blocks = loader.load(filePath, 0, blockCount, 5000);
+        try {
+            for (int b = 0; b < blockCount; b++) {
+                assertNotNull("Block " + b + " should not be null", blocks[b]);
+                MemorySegment seg = blocks[b].segment();
+                int blockStart = b * CACHE_BLOCK_SIZE;
+                for (int i = 0; i < CACHE_BLOCK_SIZE && (blockStart + i) < fileSize; i++) {
+                    byte actual = seg.get(LAYOUT_BYTE, i);
+                    assertEquals(
+                        "Block " + b + " corruption at offset " + i + " (file offset " + (blockStart + i) + ") with 32KB FS block size",
+                        expected[blockStart + i],
+                        actual
+                    );
+                }
+            }
+        } finally {
+            for (RefCountedMemorySegment b : blocks) {
+                if (b != null)
+                    b.close();
+            }
+        }
+    }
+
+    /**
+     * Simulates a filesystem whose reported block size (512 bytes) is smaller than the
+     * cache block size (8 KB). Reads are performed through the full {@link BufferPoolDirectory}
+     * path (write → cache → IndexInput) to verify end-to-end correctness when the I/O
+     * alignment granularity is finer than the cache block granularity.
+     *
+     * <p>Note: Direct I/O alignment is enforced by the OS kernel at the real filesystem
+     * block size, so we exercise the smaller-override scenario through the directory's
+     * cached read path rather than calling the loader directly.
+     */
+    public void testSingleBlockReadWithSmallerFsBlockSize() throws Exception {
+        PanamaNativeAccess.setFileSystemBlockSizeOverride(512); // 512 B < CACHE_BLOCK_SIZE (8 KB)
+
+        int fileSize = CACHE_BLOCK_SIZE; // exactly one cache block
+        byte[] expected = buildDeterministicPattern(fileSize);
+
+        String fileName = "test_single_block_small_fs";
+        writeFile(fileName, expected);
+
+        try (IndexInput input = bufferPoolDirectory.openInput(fileName, IOContext.DEFAULT)) {
+            assertEquals(fileSize, input.length());
+            byte[] actual = new byte[fileSize];
+            input.readBytes(actual, 0, fileSize);
+
+            for (int i = 0; i < fileSize; i++) {
+                if (expected[i] != actual[i]) {
+                    fail(
+                        "Corruption at offset "
+                            + i
+                            + " with 512B FS block size override"
+                            + " expected=0x"
+                            + String.format("%02X", expected[i] & 0xFF)
+                            + " actual=0x"
+                            + String.format("%02X", actual[i] & 0xFF)
+                    );
+                }
+            }
+        }
+    }
+
+    /**
+     * Simulates a filesystem whose reported block size (4 KB) is smaller than the cache
+     * block size (8 KB) and reads data spanning multiple cache blocks. This mirrors
+     * common ext4/xfs setups where the FS block size is 4096 but the cache operates
+     * at 8192-byte granularity.
+     */
+    public void testMultiBlockReadWithSmallerFsBlockSize() throws Exception {
+        PanamaNativeAccess.setFileSystemBlockSizeOverride(4096); // 4 KB < CACHE_BLOCK_SIZE (8 KB)
+
+        int blockCount = 4;
+        int fileSize = CACHE_BLOCK_SIZE * blockCount + 37; // +37 for partial trailing block
+        byte[] expected = buildDeterministicPattern(fileSize);
+
+        String fileName = "test_multi_block_small_fs";
+        writeFile(fileName, expected);
+
+        try (IndexInput input = bufferPoolDirectory.openInput(fileName, IOContext.DEFAULT)) {
+            assertEquals(fileSize, input.length());
+            byte[] actual = new byte[fileSize];
+            input.readBytes(actual, 0, fileSize);
+
+            for (int i = 0; i < fileSize; i++) {
+                if (expected[i] != actual[i]) {
+                    fail(
+                        "Corruption at offset "
+                            + i
+                            + " (cache block "
+                            + (i / CACHE_BLOCK_SIZE)
+                            + ")"
+                            + " with 4KB FS block size override"
+                            + " expected=0x"
+                            + String.format("%02X", expected[i] & 0xFF)
+                            + " actual=0x"
+                            + String.format("%02X", actual[i] & 0xFF)
+                    );
+                }
+            }
         }
     }
 
