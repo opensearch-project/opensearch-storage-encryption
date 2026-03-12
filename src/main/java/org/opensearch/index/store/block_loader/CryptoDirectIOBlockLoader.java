@@ -93,7 +93,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
             Arena arena = Arena.ofConfined();
             FileChannel channel = FileChannel.open(filePath, StandardOpenOption.READ, DirectIOReaderUtil.getDirectOpenOption())
         ) {
-            MemorySegment readBytes = directIOReadAligned(channel, startOffset, readLength, arena);
+            MemorySegment readBytes = directIOReadAligned(channel, filePath, startOffset, readLength, arena);
             long bytesRead = readBytes.byteSize();
 
             String normalizedPath = filePath.toAbsolutePath().normalize().toString();

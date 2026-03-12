@@ -91,7 +91,8 @@ public class EncryptionContextResolverTests extends LuceneTestCase {
      */
     public void testAmazonResolverExtractsFromRepository() {
         ClusterService mockClusterService = createMockClusterServiceWithRepository(TEST_REPO_NAME, AMAZON_ENC_CTX_VALUE);
-
+        // ClusterSettings clusterSettings = mock(ClusterSettings.class);
+        // when(mockClusterService.getClusterSettings()).thenReturn(clusterSettings);
         EncryptionContextResolver resolver = EncryptionContextResolverFactory
             .create(EncryptionContextResolverType.AMAZON, mockClusterService);
 

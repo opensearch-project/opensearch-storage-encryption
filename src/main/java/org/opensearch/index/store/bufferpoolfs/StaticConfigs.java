@@ -4,6 +4,8 @@
  */
 package org.opensearch.index.store.bufferpoolfs;
 
+import java.nio.file.Path;
+
 import org.opensearch.index.store.PanamaNativeAccess;
 
 /**
@@ -30,10 +32,12 @@ public class StaticConfigs {
     }
 
     /** 
-     * Alignment requirement for Direct I/O operations in bytes.
-     * Must be at least 512 bytes or the system page size, whichever is larger.
+     * Default alignment for Direct I/O operations in bytes.
+     * This is a safe fallback (512 bytes) used when the filesystem block size
+     * cannot be determined. Callers that have a path available should prefer
+     * {@link #getDirectIOAlignment(Path)} for the actual filesystem block size.
      */
-    public static final int DIRECT_IO_ALIGNMENT = Math.max(512, getPageSizeSafe());
+    public static final int DIRECT_IO_ALIGNMENT = 512;
 
     /** 
      * Power of 2 for Direct I/O write buffer size (2^18 = 256KB).
@@ -55,13 +59,18 @@ public class StaticConfigs {
      */
     public static final long CACHE_BLOCK_MASK = CACHE_BLOCK_SIZE - 1;
 
-    private static int getPageSizeSafe() {
-        try {
-            return PanamaNativeAccess.getPageSize();
-        } catch (Throwable e) {
-            // Native access not available (class initialization failed, native library not found, etc.)
-            // Fall back to common page size
-            return 4096;
-        }
+    /**
+     * Returns the correct Direct I/O alignment for the filesystem containing the given path.
+     *
+     * <p>Direct I/O requires buffers and offsets to be aligned to the filesystem's logical
+     * block size, not the kernel's virtual memory page size. Using the page size (e.g., 4096
+     * or 64KB on ARM) instead of the filesystem block size (typically 512 or 4096) can waste
+     * memory and cause incorrect alignment on systems with non-standard page sizes.
+     *
+     * @param path a path on the target filesystem
+     * @return the filesystem block size in bytes (guaranteed to be a power of 2)
+     */
+    public static int getDirectIOAlignment(Path path) {
+        return Math.max(DIRECT_IO_ALIGNMENT, PanamaNativeAccess.getFileSystemBlockSize(path));
     }
 }
