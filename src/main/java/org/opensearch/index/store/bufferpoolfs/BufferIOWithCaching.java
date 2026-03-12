@@ -74,13 +74,14 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         Pool<RefCountedMemorySegment> memorySegmentPool,
         BlockCache<RefCountedMemorySegment> blockCache,
         Provider provider,
-        EncryptionMetadataCache encryptionMetadataCache
+        EncryptionMetadataCache encryptionMetadataCache,
+        boolean encryptionEnabled
     )
         throws IOException {
         super(
             "FSIndexOutput(path=\"" + path + "\")",
             name,
-            new EncryptedOutputStream(os, path, key, memorySegmentPool, blockCache, provider, encryptionMetadataCache),
+            new EncryptedOutputStream(os, path, key, memorySegmentPool, blockCache, provider, encryptionMetadataCache, encryptionEnabled),
             CHUNK_SIZE
         );
     }
@@ -116,6 +117,9 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         private byte[] partialBlockBuffer = new byte[CACHE_BLOCK_SIZE];
         private int partialBlockLength = 0;
 
+        // Captured at file creation time so the entire file is consistently encrypted or plaintext
+        private final boolean encryptionEnabled;
+
         EncryptedOutputStream(
             OutputStream os,
             Path path,
@@ -123,7 +127,8 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             Pool<RefCountedMemorySegment> memorySegmentPool,
             BlockCache<RefCountedMemorySegment> blockCache,
             Provider provider,
-            EncryptionMetadataCache encryptionMetadataCache
+            EncryptionMetadataCache encryptionMetadataCache,
+            boolean encryptionEnabled
         ) {
             super(os);
             this.path = path;
@@ -134,20 +139,26 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             this.blockCache = blockCache;
             this.provider = provider;
             this.encryptionMetadataCache = encryptionMetadataCache;
+            this.encryptionEnabled = encryptionEnabled;
 
             this.frameSize = EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE;
             this.frameSizeMask = frameSize - 1;
 
-            this.algorithm = EncryptionAlgorithm.fromId((short) EncryptionMetadataTrailer.ALGORITHM_AES_256_GCM);
+            if (encryptionEnabled) {
+                this.algorithm = EncryptionAlgorithm.fromId((short) EncryptionMetadataTrailer.ALGORITHM_AES_256_GCM);
+                this.footer = EncryptionFooter.generateNew(frameSize, (short) EncryptionMetadataTrailer.ALGORITHM_AES_256_GCM);
 
-            this.footer = EncryptionFooter.generateNew(frameSize, (short) EncryptionMetadataTrailer.ALGORITHM_AES_256_GCM);
+                // Derive file-specific key
+                byte[] derivedKey = HkdfKeyDerivation.deriveFileKey(masterKey, footer.getMessageId());
+                this.fileKey = new javax.crypto.spec.SecretKeySpec(derivedKey, "AES");
 
-            // Derive file-specific key
-            byte[] derivedKey = HkdfKeyDerivation.deriveFileKey(masterKey, footer.getMessageId());
-            this.fileKey = new javax.crypto.spec.SecretKeySpec(derivedKey, "AES");
-
-            // Initialize first frame cipher
-            initializeFrameCipher(0, 0);
+                // Initialize first frame cipher
+                initializeFrameCipher(0, 0);
+            } else {
+                this.algorithm = null;
+                this.footer = null;
+                this.fileKey = null;
+            }
         }
 
         @Override
@@ -242,8 +253,13 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                 // Cache plaintext data for reads
                 cacheBlockIfEligible(full, arrayOffset + offsetInBuffer, blockAlignedOffset, blockOffset, chunkLen);
 
-                // Encrypt and write to disk
-                writeEncryptedChunk(data, arrayOffset + offsetInBuffer, chunkLen, absoluteOffset);
+                if (encryptionEnabled) {
+                    // Encrypt and write to disk
+                    writeEncryptedChunk(data, arrayOffset + offsetInBuffer, chunkLen, absoluteOffset);
+                } else {
+                    // Write plaintext directly
+                    out.write(data, arrayOffset + offsetInBuffer, chunkLen);
+                }
                 offsetInBuffer += chunkLen;
             }
 
@@ -341,18 +357,18 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             try {
                 checkClosed();
                 forceFlushBuffer(); // Force flush ALL data including tail
-                // Lucene writes footer here.
-                // this will also flush the buffer.
 
-                finalizeCurrentFrame();
-                footer.setFrameCount(totalFrames);
+                if (encryptionEnabled) {
+                    finalizeCurrentFrame();
+                    footer.setFrameCount(totalFrames);
 
-                // Serialize footer with file key for authentication
-                byte[] fileKeyBytes = fileKey.getEncoded();
-                out.write(footer.serialize(null, fileKeyBytes));
+                    // Serialize footer with file key for authentication
+                    byte[] fileKeyBytes = fileKey.getEncoded();
+                    out.write(footer.serialize(null, fileKeyBytes));
 
-                // Cache metadata for future reads
-                encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, this.masterKey);
+                    // Cache metadata for future reads
+                    encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, this.masterKey);
+                }
 
                 // close() only flushes to the OS (kernel page cache). It does NOT guarantee
                 // * durability on disk (no fsync here). Lucene will provide the durability boundary by calling

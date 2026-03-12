@@ -96,7 +96,8 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
                 mockPool,
                 mockCache,
                 provider,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                true
             )
         ) {
             // Write small chunks that should be buffered
@@ -129,7 +130,8 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
                 mockPool,
                 mockCache,
                 provider,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                true
             )
         ) {
             // Write data >= BUFFER_SIZE (should bypass buffering)
@@ -159,7 +161,8 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
                 mockPool,
                 mockCache,
                 provider,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                true
             )
         ) {
             // Fill buffer to near capacity
@@ -192,7 +195,8 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
                 mockPool,
                 mockCache,
                 provider,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                true
             )
         ) {
             // Write individual bytes
@@ -222,7 +226,8 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
                 mockPool,
                 mockCache,
                 provider,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                true
             )
         ) {
             // Write exactly one cache block (8192 bytes)
@@ -253,7 +258,8 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
                 mockPool,
                 mockCache,
                 provider,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                true
             )
         ) {
             // Write 5 complete cache blocks
@@ -286,7 +292,8 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
                 mockPool,
                 mockCache,
                 provider,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                true
             )
         ) {
             // Write partial block (not aligned to 8KB)
@@ -317,7 +324,8 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
                 mockPool,
                 mockCache,
                 provider,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                true
             )
         ) {
             // Write data that results in partial final block
@@ -348,7 +356,8 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
                 mockPool,
                 mockCache,
                 provider,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                true
             )
         ) {
             // Write unaligned data that spans multiple blocks
@@ -386,7 +395,8 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
                 mockPool,
                 mockCache,
                 provider,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                true
             )
         ) {
             // Write data close to frame boundary
@@ -420,7 +430,8 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
                 mockPool,
                 mockCache,
                 provider,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                true
             )
         ) {
             expectThrows(NullPointerException.class, () -> { output.writeBytes(null, 100); });
@@ -445,7 +456,8 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
                 mockPool,
                 mockCache,
                 provider,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                true
             )
         ) {
             byte[] data = new byte[100];
@@ -479,7 +491,8 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
                 mockPool,
                 mockCache,
                 provider,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                true
             )
         ) {
             byte[] data = new byte[100];
@@ -508,7 +521,8 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
                 mockPool,
                 mockCache,
                 provider,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                true
             )
         ) {
             // Write full block - should not cache but should still encrypt and write
@@ -538,7 +552,8 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
                 mockPool,
                 mockCache,
                 provider,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                true
             )
         ) {
             // Close without writing
@@ -566,7 +581,8 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
                 mockPool,
                 mockCache,
                 provider,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                true
             )
         ) {
             // Write exactly 10 cache blocks
@@ -597,7 +613,8 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
                 mockPool,
                 mockCache,
                 provider,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                true
             )
         ) {
             // Write 10MB (spans multiple frames)

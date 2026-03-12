@@ -99,27 +99,32 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
             String normalizedPath = filePath.toAbsolutePath().normalize().toString();
             byte[] masterKey = keyResolver.getDataKey().getEncoded();
 
-            // Get footer from disk and load metadata (footer + derived key) atomically into cache
-            EncryptionFooter footer = readFooterFromDisk(filePath, masterKey);
+            // Try to read footer — if the file is not OSEF-encrypted, skip decryption
+            try {
+                EncryptionFooter footer = readFooterFromDisk(filePath, masterKey);
 
-            // Get or create metadata atomically - ensures footer and key are always consistent
-            var metadata = encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, masterKey);
-            byte[] messageId = metadata.getFooter().getMessageId();
-            byte[] fileKey = metadata.getFileKey();
+                // Get or create metadata atomically - ensures footer and key are always consistent
+                var metadata = encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, masterKey);
+                byte[] messageId = metadata.getFooter().getMessageId();
+                byte[] fileKey = metadata.getFileKey();
 
-            // Use frame-based decryption with derived file key
-            MemorySegmentDecryptor
-                .decryptInPlaceFrameBased(
-                    readBytes.address(),
-                    readBytes.byteSize(),
-                    fileKey,                                    // Derived file key (matches write path)
-                    masterKey,                                  // Master key for IV computation
-                    messageId,                                  // Message ID from footer
-                    org.opensearch.index.store.footer.EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE, // Frame size
-                    startOffset,                                 // File offset
-                    filePath.toAbsolutePath().normalize().toString(),
-                    encryptionMetadataCache
-                );
+                // Use frame-based decryption with derived file key
+                MemorySegmentDecryptor
+                    .decryptInPlaceFrameBased(
+                        readBytes.address(),
+                        readBytes.byteSize(),
+                        fileKey,
+                        masterKey,
+                        messageId,
+                        org.opensearch.index.store.footer.EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE,
+                        startOffset,
+                        filePath.toAbsolutePath().normalize().toString(),
+                        encryptionMetadataCache
+                    );
+            } catch (EncryptionFooter.NotOSEFFileException e) {
+                // File was written without encryption — read as plaintext, no decryption needed
+                LOGGER.debug("File {} is not OSEF-encrypted, reading as plaintext", filePath);
+            }
 
             if (bytesRead == 0) {
                 throw new java.io.EOFException("Unexpected EOF or empty read at offset " + startOffset + " for file " + filePath);
@@ -186,7 +191,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
         try (FileChannel channel = FileChannel.open(filePath, StandardOpenOption.READ)) {
             long fileSize = channel.size();
             if (fileSize < EncryptionMetadataTrailer.MIN_FOOTER_SIZE) {
-                throw new IOException("File too small to contain footer: " + filePath);
+                throw new EncryptionFooter.NotOSEFFileException("File too small to contain footer: " + filePath);
             }
 
             // Read minimum footer to check OSEF magic bytes
@@ -196,8 +201,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
 
             // Check if this is an OSEF file
             if (!isValidOSEFFile(minFooterBytes)) {
-                // Not an OSEF file
-                throw new IOException("Not an OSEF file -" + filePath);
+                throw new EncryptionFooter.NotOSEFFileException("Not an OSEF file: " + filePath);
             }
 
             return EncryptionFooter.readViaFileChannel(normalizedPath, channel, masterKey, encryptionMetadataCache);

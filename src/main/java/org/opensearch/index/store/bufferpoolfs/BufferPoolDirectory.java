@@ -76,6 +76,7 @@ public class BufferPoolDirectory extends FSDirectory {
     private final Path dirPath;
     private final byte[] masterKeyBytes;
     private final EncryptionMetadataCache encryptionMetadataCache;
+    private final boolean encryptionEnabled;
 
     /**
      * Creates a new CryptoDirectIODirectory with the specified components.
@@ -88,6 +89,8 @@ public class BufferPoolDirectory extends FSDirectory {
      * @param blockCache cache for storing decrypted blocks
      * @param blockLoader loader for reading blocks from storage
      * @param worker background worker for read-ahead operations
+     * @param encryptionMetadataCache cache for encryption metadata
+     * @param encryptionEnabled whether encryption is enabled on the write path
      * @throws IOException if the directory cannot be created or accessed
      */
     public BufferPoolDirectory(
@@ -99,7 +102,8 @@ public class BufferPoolDirectory extends FSDirectory {
         BlockCache<RefCountedMemorySegment> blockCache,
         BlockLoader<RefCountedMemorySegment> blockLoader,
         Worker worker,
-        EncryptionMetadataCache encryptionMetadataCache
+        EncryptionMetadataCache encryptionMetadataCache,
+        boolean encryptionEnabled
     )
         throws IOException {
         super(path, lockFactory);
@@ -110,6 +114,7 @@ public class BufferPoolDirectory extends FSDirectory {
         this.dirPath = getDirectory();
         this.masterKeyBytes = keyResolver.getDataKey().getEncoded();
         this.encryptionMetadataCache = encryptionMetadataCache;
+        this.encryptionEnabled = encryptionEnabled;
 
         // startCacheStatsTelemetry(); // uncomment for local testing
     }
@@ -168,7 +173,8 @@ public class BufferPoolDirectory extends FSDirectory {
                 this.memorySegmentPool,
                 this.blockCache,
                 this.provider,
-                this.encryptionMetadataCache
+                this.encryptionMetadataCache,
+                this.encryptionEnabled
             );
         } catch (Exception e) {
             CryptoMetricsService.getInstance().recordError(ErrorType.INDEX_OUTPUT_ERROR);
@@ -195,7 +201,8 @@ public class BufferPoolDirectory extends FSDirectory {
             this.memorySegmentPool,
             this.blockCache,
             this.provider,
-            this.encryptionMetadataCache
+            this.encryptionMetadataCache,
+            this.encryptionEnabled
         );
     }
 
@@ -283,6 +290,14 @@ public class BufferPoolDirectory extends FSDirectory {
         } catch (Exception e) {
             LOGGER.warn("Failed to log cache/pool stats", e);
         }
+    }
+
+    /**
+     * Returns the block cache used by this directory.
+     * Package-private for testing.
+     */
+    BlockCache<RefCountedMemorySegment> getBlockCache() {
+        return blockCache;
     }
 
     @SuppressWarnings("unused")
