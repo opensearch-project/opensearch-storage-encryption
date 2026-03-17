@@ -45,6 +45,8 @@ import org.opensearch.transport.client.AdminClient;
 import org.opensearch.transport.client.Client;
 import org.opensearch.transport.client.IndicesAdminClient;
 
+import com.carrotsearch.randomizedtesting.annotations.ThreadLeakFilters;
+
 /**
  * Tests for concurrent shard creation to verify the race condition fix
  * in ShardKeyResolverRegistry.
@@ -52,6 +54,7 @@ import org.opensearch.transport.client.IndicesAdminClient;
  * This test ensures that when multiple shards of the same index are created
  * concurrently, only one thread initializes the shared index-level keyfile.
  */
+@ThreadLeakFilters(filters = org.opensearch.index.store.CaffeineThreadLeakFilter.class)
 public class ShardKeyResolverRegistryConcurrencyTests extends OpenSearchTestCase {
 
     private Path tempDir;
@@ -61,7 +64,6 @@ public class ShardKeyResolverRegistryConcurrencyTests extends OpenSearchTestCase
     @Before
     public void setUp() throws Exception {
         super.setUp();
-
         // Create temporary directory for test
         tempDir = createTempDir();
 

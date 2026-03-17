@@ -72,6 +72,20 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectoryFactory.class);
 
     /**
+     * Controls whether recently written data is cached in the block cache.
+     * When enabled (default), plaintext blocks are cached during writes so that
+     * subsequent reads can be served from cache without re-reading and decrypting from disk.
+     * Disabling this can reduce memory pressure at the cost of higher read latency for recently written data.
+     */
+    public static final Setting<Boolean> WRITE_CACHE_ENABLED_SETTING = Setting
+        .boolSetting("node.store.crypto.write_cache_enabled", true, Property.NodeScope, Property.Dynamic);
+
+    /**
+     * Current value of the write cache enabled setting, updated dynamically via cluster settings.
+     */
+    private static volatile boolean writeCacheEnabled = true;
+
+    /**
      * Shared pool resources including pool, cache, and telemetry.
      * Lazily initialized on first cryptofs shard creation and shared across all CryptoBufferPoolFSDirectory instances.
      * This prevents resource allocation on dedicated master nodes which never create shards.
@@ -528,6 +542,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      */
     public static void setNodeSettings(Settings settings) {
         nodeSettings = settings;
+        writeCacheEnabled = WRITE_CACHE_ENABLED_SETTING.get(settings);
     }
 
     /**
@@ -539,6 +554,24 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     public static void setClusterService(ClusterService service) {
         // Initialize encryption context resolver
         encryptionContextResolver = EncryptionContextResolverFactory.create(service);
+
+        if (service.getClusterSettings() != null) {
+            // Register dynamic setting update consumer
+            service.getClusterSettings().addSettingsUpdateConsumer(WRITE_CACHE_ENABLED_SETTING, value -> {
+                LOGGER.info("Updating write_cache_enabled to {}", value);
+                writeCacheEnabled = value;
+            });
+        }
+    }
+
+    /**
+     * Returns whether write-through caching is currently enabled.
+     * This is read by the write path to decide whether to cache plaintext blocks during writes.
+     *
+     * @return true if write caching is enabled
+     */
+    public static boolean isWriteCacheEnabled() {
+        return writeCacheEnabled;
     }
 
     /**
