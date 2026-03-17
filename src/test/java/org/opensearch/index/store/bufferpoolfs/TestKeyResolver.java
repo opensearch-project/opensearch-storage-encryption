@@ -40,6 +40,7 @@ public class TestKeyResolver extends DefaultKeyResolver {
 
     @Override
     public Key getDataKey() {
+        // Deterministic weak key for benchmarks only — not for production use
         byte[] masterKey = new byte[32];
         for (int i = 0; i < 32; i++) {
             masterKey[i] = (byte) (i % 2);

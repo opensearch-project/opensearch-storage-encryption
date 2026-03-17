@@ -31,6 +31,7 @@ plugins {
     id 'idea'
     id 'jacoco'
     id 'com.diffplug.spotless' version '6.25.0'
+    id 'me.champeau.jmh' version '0.7.3'
 }
 
 apply plugin: 'opensearch.opensearchplugin'
@@ -191,6 +192,7 @@ validateNebulaPom.enabled = false
 testingConventions.enabled = false
 forbiddenApisMain.enabled = false
 forbiddenApisTest.enabled = false
+forbiddenApisJmh.enabled = false
 
 task allTests {
     dependsOn test, internalClusterTest, yamlRestTest
@@ -204,5 +206,68 @@ spotless {
         importOrder 'java', 'javax', 'org', 'com'
         licenseHeaderFile 'spotless.license.java'
         eclipse().configFile rootProject.file('.eclipseformat.xml')
+    }
+}
+
+jmh {
+    jmhVersion = '1.37'
+    includeTests = true
+    includes = project.hasProperty('jmh.includes') ? [project.property('jmh.includes')] : []
+    fork = project.hasProperty('jmh.fork') ? project.property('jmh.fork') as int : 2
+    warmupIterations = project.hasProperty('jmh.wi') ? project.property('jmh.wi') as int : 3
+    iterations = project.hasProperty('jmh.i') ? project.property('jmh.i') as int : 5
+    timeOnIteration = project.hasProperty('jmh.r') ? project.property('jmh.r') : '5s'
+    warmup = project.hasProperty('jmh.w') ? project.property('jmh.w') : '3s'
+    profilers = project.hasProperty('jmh.prof') ? [project.property('jmh.prof')] : []
+    resultFormat = 'JSON'
+    resultsFile = project.file("${project.buildDir}/reports/jmh/results.json")
+    humanOutputFile = project.file("${project.buildDir}/reports/jmh/human.txt")
+    failOnError = true
+    forceGC = true
+    jvmArgsAppend = ['--enable-native-access=ALL-UNNAMED', '--enable-preview']
+    duplicateClassesStrategy = DuplicatesStrategy.WARN
+    zip64 = true
+}
+
+tasks.named('jmhCompileGeneratedClasses').configure {
+    options.compilerArgs += "--enable-preview"
+}
+
+// Copy JMH-generated resources (META-INF/BenchmarkList) and compiled harness classes
+// into jmh classes output so forked JVMs can find them on the classpath.
+tasks.register('copyJmhGeneratedResources', Copy) {
+    from "${project.buildDir}/jmh-generated-resources"
+    into "${project.buildDir}/classes/java/jmh"
+    dependsOn tasks.named('jmhRunBytecodeGenerator')
+}
+
+tasks.register('copyJmhGeneratedClasses', Copy) {
+    from "${project.buildDir}/jmh-generated-classes"
+    into "${project.buildDir}/classes/java/jmh"
+    dependsOn tasks.named('jmhCompileGeneratedClasses')
+}
+
+tasks.named('jmhCompileGeneratedClasses').configure {
+    dependsOn tasks.named('copyJmhGeneratedResources')
+}
+
+// Ensure copy runs after compilation
+tasks.named('jmhJar').configure {
+    dependsOn tasks.named('copyJmhGeneratedClasses')
+}
+
+// Single task that runs the full JMH build pipeline: compile → generate → copy.
+// Use this before running benchmarks from IntelliJ or command line.
+tasks.register('jmhPrepare') {
+    group = 'benchmark'
+    description = 'Compile JMH sources, generate harness classes, and copy to classpath'
+    dependsOn tasks.named('copyJmhGeneratedClasses')
+}
+
+// Also ensure IntelliJ module includes the generated classes directory
+idea {
+    module {
+        testSourceDirs += file("${project.buildDir}/jmh-generated-classes")
+        testResourceDirs += file("${project.buildDir}/jmh-generated-resources")
     }
 }
