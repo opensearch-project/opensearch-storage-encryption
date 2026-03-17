@@ -170,7 +170,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         final long fileOffset = absoluteBaseOffset + pos;
         final long blockOffset = fileOffset & ~CACHE_BLOCK_MASK;
         final int offsetInBlock = (int) (fileOffset - blockOffset);
-
         // Fast path: reuse current block if still valid.
         // Safe for both master and slices: master owns its pin directly;
         // slices rely on PinScope holding the pin. The cache won't evict a hot block
@@ -179,7 +178,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             lastOffsetInBlock = offsetInBlock;
             return currentBlock.value().segment();
         }
-
         // Scoped pin fast path for slices: check if PinScope already holds this block.
         // This avoids L1/L2 lookup + pin CAS when the same block is read repeatedly
         // across calls (the common case after releasePinnedBlockIfSlice nulls currentBlock).
@@ -194,38 +192,29 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
                 return scoped.value().segment();
             }
         }
-
         cacheHitHolder.reset();
-
         // BlockSlotTinyCache returns already-pinned values
         final BlockCacheValue<RefCountedMemorySegment> cacheValue = blockSlotTinyCache.acquireRefCountedValue(blockOffset, cacheHitHolder);
-
         if (cacheValue == null) {
             throw new IOException("Failed to acquire cache value for block at offset " + blockOffset);
         }
-
         RefCountedMemorySegment pinnedBlock = cacheValue.value();
-
         // Unpin old block before swapping (only for master inputs — slices delegate to PinScope)
         if (currentBlock != null && !isSlice) {
             currentBlock.unpin();
         }
-
         currentBlockOffset = blockOffset;
         currentBlock = cacheValue;
-
         // For slices, transfer pin ownership to PinScope.
         // PinScope.pin() unpins whatever it previously held, then takes ownership of this pin.
         // This bounds total pins to thread count (~20) instead of slice count (50K+).
         if (isSlice) {
             PinScope.current().pin(path, blockOffset, cacheValue);
         }
-
         // Notify readahead manager of access pattern
         if (readaheadContext != null) {
             readaheadContext.onAccess(blockOffset, cacheHitHolder.wasCacheHit());
         }
-
         lastOffsetInBlock = offsetInBlock;
         return pinnedBlock.segment();
     }
