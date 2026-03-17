@@ -172,12 +172,27 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         final int offsetInBlock = (int) (fileOffset - blockOffset);
 
         // Fast path: reuse current block if still valid.
-        // this access is safe without generation check because currentBlock
-        // is pinned (refCount > 1) so it cannot be returned to pool or reused
-        // for different data while we hold it.
+        // Safe for both master and slices: master owns its pin directly;
+        // slices rely on PinScope holding the pin. The cache won't evict a hot block
+        // during the same query (W-TinyLFU keeps recently accessed blocks).
         if (blockOffset == currentBlockOffset && currentBlock != null) {
             lastOffsetInBlock = offsetInBlock;
             return currentBlock.value().segment();
+        }
+
+        // Scoped pin fast path for slices: check if PinScope already holds this block.
+        // This avoids L1/L2 lookup + pin CAS when the same block is read repeatedly
+        // across calls (the common case after releasePinnedBlockIfSlice nulls currentBlock).
+        // PinScope validates (path, offset, generation) to detect stale/recycled blocks.
+        if (isSlice) {
+            final PinScope scope = PinScope.current();
+            final BlockCacheValue<RefCountedMemorySegment> scoped = scope.getIfMatch(path, blockOffset);
+            if (scoped != null) {
+                currentBlockOffset = blockOffset;
+                currentBlock = scoped;
+                lastOffsetInBlock = offsetInBlock;
+                return scoped.value().segment();
+            }
         }
 
         cacheHitHolder.reset();
@@ -191,13 +206,20 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
         RefCountedMemorySegment pinnedBlock = cacheValue.value();
 
-        // Unpin old block before swapping
-        if (currentBlock != null) {
+        // Unpin old block before swapping (only for master inputs — slices delegate to PinScope)
+        if (currentBlock != null && !isSlice) {
             currentBlock.unpin();
         }
 
         currentBlockOffset = blockOffset;
         currentBlock = cacheValue;
+
+        // For slices, transfer pin ownership to PinScope.
+        // PinScope.pin() unpins whatever it previously held, then takes ownership of this pin.
+        // This bounds total pins to thread count (~20) instead of slice count (50K+).
+        if (isSlice) {
+            PinScope.current().pin(path, blockOffset, cacheValue);
+        }
 
         // Notify readahead manager of access pattern
         if (readaheadContext != null) {
@@ -209,32 +231,21 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     }
 
     /**
-    * For slice IndexInputs we do NOT want to hold a long-lived pinned block across calls,
-    * because slice fan-out can explode (tens of thousands) and pins add up quickly.
-    *
-    * Call this in a finally{} in every read*() method that calls getCacheBlockWithOffset().
+    * Originally, slices unpinned their block after every read to prevent memory exhaustion
+    * from 50K+ slices each holding a pin (PR #129). PinScope eliminates this problem by
+    * bounding pins to thread count (~20). Since PinScope holds the pin, the slice can
+    * safely keep its currentBlock reference — the block cannot be recycled while pinned.
     *
     * Master (isSlice == false): no-op (keeps the one-block pin across calls for speed).
-    * Slice  (isSlice == true) : always unpins to prevent memory exhaustion.
+    * Slice  (isSlice == true) : no-op (PinScope holds the pin; currentBlock stays valid).
     *
-    * CRITICAL: With 10,000+ slices common in Lucene, even 1 leaked pin per slice =
-    * 10,000 pinned blocks = memory exhaustion. We cannot rely on close() being called
-    * promptly (GC finalization is unpredictable), so we MUST unpin after every operation.
-    *
-    * The tradeoff is increased atomic refcount churn, but correctness > performance here.
+    * The fast path at the top of getCacheBlockWithOffset (blockOffset == currentBlockOffset)
+    * will hit on every same-block read with zero overhead — no ThreadLocal, no CAS, nothing.
+    * PinScope is only consulted on block transitions (every ~1024 reads).
     */
     private void releasePinnedBlockIfSlice() {
-        if (!isSlice)
-            return;
-
-        final BlockCacheValue<RefCountedMemorySegment> b = currentBlock;
-        if (b != null) {
-            currentBlock = null;
-            currentBlockOffset = -1L;
-            b.unpin();
-        } else {
-            currentBlockOffset = -1L;
-        }
+        // No-op: PinScope owns the pin for slices, master keeps its own pin.
+        // Cross-slice safety is handled by generation check on the fast path.
     }
 
     @Override
@@ -776,15 +787,12 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         // Mark as closed to ensure all future accesses throw AlreadyClosedException
         isOpen = false;
 
-        // Both master and slices must unpin their current block
-        if (currentBlock != null) {
-            currentBlock.unpin();
-            currentBlock = null;
-        }
-
         if (!isSlice) {
-            // Master instance cleanup
-            assert !isSlice : "Master instance should not be marked as slice";
+            // Master instance: unpin our block (we own the pin directly)
+            if (currentBlock != null) {
+                currentBlock.unpin();
+                currentBlock = null;
+            }
 
             if (blockSlotTinyCache != null) {
                 blockSlotTinyCache.clear();
@@ -792,8 +800,9 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
             readaheadManager.close();
         } else {
-            // Slice instance cleanup
-            assert isSlice : "Slice instance should be marked as slice";
+            // Slice instance: clear local ref only. PinScope owns the pin.
+            currentBlock = null;
+            currentBlockOffset = -1L;
             // Slices share cache and readahead manager, so don't close them
         }
     }

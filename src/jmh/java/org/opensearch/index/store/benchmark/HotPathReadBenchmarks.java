@@ -510,6 +510,38 @@ public class HotPathReadBenchmarks extends ReadBenchmarkBase {
         }, bh);
     }
 
+    /**
+     * Simulates DocValues aggregation: many readLong(pos) calls within the same 8KB block
+     * before moving to the next block. This is the pattern where PR #129's per-read
+     * pin/unpin CAS causes the 1.5-2.8x regression — each readLong does unpin+repin
+     * on the same refcount. PinScope eliminates these intra-block CAS ops.
+     *
+     * Pattern: for each block, read 512 longs (4KB of an 8KB block) via RandomAccessInput,
+     * then move to the next block. This mirrors sorted numeric DocValues iteration where
+     * hundreds of doc values live in the same block.
+     */
+    @Benchmark
+    public void aggregationPatternReadLong(Blackhole bh) throws Exception {
+        final int blockSize = StaticConfigs.CACHE_BLOCK_SIZE;
+        final int readsPerBlock = 512; // 512 * 8 bytes = 4KB per block
+        runConcurrent((hole) -> {
+            for (int fileIdx = 0; fileIdx < numFilesToRead; fileIdx++) {
+                IndexInput fileInput = indexInputs[fileIdx].clone();
+                RandomAccessInput in = (RandomAccessInput) fileInput;
+                for (long blockStart : blockStartOffsets) {
+                    long blockEnd = Math.min(blockStart + blockSize, fileSize);
+                    long usable = blockEnd - blockStart - Long.BYTES;
+                    if (usable <= 0) continue;
+                    for (int r = 0; r < readsPerBlock; r++) {
+                        // Sequential positions within the block (stride 8 = packed longs)
+                        long pos = blockStart + ((long) r * Long.BYTES % usable);
+                        hole.consume(in.readLong(pos));
+                    }
+                }
+            }
+        }, bh);
+    }
+
     @TearDown(Level.Iteration)
     public void tearDownIteration() throws IOException {
         if (executor != null) {

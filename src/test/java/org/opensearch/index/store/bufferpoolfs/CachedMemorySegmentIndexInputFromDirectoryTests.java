@@ -95,6 +95,8 @@ public class CachedMemorySegmentIndexInputFromDirectoryTests extends BaseIndexIn
     @Before
     public void Setup() throws Exception {
         super.setUp();
+        // Clear any stale PinScope state from previous tests on this thread
+        PinScope.current().release();
         // Save and disable write-through cache so reads go through the BlockLoader (Direct I/O)
         originalWriteCacheEnabled = CryptoDirectoryFactory.isWriteCacheEnabled();
         CryptoDirectoryFactory.setNodeSettings(Settings.builder().put("node.store.crypto.write_cache_enabled", false).build());
