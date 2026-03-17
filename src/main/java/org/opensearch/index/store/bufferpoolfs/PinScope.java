@@ -68,9 +68,9 @@ public final class PinScope {
      * The caller must have already pinned the block — PinScope takes ownership of that pin.
      */
     public void pin(Path path, long blockOffset, BlockCacheValue<RefCountedMemorySegment> block) {
-        final BlockCacheValue<RefCountedMemorySegment> old = pinnedBlock;
-        if (old != null && old != block) {
-            old.unpin();
+        final BlockCacheValue<RefCountedMemorySegment> blockCacheValue = pinnedBlock;
+        if (blockCacheValue != null && blockCacheValue != block) {
+            blockCacheValue.unpin();
         }
         pinnedBlock = block;
         pinnedBlockOffset = blockOffset;
@@ -81,12 +81,12 @@ public final class PinScope {
      * Releases the currently pinned block, if any.
      */
     public void release() {
-        final BlockCacheValue<RefCountedMemorySegment> b = pinnedBlock;
-        if (b != null) {
+        final BlockCacheValue<RefCountedMemorySegment> blockCacheValue = pinnedBlock;
+        if (blockCacheValue != null) {
             pinnedBlock = null;
             pinnedBlockOffset = -1L;
             pinnedPath = null;
-            b.unpin();
+            blockCacheValue.unpin();
         }
     }
 }
