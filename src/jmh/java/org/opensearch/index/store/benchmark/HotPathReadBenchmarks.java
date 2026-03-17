@@ -531,7 +531,8 @@ public class HotPathReadBenchmarks extends ReadBenchmarkBase {
                 for (long blockStart : blockStartOffsets) {
                     long blockEnd = Math.min(blockStart + blockSize, fileSize);
                     long usable = blockEnd - blockStart - Long.BYTES;
-                    if (usable <= 0) continue;
+                    if (usable <= 0)
+                        continue;
                     for (int r = 0; r < readsPerBlock; r++) {
                         // Sequential positions within the block (stride 8 = packed longs)
                         long pos = blockStart + ((long) r * Long.BYTES % usable);

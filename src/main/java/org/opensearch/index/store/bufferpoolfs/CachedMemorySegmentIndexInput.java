@@ -89,24 +89,24 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
      * @return a new CachedMemorySegmentIndexInput instance
      */
     public static CachedMemorySegmentIndexInput newInstance(
-            String resourceDescription,
-            Path path,
-            long length,
-            BlockCache<RefCountedMemorySegment> blockCache,
-            ReadaheadManager readaheadManager,
-            ReadaheadContext readaheadContext,
-            BlockSlotTinyCache blockSlotTinyCache
+        String resourceDescription,
+        Path path,
+        long length,
+        BlockCache<RefCountedMemorySegment> blockCache,
+        ReadaheadManager readaheadManager,
+        ReadaheadContext readaheadContext,
+        BlockSlotTinyCache blockSlotTinyCache
     ) {
         CachedMemorySegmentIndexInput input = new CachedMemorySegmentIndexInput(
-                resourceDescription,
-                path,
-                0,
-                length,
-                blockCache,
-                readaheadManager,
-                readaheadContext,
-                false,
-                blockSlotTinyCache
+            resourceDescription,
+            path,
+            0,
+            length,
+            blockCache,
+            readaheadManager,
+            readaheadContext,
+            false,
+            blockSlotTinyCache
         );
         try {
             input.seek(0L);
@@ -117,15 +117,15 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     }
 
     private CachedMemorySegmentIndexInput(
-            String resourceDescription,
-            Path path,
-            long absoluteBaseOffset,
-            long length,
-            BlockCache<RefCountedMemorySegment> blockCache,
-            ReadaheadManager readaheadManager,
-            ReadaheadContext readaheadContext,
-            boolean isSlice,
-            BlockSlotTinyCache blockSlotTinyCache
+        String resourceDescription,
+        Path path,
+        long absoluteBaseOffset,
+        long length,
+        BlockCache<RefCountedMemorySegment> blockCache,
+        ReadaheadManager readaheadManager,
+        ReadaheadContext readaheadContext,
+        boolean isSlice,
+        BlockSlotTinyCache blockSlotTinyCache
     ) {
         super(resourceDescription);
         this.path = path;
@@ -454,14 +454,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             offsetInBlock = lastOffsetInBlock;
 
             final int len = GroupVIntUtil
-                    .readGroupVInt(
-                            this,
-                            segment.byteSize() - offsetInBlock,
-                            p -> segment.get(LAYOUT_LE_INT, p),
-                            offsetInBlock,
-                            dst,
-                            offset
-                    );
+                .readGroupVInt(this, segment.byteSize() - offsetInBlock, p -> segment.get(LAYOUT_LE_INT, p), offsetInBlock, dst, offset);
             curPosition += len;
         } catch (IllegalStateException | NullPointerException e) {
             throw alreadyClosed(e);
@@ -641,16 +634,16 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     public final CachedMemorySegmentIndexInput slice(String sliceDescription, long offset, long length) throws IOException {
         if (offset < 0 || length < 0 || offset + length > this.length) {
             throw new IllegalArgumentException(
-                    "slice() "
-                            + sliceDescription
-                            + " out of bounds: offset="
-                            + offset
-                            + ",length="
-                            + length
-                            + ",fileLength="
-                            + this.length
-                            + ": "
-                            + this
+                "slice() "
+                    + sliceDescription
+                    + " out of bounds: offset="
+                    + offset
+                    + ",length="
+                    + length
+                    + ",fileLength="
+                    + this.length
+                    + ": "
+                    + this
             );
         }
 
@@ -669,15 +662,15 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         final String newResourceDescription = getFullSliceDescription(sliceDescription);
 
         CachedMemorySegmentIndexInput slice = new CachedMemorySegmentIndexInput(
-                newResourceDescription,
-                path,
-                sliceAbsoluteBaseOffset,
-                length,
-                blockCache,
-                readaheadManager,
-                readaheadContext,
-                true,
-                blockSlotTinyCache
+            newResourceDescription,
+            path,
+            sliceAbsoluteBaseOffset,
+            length,
+            blockCache,
+            readaheadManager,
+            readaheadContext,
+            true,
+            blockSlotTinyCache
         );
 
         try {
