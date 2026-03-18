@@ -172,16 +172,13 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         final int offsetInBlock = (int) (fileOffset - blockOffset);
         // Fast path: reuse current block if still valid.
         // Safe for both master and slices: master owns its pin directly;
-        // slices rely on PinScope holding the pin. The cache won't evict a hot block
-        // during the same query (W-TinyLFU keeps recently accessed blocks).
         if (blockOffset == currentBlockOffset && currentBlock != null) {
             lastOffsetInBlock = offsetInBlock;
             return currentBlock.value().segment();
         }
         // Scoped pin fast path for slices: check if PinScope already holds this block.
         // This avoids L1/L2 lookup + pin CAS when the same block is read repeatedly
-        // across calls (the common case after releasePinnedBlockIfSlice nulls currentBlock).
-        // PinScope validates (path, offset, generation) to detect stale/recycled blocks.
+        // across slice calls.
         if (isSlice) {
             final PinScope scope = PinScope.current();
             final BlockCacheValue<RefCountedMemorySegment> scoped = scope.getIfMatch(path, blockOffset);
@@ -207,7 +204,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         currentBlock = cacheValue;
         // For slices, transfer pin ownership to PinScope.
         // PinScope.pin() unpins whatever it previously held, then takes ownership of this pin.
-        // This bounds total pins to thread count (~20) instead of slice count (50K+).
         if (isSlice) {
             PinScope.current().pin(path, blockOffset, cacheValue);
         }
@@ -693,7 +689,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         isOpen = false;
 
         if (!isSlice) {
-            // Master instance: unpin our block (we own the pin directly)
+            // Master instance: unpin block
             if (currentBlock != null) {
                 currentBlock.unpin();
                 currentBlock = null;

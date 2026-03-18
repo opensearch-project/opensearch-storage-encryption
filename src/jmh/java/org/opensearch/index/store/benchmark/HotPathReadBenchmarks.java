@@ -512,10 +512,7 @@ public class HotPathReadBenchmarks extends ReadBenchmarkBase {
 
     /**
      * Simulates DocValues aggregation: many readLong(pos) calls within the same 8KB block
-     * before moving to the next block. This is the pattern where PR #129's per-read
-     * pin/unpin CAS causes the 1.5-2.8x regression — each readLong does unpin+repin
-     * on the same refcount. PinScope eliminates these intra-block CAS ops.
-     *
+     * before moving to the next block.
      * Pattern: for each block, read 512 longs (4KB of an 8KB block) via RandomAccessInput,
      * then move to the next block. This mirrors sorted numeric DocValues iteration where
      * hundreds of doc values live in the same block.

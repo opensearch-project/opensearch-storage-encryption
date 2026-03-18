@@ -33,7 +33,6 @@ import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.EngineFactory;
 import org.opensearch.index.shard.IndexEventListener;
 import org.opensearch.index.shard.SearchOperationListener;
-import org.opensearch.search.internal.SearchContext;
 import org.opensearch.index.store.action.GetIndexCountForKeyAction;
 import org.opensearch.index.store.action.TransportGetIndexCountForKeyAction;
 import org.opensearch.index.store.block_cache.BlockCache;
@@ -57,6 +56,7 @@ import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.rest.RestController;
 import org.opensearch.rest.RestHandler;
 import org.opensearch.script.ScriptService;
+import org.opensearch.search.internal.SearchContext;
 import org.opensearch.telemetry.metrics.MetricsRegistry;
 import org.opensearch.telemetry.tracing.Tracer;
 import org.opensearch.threadpool.ThreadPool;
@@ -315,8 +315,6 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                 }
             });
             // Release PinScope at the end of each search phase/slice.
-            // PinScope holds the last block pin from slice reads; without this,
-            // the pin leaks until the thread's next request.
             indexModule.addSearchOperationListener(new SearchOperationListener() {
                 @Override
                 public void onSliceExecution(SearchContext searchContext) {
