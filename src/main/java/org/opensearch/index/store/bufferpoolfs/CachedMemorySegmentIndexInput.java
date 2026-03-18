@@ -698,11 +698,9 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
                 currentBlock.unpin();
                 currentBlock = null;
             }
-
             if (blockSlotTinyCache != null) {
                 blockSlotTinyCache.clear();
             }
-
             readaheadManager.close();
         } else {
             // Slice instance: clear local ref only. PinScope owns the pin.

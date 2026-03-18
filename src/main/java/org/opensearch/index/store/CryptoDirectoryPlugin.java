@@ -32,9 +32,12 @@ import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.engine.EngineFactory;
 import org.opensearch.index.shard.IndexEventListener;
+import org.opensearch.index.shard.SearchOperationListener;
+import org.opensearch.search.internal.SearchContext;
 import org.opensearch.index.store.action.GetIndexCountForKeyAction;
 import org.opensearch.index.store.action.TransportGetIndexCountForKeyAction;
 import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.bufferpoolfs.PinScope;
 import org.opensearch.index.store.key.MasterKeyHealthMonitor;
 import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
@@ -309,6 +312,40 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                         ShardKeyResolverRegistry.removeResolver(index.getUUID(), i, index.getName());
                         NodeLevelKeyCache.getInstance().evict(index.getUUID(), i, index.getName());
                     }
+                }
+            });
+            // Release PinScope at the end of each search phase/slice.
+            // PinScope holds the last block pin from slice reads; without this,
+            // the pin leaks until the thread's next request.
+            indexModule.addSearchOperationListener(new SearchOperationListener() {
+                @Override
+                public void onSliceExecution(SearchContext searchContext) {
+                    PinScope.current().release();
+                }
+
+                @Override
+                public void onFailedSliceExecution(SearchContext searchContext) {
+                    PinScope.current().release();
+                }
+
+                @Override
+                public void onQueryPhase(SearchContext searchContext, long tookInNanos) {
+                    PinScope.current().release();
+                }
+
+                @Override
+                public void onFailedQueryPhase(SearchContext searchContext) {
+                    PinScope.current().release();
+                }
+
+                @Override
+                public void onFetchPhase(SearchContext searchContext, long tookInNanos) {
+                    PinScope.current().release();
+                }
+
+                @Override
+                public void onFailedFetchPhase(SearchContext searchContext) {
+                    PinScope.current().release();
                 }
             });
         }
