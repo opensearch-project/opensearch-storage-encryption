@@ -27,6 +27,7 @@ public class CryptoMetricsServiceTests extends OpenSearchTestCase {
     private MetricsRegistry mockMetricsRegistry;
     private Histogram mockPoolHistogram;
     private Histogram mockCacheHistogram;
+    private Histogram mockPrefetchHistogram;
 
     @Before
     public void setUp() throws Exception {
@@ -40,6 +41,8 @@ public class CryptoMetricsServiceTests extends OpenSearchTestCase {
         when(mockMetricsRegistry.createCounter(any(), any(), any())).thenReturn(mock(Counter.class));
         when(mockMetricsRegistry.createHistogram(eq("crypto.pool.stats"), any(), any())).thenReturn(mockPoolHistogram);
         when(mockMetricsRegistry.createHistogram(eq("crypto.cache.stats"), any(), any())).thenReturn(mockCacheHistogram);
+        mockPrefetchHistogram = mock(Histogram.class);
+        when(mockMetricsRegistry.createHistogram(eq("crypto.prefetch.stats"), any(), any())).thenReturn(mockPrefetchHistogram);
     }
 
     @After
@@ -70,5 +73,14 @@ public class CryptoMetricsServiceTests extends OpenSearchTestCase {
         service.recordCacheStats(1000L, 800L, 200L, 80.0, 1000L, 50L, 15.5);
 
         verify(mockCacheHistogram, times(7)).record(any(Double.class), any(Tags.class));
+    }
+
+    public void testRecordPrefetchStats() {
+        CryptoMetricsService.initialize(mockMetricsRegistry);
+        CryptoMetricsService service = CryptoMetricsService.getInstance();
+
+        service.recordPrefetchStats(10L, 100L, 80L, 15L, 5L, 3);
+
+        verify(mockPrefetchHistogram, times(6)).record(any(Double.class), any(Tags.class));
     }
 }

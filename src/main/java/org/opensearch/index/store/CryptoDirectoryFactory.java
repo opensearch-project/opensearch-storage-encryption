@@ -50,6 +50,7 @@ import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 import org.opensearch.index.store.pool.PoolBuilder;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.plugins.IndexStorePlugin;
+import org.opensearch.threadpool.ThreadPool;
 
 /**
  * Factory for creating encrypted filesystem directories with support for various storage types.
@@ -96,6 +97,11 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * Node settings used for lazy pool initialization.
      */
     private static volatile Settings nodeSettings;
+
+    /**
+     * ThreadPool used for prefetch operations.
+     */
+    private static volatile ThreadPool threadPool;
 
     /**
      * Lock for thread-safe initialization of shared resources.
@@ -514,7 +520,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
             sharedCaffeineCache.getCache(),
             loader,
-            resources.getMaxCacheBlocks()
+            resources.getMaxCacheBlocks(),
+            resources.getPrefetchTracker()
         );
 
         // Use the shared node-wide read-ahead worker
@@ -543,6 +550,10 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     public static void setNodeSettings(Settings settings) {
         nodeSettings = settings;
         writeCacheEnabled = WRITE_CACHE_ENABLED_SETTING.get(settings);
+    }
+
+    public static void setThreadPool(ThreadPool tp) {
+        threadPool = tp;
     }
 
     /**
@@ -592,7 +603,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                         throw new IllegalStateException("Node settings must be set before initializing pool resources");
                     }
                     LOGGER.info("Lazily initializing shared pool resources on first cryptofs shard creation");
-                    poolResources = PoolBuilder.build(nodeSettings);
+                    poolResources = PoolBuilder.build(nodeSettings, threadPool);
                 }
             }
         }

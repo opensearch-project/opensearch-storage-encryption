@@ -9,8 +9,6 @@ import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
-import java.util.LinkedHashMap;
-import java.util.Map;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -39,17 +37,25 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
 
     private final Cache<BlockCacheKey, BlockCacheValue<T>> cache;
     private final BlockLoader<V> blockLoader;
+    private final PrefetchTracker prefetchTracker;
 
     /**
-     * Constructs a new CaffeineBlockCache with the specified cache and block loader.
+     * Constructs a new CaffeineBlockCache with the specified cache, block loader, and prefetch tracker.
      *
      * @param cache the underlying Caffeine cache instance
      * @param blockLoader the loader used to load blocks when cache misses occur
      * @param maxBlocks the maximum number of blocks to cache (currently unused but kept for API compatibility)
+     * @param prefetchTracker tracker for prefetch deduplication, stats, and async execution
      */
-    public CaffeineBlockCache(Cache<BlockCacheKey, BlockCacheValue<T>> cache, BlockLoader<V> blockLoader, long maxBlocks) {
+    public CaffeineBlockCache(
+        Cache<BlockCacheKey, BlockCacheValue<T>> cache,
+        BlockLoader<V> blockLoader,
+        long maxBlocks,
+        PrefetchTracker prefetchTracker
+    ) {
         this.blockLoader = blockLoader;
         this.cache = cache;
+        this.prefetchTracker = prefetchTracker;
     }
 
     @Override
@@ -170,7 +176,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
 
     /**
      * Bulk load multiple blocks efficiently using a single I/O operation.
-     * Similar to getOrLoad() but for a contiguous range of blocks.
+     * Checks cache first and only loads missing blocks, combining consecutive ranges.
      * 
      * @param filePath file to read from
      * @param startOffset starting file offset (should be block-aligned)
@@ -178,8 +184,91 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      * @throws IOException if loading fails (including specific BlockLoader exceptions)
      */
     @Override
-    public Map<BlockCacheKey, BlockCacheValue<T>> loadForPrefetch(Path filePath, long startOffset, long blockCount) throws IOException {
-        Map<BlockCacheKey, BlockCacheValue<T>> loaded = new LinkedHashMap<>();
+    public void loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException {
+        prefetchTracker.recordLoadMissingBlocksCall(blockCount);
+        try {
+            prefetchTracker.execute(() -> {
+                try {
+                    loadMissingBlocksSync(filePath, startOffset, blockCount);
+                } catch (Exception e) {
+                    LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", filePath, startOffset, blockCount, e);
+                }
+            });
+        } catch (Exception e) {
+            LOGGER.warn("prefetch task rejected: path={} offset={} count={} e={}", filePath, startOffset, blockCount, e.getMessage());
+        }
+    }
+
+    private void loadMissingBlocksSync(Path filePath, long startOffset, long blockCount) throws IOException {
+        long totalLoaded = 0;
+
+        // Check which blocks are already cached
+        FileBlockCacheKey[] missingKeys = new FileBlockCacheKey[(int) blockCount];
+        int missingCount = 0;
+        long cacheHitCount = 0;
+
+        for (int i = 0; i < blockCount; i++) {
+            long blockOffset = startOffset + i * CACHE_BLOCK_SIZE;
+            FileBlockCacheKey key = (FileBlockCacheKey) createBlockKey(filePath, blockOffset);
+            // check if this block is already in progress
+            if (prefetchTracker.putIfAbsent(key)) {
+                if (cache.getIfPresent(key) == null) {
+                    missingKeys[missingCount++] = key;
+                } else {
+                    prefetchTracker.remove(key);
+                    cacheHitCount++;
+                }
+            }
+        }
+
+        if (cacheHitCount > 0) {
+            prefetchTracker.recordCacheHits(cacheHitCount);
+        }
+
+        if (missingCount == 0) {
+            return; // All blocks already cached
+        }
+
+        // Load consecutive ranges
+        int rangeStart = 0;
+        while (rangeStart < missingCount) {
+            long rangeStartOffset = missingKeys[rangeStart].offset();
+            int rangeLength = 1;
+
+            // Find consecutive blocks
+            while (rangeStart + rangeLength < missingCount
+                && missingKeys[rangeStart + rangeLength].offset() == rangeStartOffset + rangeLength * CACHE_BLOCK_SIZE) {
+                rangeLength++;
+            }
+            try {
+                long loadedFor = loadAllBlocks(filePath, rangeStartOffset, rangeLength);
+                totalLoaded += loadedFor;
+            } catch (Exception e) {
+                LOGGER.warn("failed to prefetch block: path={} offset={} count={}", filePath, rangeStartOffset, rangeLength, e);
+            } finally {
+                // Remove loaded blocks from prefetch tracker
+                for (int i = 0; i < rangeLength; i++) {
+                    prefetchTracker.remove(missingKeys[rangeStart + i]);
+                }
+            }
+            rangeStart += rangeLength;
+        }
+
+        prefetchTracker.recordBlocksLoaded(totalLoaded);
+    }
+
+    /**
+     * Bulk load multiple blocks efficiently using a single I/O operation.
+     * Similar to getOrLoad() but for a contiguous range of blocks.
+     *
+     * @param filePath file to read from
+     * @param startOffset starting file offset (should be block-aligned)
+     * @param blockCount number of blocks to read
+     * @throws IOException if loading fails (including specific BlockLoader exceptions)
+     */
+    @Override
+    public long loadAllBlocks(Path filePath, long startOffset, long blockCount) throws IOException {
+        long loadedCount = 0;
 
         V[] loadedBlocks;
 
@@ -196,9 +285,11 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 // Direct cast - BlockLoader contract guarantees V is BlockCacheValue<T>
                 @SuppressWarnings("unchecked")
                 BlockCacheValue<T> wrapped = (BlockCacheValue<T>) block;
-                loaded.put(key, wrapped);
 
-                if (cache.asMap().putIfAbsent(key, wrapped) != null) {
+                if (cache.asMap().putIfAbsent(key, wrapped) == null) {
+                    // Successfully inserted into cache
+                    loadedCount++;
+                } else {
                     // already cached → release our newly loaded segment as we won't use it
                     // we use decRef() not close() - this segment was never inserted into cache,
                     // so we shouldn't increment generation.
@@ -215,8 +306,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 throw new IOException("Failed bulk load: " + filePath, re);
             }
         }
-
-        return loaded;
+        return loadedCount;
     }
 
     // Helper method to create appropriate cache key for file blocks
@@ -276,6 +366,16 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 stats.loadCount(),
                 stats.evictionCount(),
                 stats.averageLoadPenalty() / 1_000_000.0  // Convert to ms
+            );
+        CryptoMetricsService
+            .getInstance()
+            .recordPrefetchStats(
+                prefetchTracker.getCalls(),
+                prefetchTracker.getBlocksRequested(),
+                prefetchTracker.getBlocksLoaded(),
+                prefetchTracker.getBlocksDeduped(),
+                prefetchTracker.getBlocksCacheHit(),
+                prefetchTracker.size()
             );
     }
 

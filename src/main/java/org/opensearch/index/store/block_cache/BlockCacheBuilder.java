@@ -35,10 +35,12 @@ public final class BlockCacheBuilder {
     public static class CacheWithExecutor<T extends AutoCloseable, V> {
         private final CaffeineBlockCache<T, V> cache;
         private final ThreadPoolExecutor executor;
+        private final PrefetchTracker prefetchTracker;
 
-        CacheWithExecutor(CaffeineBlockCache<T, V> cache, ThreadPoolExecutor executor) {
+        CacheWithExecutor(CaffeineBlockCache<T, V> cache, ThreadPoolExecutor executor, PrefetchTracker prefetchTracker) {
             this.cache = cache;
             this.executor = executor;
+            this.prefetchTracker = prefetchTracker;
         }
 
         /**
@@ -59,6 +61,15 @@ public final class BlockCacheBuilder {
         public ThreadPoolExecutor getExecutor() {
             return executor;
         }
+
+        /**
+         * Returns the shared prefetch tracker for deduplication and stats.
+         *
+         * @return the prefetch tracker
+         */
+        public PrefetchTracker getPrefetchTracker() {
+            return prefetchTracker;
+        }
     }
 
     /**
@@ -68,9 +79,14 @@ public final class BlockCacheBuilder {
      * @param <V> the type returned by the block loader
      * @param initialCapacity initial capacity hint for the cache
      * @param maxBlocks maximum number of blocks to cache
+     * @param prefetchTracker shared prefetch tracker for deduplication and stats
      * @return CacheWithExecutor containing the configured cache and its executor
      */
-    public static <T extends AutoCloseable, V> CacheWithExecutor<T, V> build(int initialCapacity, long maxBlocks) {
+    public static <T extends AutoCloseable, V> CacheWithExecutor<T, V> build(
+        int initialCapacity,
+        long maxBlocks,
+        PrefetchTracker prefetchTracker
+    ) {
         ThreadPoolExecutor removalExec = OpenSearchExecutors
             .newScaling(
                 "block-cache-maint",
@@ -103,7 +119,7 @@ public final class BlockCacheBuilder {
         // Loader is null here because this creates a shared cache instance.
         // Per-directory caches will wrap this cache with their own loaders
         // that provide directory-specific decryption keys.
-        CaffeineBlockCache<T, V> caffeineBlockCache = new CaffeineBlockCache<>(cache, null, maxBlocks);
-        return new CacheWithExecutor<>(caffeineBlockCache, removalExec);
+        CaffeineBlockCache<T, V> caffeineBlockCache = new CaffeineBlockCache<>(cache, null, maxBlocks, prefetchTracker);
+        return new CacheWithExecutor<>(caffeineBlockCache, removalExec, prefetchTracker);
     }
 }

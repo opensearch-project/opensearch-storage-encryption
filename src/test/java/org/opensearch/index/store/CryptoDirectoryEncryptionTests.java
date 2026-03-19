@@ -39,6 +39,7 @@ import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
+import org.opensearch.index.store.block_cache.PrefetchTracker;
 import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
@@ -465,13 +466,15 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
             .recordStats()
             .build();
 
+        ExecutorService executorA = Executors.newFixedThreadPool(4);
+
         CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
             caffeineCache,
             blockLoaderA,
-            1000
+            1000,
+            new PrefetchTracker(executorA)
         );
 
-        ExecutorService executorA = Executors.newFixedThreadPool(4);
         Worker readAheadWorkerA = new QueuingWorker(
             100, // queue capacity
             executorA
@@ -536,6 +539,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         );
 
         // Create per-directory cache and worker
+        ExecutorService executorA = Executors.newFixedThreadPool(4);
         Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
             .newBuilder()
             .maximumSize(1000)
@@ -546,10 +550,10 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
             caffeineCache,
             blockLoaderA,
-            1000
+            1000,
+            new PrefetchTracker(executorA)
         );
 
-        ExecutorService executorA = Executors.newFixedThreadPool(4);
         Worker readAheadWorkerA = new QueuingWorker(
             100, // queue capacity
             executorA
@@ -620,13 +624,15 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
             .recordStats()
             .build();
 
+        ExecutorService executorA = Executors.newFixedThreadPool(4);
+
         CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
             caffeineCache,
             blockLoaderA,
-            1000
+            1000,
+            new PrefetchTracker(executorA)
         );
 
-        ExecutorService executorA = Executors.newFixedThreadPool(4);
         Worker readAheadWorkerA = new QueuingWorker(
             100, // queue capacity
             executorA
@@ -691,6 +697,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         );
 
         // Create per-directory cache and worker
+        ExecutorService executorA = Executors.newFixedThreadPool(4);
         Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
             .newBuilder()
             .maximumSize(1000)
@@ -701,10 +708,10 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
             caffeineCache,
             blockLoaderA,
-            1000
+            1000,
+            new PrefetchTracker(executorA)
         );
 
-        ExecutorService executorA = Executors.newFixedThreadPool(4);
         Worker readAheadWorkerA = new QueuingWorker(
             100, // queue capacity
             executorA
