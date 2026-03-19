@@ -474,4 +474,30 @@ public class HotPathReadBenchmarks {
             }
         }
     }
+
+    /**
+     * Simulates DocValues aggregation: many readLong(pos) calls within the same 8KB block
+     * before moving to the next block.
+     * Pattern: for each block, read 512 longs (4KB of an 8KB block) via RandomAccessInput,
+     * then move to the next block. This mirrors sorted numeric DocValues iteration where
+     * hundreds of doc values live in the same block.
+     */
+    @Benchmark
+    public void aggregationPatternReadLong(ThreadState ts, Blackhole bh) throws IOException {
+        final int blockSize = StaticConfigs.CACHE_BLOCK_SIZE;
+        final int readsPerBlock = 512;
+        for (int fileIdx = 0; fileIdx < ts.numFilesToRead; fileIdx++) {
+            IndexInput fileInput = ts.threadInputs[fileIdx];
+            RandomAccessInput in = (RandomAccessInput) fileInput;
+            for (long blockStart : ts.blockStartOffsets) {
+                long blockEnd = Math.min(blockStart + blockSize, ts.fileSize);
+                long usable = blockEnd - blockStart - Long.BYTES;
+                if (usable <= 0) continue;
+                for (int r = 0; r < readsPerBlock; r++) {
+                    long pos = blockStart + ((long) r * Long.BYTES % usable);
+                    bh.consume(in.readLong(pos));
+                }
+            }
+        }
+    }
 }
