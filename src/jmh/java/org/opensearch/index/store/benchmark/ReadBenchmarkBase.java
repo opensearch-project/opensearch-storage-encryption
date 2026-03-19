@@ -25,7 +25,6 @@ import org.openjdk.jmh.annotations.State;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.CryptoDirectoryFactory;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
@@ -137,7 +136,7 @@ public class ReadBenchmarkBase {
             .build();
 
         this.poolResources = PoolBuilder.build(nodeSettings);
-        Pool<RefCountedMemorySegment> segmentPool = poolResources.getSegmentPool();
+        Pool segmentPool = poolResources.getPool();
 
         String indexUuid = "bench-idx-" + System.nanoTime();
         String indexName = "bench-index";
@@ -148,15 +147,12 @@ public class ReadBenchmarkBase {
 
         EncryptionMetadataCache encMetaCache = EncryptionMetadataCacheRegistry.getOrCreateCache(indexUuid, shardId, indexName);
 
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(segmentPool, keyResolver, encMetaCache);
+        BlockLoader loader = new CryptoDirectIOBlockLoader(segmentPool, keyResolver, encMetaCache, false);
         Worker worker = poolResources.getSharedReadaheadWorker();
 
-        @SuppressWarnings("unchecked")
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> sharedCache =
-            (CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment>) poolResources.getBlockCache();
-
-        BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
-            sharedCache.getCache(),
+        @SuppressWarnings({ "unchecked", "rawtypes" })
+        BlockCache directoryCache = new CaffeineBlockCache(
+            poolResources.getSharedCaffeineCache(),
             loader,
             poolResources.getMaxCacheBlocks()
         );
@@ -168,9 +164,9 @@ public class ReadBenchmarkBase {
             keyResolver,
             segmentPool,
             directoryCache,
-            loader,
             worker,
-            encMetaCache
+            encMetaCache,
+            false
         );
 
         // Write test files through bufferpool write path
