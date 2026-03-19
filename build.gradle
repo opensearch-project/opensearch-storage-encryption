@@ -126,20 +126,20 @@ testClusters.yamlRestTest {
 }
 
 compileJava {
-    sourceCompatibility = 25
-    targetCompatibility = 25
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
     options.encoding = 'UTF-8'
     options.compilerArgs << '-Xlint:unchecked' << '-Xlint:-deprecation'
 }
 
 compileTestJava {
-    sourceCompatibility = 25
-    targetCompatibility = 25
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
 }
 
 tasks.withType(JavaCompile).configureEach {
-    sourceCompatibility = 25
-    targetCompatibility = 25
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
     options.encoding = 'UTF-8'
     options.release = 25
     options.compilerArgs << '-Xlint:-deprecation'
@@ -192,8 +192,8 @@ jcstress {
 // to generate META-INF/TestList, and JMH needs it for benchmark generation.
 afterEvaluate {
     tasks.named('compileJcstressJava').configure {
-        sourceCompatibility = 25
-        targetCompatibility = 25
+        sourceCompatibility = JavaVersion.VERSION_25
+        targetCompatibility = JavaVersion.VERSION_25
         options.compilerArgs.removeAll { it == '-proc:none' }
     }
     tasks.named('compileTestJava').configure {
