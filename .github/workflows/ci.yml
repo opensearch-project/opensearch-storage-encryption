@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        jdk: [21]
+        jdk: [25]
     runs-on: ubuntu-latest
     permissions:
       checks: write

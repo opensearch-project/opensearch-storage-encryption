@@ -11,7 +11,7 @@
 
 buildscript {
     ext {
-        opensearch_version = System.getProperty("opensearch.version", "3.5.0-SNAPSHOT")
+        opensearch_version = System.getProperty("opensearch.version", "3.6.0-SNAPSHOT")
     }
 
     repositories {
@@ -126,45 +126,23 @@ testClusters.yamlRestTest {
 }
 
 compileJava {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = 25
+    targetCompatibility = 25
     options.encoding = 'UTF-8'
     options.compilerArgs << '-Xlint:unchecked' << '-Xlint:-deprecation'
 }
 
 compileTestJava {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = 25
+    targetCompatibility = 25
 }
 
 tasks.withType(JavaCompile).configureEach {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = 25
+    targetCompatibility = 25
     options.encoding = 'UTF-8'
-    options.release = 21
+    options.release = 25
     options.compilerArgs << '-Xlint:-deprecation'
-    options.compilerArgs += "--enable-preview"
-
-    // Patch all compiled class files to remove preview flag requirement by java
-    // this is like tricky java to not consider these files using preview.
-    doLast {
-        def patchedCount = 0
-        destinationDirectory.getAsFileTree().matching(new PatternSet().include('**/*.class')).each { classFile ->
-            new RandomAccessFile(classFile, 'rw').withCloseable { f ->
-                int magic = f.readInt()
-                if (magic != (int)0xCAFEBABE) return
-                f.seek(4L)
-                short minor = f.readShort()
-                short major = f.readShort()
-                if (major == 65 && minor == (short)0xFFFF) {
-                    f.seek(4L)
-                    f.writeShort(0)
-                    patchedCount++
-                }
-            }
-        }
-        logger.lifecycle("Patched ${patchedCount} class files to remove preview flag")
-    }
 }
 
 tasks.withType(Javadoc).configureEach {
@@ -172,8 +150,7 @@ tasks.withType(Javadoc).configureEach {
     options.charSet = 'UTF-8'
     options.addStringOption('Xdoclint:all', '-quiet')
     options.addStringOption('tag', 'opensearch.internal:a:Internal:')
-    options.addStringOption('source', '21')
-    options.addStringOption('-enable-preview', '-quiet')
+    options.addStringOption('source', '25')
     failOnError = false
 }
 
@@ -210,21 +187,16 @@ jcstress {
     verbose = true
 }
 
-// JCStress source set: do NOT use --enable-preview (annotation processor
-// cannot handle preview-flagged class files). Our stress tests don't need
-// preview features. afterEvaluate ensures this runs after the global
-// configureEach block has already added --enable-preview.
+// JCStress / test compile fixups: the opensearch build-tools plugin adds
+// -proc:none to ALL JavaCompile tasks. JCStress needs annotation processing
+// to generate META-INF/TestList, and JMH needs it for benchmark generation.
 afterEvaluate {
     tasks.named('compileJcstressJava').configure {
-        sourceCompatibility = JavaVersion.VERSION_21
-        targetCompatibility = JavaVersion.VERSION_21
-        // The opensearch build-tools plugin adds --enable-preview and -proc:none
-        // to ALL JavaCompile tasks. JCStress needs annotation processing to
-        // generate META-INF/TestList, so we must remove -proc:none.
-        options.compilerArgs.removeAll { it == '--enable-preview' || it == '-proc:none' }
+        sourceCompatibility = 25
+        targetCompatibility = 25
+        options.compilerArgs.removeAll { it == '-proc:none' }
     }
     tasks.named('compileTestJava').configure {
-        // JMH annotation processor needs to run for benchmark generation
         options.compilerArgs.removeAll { it == '-proc:none' }
     }
 }
@@ -243,10 +215,10 @@ task allTests {
 
 // JMH fat JAR and runner are provided by the me.champeau.jmh plugin.
 // Build:  ./gradlew jmhJar
-// Run:    java --enable-preview --enable-native-access=ALL-UNNAMED -jar build/distributions/storage-encryption-jmh.jar [regex] [jmh-args]
+// Run:    java --enable-native-access=ALL-UNNAMED -jar build/distributions/storage-encryption-jmh.jar [regex] [jmh-args]
 // Examples:
-//   java --enable-preview --enable-native-access=ALL-UNNAMED -jar build/distributions/storage-encryption-jmh.jar -l
-//   java --enable-preview --enable-native-access=ALL-UNNAMED -jar build/distributions/storage-encryption-jmh.jar RadixBlockTable -wi 2 -i 3 -f 1
+//   java --enable-native-access=ALL-UNNAMED -jar build/distributions/storage-encryption-jmh.jar -l
+//   java --enable-native-access=ALL-UNNAMED -jar build/distributions/storage-encryption-jmh.jar RadixBlockTable -wi 2 -i 3 -f 1
 
 spotless {
     java {
@@ -272,13 +244,9 @@ jmh {
     humanOutputFile = project.file("${project.buildDir}/reports/jmh/human.txt")
     failOnError = true
     forceGC = true
-    jvmArgsAppend = ['--enable-native-access=ALL-UNNAMED', '--enable-preview']
+    jvmArgsAppend = ['--enable-native-access=ALL-UNNAMED']
     duplicateClassesStrategy = DuplicatesStrategy.WARN
     zip64 = true
-}
-
-tasks.named('jmhCompileGeneratedClasses').configure {
-    options.compilerArgs += "--enable-preview"
 }
 
 // Copy JMH-generated resources (META-INF/BenchmarkList) and compiled harness classes
@@ -315,7 +283,7 @@ tasks.register('jmhPrepare') {
 // Also ensure IntelliJ module includes the generated classes directory
 idea {
     module {
-        testSourceDirs += file("${project.buildDir}/jmh-generated-classes")
-        testResourceDirs += file("${project.buildDir}/jmh-generated-resources")
+        testSources.from(file("${project.buildDir}/jmh-generated-classes"))
+        testResources.from(file("${project.buildDir}/jmh-generated-resources"))
     }
 }
