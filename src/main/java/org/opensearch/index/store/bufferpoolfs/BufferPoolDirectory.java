@@ -25,11 +25,11 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
-import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.footer.EncryptionFooter;
 import org.opensearch.index.store.footer.EncryptionMetadataTrailer;
@@ -69,8 +69,9 @@ public class BufferPoolDirectory extends FSDirectory {
     private static final Logger LOGGER = LogManager.getLogger(BufferPoolDirectory.class);
     private final AtomicLong nextTempFileCounter = new AtomicLong();
 
-    private final Pool<RefCountedMemorySegment> memorySegmentPool;
-    private final BlockCache<RefCountedMemorySegment> blockCache;
+    private final Pool<?> pool;
+    private final BlockCache<? extends AutoCloseable> blockCache;
+    private final boolean byteBufferModeEnabled;
     private final Worker readAheadworker;
     private final Provider provider;
     private final Path dirPath;
@@ -78,16 +79,17 @@ public class BufferPoolDirectory extends FSDirectory {
     private final EncryptionMetadataCache encryptionMetadataCache;
 
     /**
-     * Creates a new CryptoDirectIODirectory with the specified components.
+     * Creates a new BufferPoolDirectory with the specified components.
      *
      * @param path the directory path
      * @param lockFactory the lock factory for coordinating access
      * @param provider the security provider for cryptographic operations
      * @param keyResolver resolver for encryption keys and initialization vectors
-     * @param memorySegmentPool pool for managing off-heap memory segments
+     * @param pool pool for managing off-heap memory (MemorySegmentPool or ByteBufferPool)
      * @param blockCache cache for storing decrypted blocks
-     * @param blockLoader loader for reading blocks from storage
      * @param worker background worker for read-ahead operations
+     * @param encryptionMetadataCache cache for encryption metadata
+     * @param byteBufferModeEnabled if true, uses CachedByteBufferIndexInput; if false, uses CachedMemorySegmentIndexInput
      * @throws IOException if the directory cannot be created or accessed
      */
     public BufferPoolDirectory(
@@ -95,16 +97,17 @@ public class BufferPoolDirectory extends FSDirectory {
         LockFactory lockFactory,
         Provider provider,
         KeyResolver keyResolver,
-        Pool<RefCountedMemorySegment> memorySegmentPool,
-        BlockCache<RefCountedMemorySegment> blockCache,
-        BlockLoader<RefCountedMemorySegment> blockLoader,
+        Pool<?> pool,
+        BlockCache<? extends AutoCloseable> blockCache,
         Worker worker,
-        EncryptionMetadataCache encryptionMetadataCache
+        EncryptionMetadataCache encryptionMetadataCache,
+        boolean byteBufferModeEnabled
     )
         throws IOException {
         super(path, lockFactory);
-        this.memorySegmentPool = memorySegmentPool;
+        this.pool = pool;
         this.blockCache = blockCache;
+        this.byteBufferModeEnabled = byteBufferModeEnabled;
         this.readAheadworker = worker;
         this.provider = provider;
         this.dirPath = getDirectory();
@@ -131,18 +134,36 @@ public class BufferPoolDirectory extends FSDirectory {
 
             ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker, blockCache);
             ReadaheadContext readAheadContext = readAheadManager.register(file, contentLength);
-            BlockSlotTinyCache pinRegistry = new BlockSlotTinyCache(blockCache, file, contentLength);
 
-            return CachedMemorySegmentIndexInput
-                .newInstance(
-                    "CachedMemorySegmentIndexInput(path=\"" + file + "\")",
-                    file,
-                    contentLength,
-                    blockCache,
-                    readAheadManager,
-                    readAheadContext,
-                    pinRegistry
-                );
+            if (byteBufferModeEnabled) {
+                @SuppressWarnings("unchecked")
+                BlockCache<RefCountedByteBuffer> bbCache = (BlockCache<RefCountedByteBuffer>) blockCache;
+                BlockSlotTinyCache<RefCountedByteBuffer> slotCache = new BlockSlotTinyCache<>(bbCache, file, contentLength);
+                return CachedByteBufferIndexInput
+                    .newInstance(
+                        "CachedByteBufferIndexInput(path=\"" + file + "\")",
+                        file,
+                        contentLength,
+                        bbCache,
+                        readAheadManager,
+                        readAheadContext,
+                        slotCache
+                    );
+            } else {
+                @SuppressWarnings("unchecked")
+                BlockCache<RefCountedMemorySegment> msCache = (BlockCache<RefCountedMemorySegment>) blockCache;
+                BlockSlotTinyCache<RefCountedMemorySegment> pinRegistry = new BlockSlotTinyCache<>(msCache, file, contentLength);
+                return CachedMemorySegmentIndexInput
+                    .newInstance(
+                        "CachedMemorySegmentIndexInput(path=\"" + file + "\")",
+                        file,
+                        contentLength,
+                        msCache,
+                        readAheadManager,
+                        readAheadContext,
+                        pinRegistry
+                    );
+            }
         } catch (Exception e) {
             CryptoMetricsService.getInstance().recordError(ErrorType.INDEX_INPUT_ERROR);
             throw e;
@@ -160,16 +181,7 @@ public class BufferPoolDirectory extends FSDirectory {
             Path path = directory.resolve(name);
             OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
-            return new BufferIOWithCaching(
-                name,
-                path,
-                fos,
-                masterKeyBytes,
-                this.memorySegmentPool,
-                this.blockCache,
-                this.provider,
-                this.encryptionMetadataCache
-            );
+            return createBufferIOWithCaching(name, path, fos);
         } catch (Exception e) {
             CryptoMetricsService.getInstance().recordError(ErrorType.INDEX_OUTPUT_ERROR);
             throw e;
@@ -187,13 +199,23 @@ public class BufferPoolDirectory extends FSDirectory {
         Path path = directory.resolve(name);
         OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
+        return createBufferIOWithCaching(name, path, fos);
+    }
+
+    /**
+     * Creates a BufferIOWithCaching for the write path.
+     * The write path uses the pool and cache regardless of mode — the underlying
+     * Caffeine cache accepts any BlockCacheValue type, and the pool is cast appropriately.
+     */
+    @SuppressWarnings("unchecked")
+    private IndexOutput createBufferIOWithCaching(String name, Path path, OutputStream fos) throws IOException {
         return new BufferIOWithCaching(
             name,
             path,
             fos,
             masterKeyBytes,
-            this.memorySegmentPool,
-            this.blockCache,
+            (Pool<RefCountedMemorySegment>) pool,
+            (BlockCache<RefCountedMemorySegment>) (BlockCache<?>) blockCache,
             this.provider,
             this.encryptionMetadataCache
         );

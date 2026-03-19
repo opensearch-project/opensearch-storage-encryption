@@ -12,7 +12,6 @@ import java.lang.invoke.VarHandle;
 import java.nio.file.Path;
 import java.util.concurrent.locks.LockSupport;
 
-import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
@@ -69,8 +68,9 @@ import org.opensearch.index.store.block_cache.FileBlockCacheKey;
  * Generation detects staleness, pinning controls lifecycle. Hand-in-hand coordination. But
  * we avoid tight coupling of generation with pin -- they serve different purposes.
  *
+ * @param <T> the type of cached block value (e.g., RefCountedMemorySegment or RefCountedByteBuffer)
  */
-public class BlockSlotTinyCache {
+public class BlockSlotTinyCache<T> {
 
     public static final class CacheHitHolder {
         private boolean wasCacheHit;
@@ -94,12 +94,12 @@ public class BlockSlotTinyCache {
     // VarHandle for acquire/release element access on long[]
     private static final VarHandle STAMP_ARR = MethodHandles.arrayElementVarHandle(long[].class);
 
-    private final BlockCache<RefCountedMemorySegment> cache;
+    private final BlockCache<T> cache;
     private final Path path;
 
     // Parallel arrays for Tier-2 L1 slots (faster than object allocations)
     private final long[] slotBlockIdx; // published under stamp gate
-    private final BlockCacheValue<RefCountedMemorySegment>[] slotVal; // published under stamp gate
+    private final BlockCacheValue<T>[] slotVal; // published under stamp gate
 
     /**
      * Stamp array acts as a memory barrier gate using acquire/release ordering:
@@ -125,7 +125,7 @@ public class BlockSlotTinyCache {
     // Key reuse per slot
     private final FileBlockCacheKey[] slotKeys;
 
-    public BlockSlotTinyCache(BlockCache<RefCountedMemorySegment> cache, Path path, long fileLength) {
+    public BlockSlotTinyCache(BlockCache<T> cache, Path path, long fileLength) {
         this.cache = cache;
         this.path = path;
 
@@ -133,7 +133,7 @@ public class BlockSlotTinyCache {
         this.slotStamp = new long[SLOT_COUNT];
 
         @SuppressWarnings("unchecked")
-        final BlockCacheValue<RefCountedMemorySegment>[] tmp = (BlockCacheValue<RefCountedMemorySegment>[]) new BlockCacheValue[SLOT_COUNT];
+        final BlockCacheValue<T>[] tmp = (BlockCacheValue<T>[]) new BlockCacheValue[SLOT_COUNT];
         this.slotVal = tmp;
 
         this.slotKeys = new FileBlockCacheKey[SLOT_COUNT];
@@ -146,11 +146,11 @@ public class BlockSlotTinyCache {
         }
     }
 
-    public BlockCacheValue<RefCountedMemorySegment> acquireRefCountedValue(long blockOff) throws IOException {
+    public BlockCacheValue<T> acquireRefCountedValue(long blockOff) throws IOException {
         return acquireRefCountedValue(blockOff, null);
     }
 
-    public BlockCacheValue<RefCountedMemorySegment> acquireRefCountedValue(long blockOff, CacheHitHolder hitHolder) throws IOException {
+    public BlockCacheValue<T> acquireRefCountedValue(long blockOff, CacheHitHolder hitHolder) throws IOException {
 
         final long blockIdx = blockOff >>> CACHE_BLOCK_SIZE_POWER;
         final int slotIdx = (int) ((blockIdx ^ (blockIdx >>> 17)) & SLOT_MASK);
@@ -163,11 +163,11 @@ public class BlockSlotTinyCache {
             if (gotHash == wantHash) {
                 // Safe to read published fields after matching stamp
                 if (slotBlockIdx[slotIdx] == blockIdx) {
-                    final BlockCacheValue<RefCountedMemorySegment> v = slotVal[slotIdx];
+                    final BlockCacheValue<T> v = slotVal[slotIdx];
                     if (v != null) {
                         final int expectedGen = (int) (stamp >>> 32);
                         if (v.tryPin()) {
-                            if (v.value().getGeneration() == expectedGen) {
+                            if (v.getGeneration() == expectedGen) {
                                 if (hitHolder != null)
                                     hitHolder.setWasCacheHit(true);
                                 return v;
@@ -189,11 +189,11 @@ public class BlockSlotTinyCache {
 
         for (int attempts = 0; attempts < maxAttempts; attempts++) {
             // 1) Prefer hit
-            BlockCacheValue<RefCountedMemorySegment> v = cache.get(key);
+            BlockCacheValue<T> v = cache.get(key);
             if (v != null) {
-                final int expectedGen = v.value().getGeneration();
+                final int expectedGen = v.getGeneration();
                 if (v.tryPin()) {
-                    if (v.value().getGeneration() == expectedGen) {
+                    if (v.getGeneration() == expectedGen) {
                         publishToL1(slotIdx, blockIdx, v, expectedGen);
                         if (hitHolder != null)
                             hitHolder.setWasCacheHit(true);
@@ -204,11 +204,11 @@ public class BlockSlotTinyCache {
             }
 
             // 2) Load path (deduped by caffeine get())
-            BlockCacheValue<RefCountedMemorySegment> loaded = cache.getOrLoad(key);
+            BlockCacheValue<T> loaded = cache.getOrLoad(key);
             if (loaded != null) {
-                final int expectedGen = loaded.value().getGeneration();
+                final int expectedGen = loaded.getGeneration();
                 if (loaded.tryPin()) {
-                    if (loaded.value().getGeneration() == expectedGen) {
+                    if (loaded.getGeneration() == expectedGen) {
                         publishToL1(slotIdx, blockIdx, loaded, expectedGen);
                         if (hitHolder != null)
                             hitHolder.setWasCacheHit(false);
@@ -223,10 +223,10 @@ public class BlockSlotTinyCache {
             }
         }
 
-        throw new IOException("Unable to pin memory segment for block offset " + blockOff + " after " + maxAttempts + " attempts");
+        throw new IOException("Unable to pin block for block offset " + blockOff + " after " + maxAttempts + " attempts");
     }
 
-    private void publishToL1(int slotIdx, long blockIdx, BlockCacheValue<RefCountedMemorySegment> v, int gen) {
+    private void publishToL1(int slotIdx, long blockIdx, BlockCacheValue<T> v, int gen) {
         // Write fields first (plain)
         slotBlockIdx[slotIdx] = blockIdx;
         slotVal[slotIdx] = v;

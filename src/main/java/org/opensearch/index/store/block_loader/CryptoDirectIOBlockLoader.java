@@ -22,7 +22,9 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.cipher.MemorySegmentDecryptor;
 import org.opensearch.index.store.footer.EncryptionFooter;
@@ -38,6 +40,12 @@ import org.opensearch.index.store.pool.Pool;
  * efficient access to encrypted file data. It reads blocks directly from storage, bypassing
  * the OS buffer cache, then decrypts the data in memory using the configured key and IV resolver.
  *
+ * <p>Supports two buffer modes:
+ * <ul>
+ * <li><b>MemorySegment mode</b>: Acquires from Pool&lt;RefCountedMemorySegment&gt;, copies via MemorySegment API</li>
+ * <li><b>ByteBuffer mode</b>: Acquires from Pool&lt;RefCountedByteBuffer&gt;, copies via MemorySegment.ofBuffer()</li>
+ * </ul>
+ *
  * <p>Key features:
  * <ul>
  * <li>Direct I/O for high performance and reduced memory pressure</li>
@@ -46,34 +54,41 @@ import org.opensearch.index.store.pool.Pool;
  * <li>Block-aligned operations for optimal storage performance</li>
  * </ul>
  *
+ * @param <T> the type of block value (RefCountedMemorySegment or RefCountedByteBuffer)
  * @opensearch.internal
  */
 @SuppressWarnings("preview")
-public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySegment> {
+public class CryptoDirectIOBlockLoader<T extends BlockCacheValue<T>> implements BlockLoader<T> {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOBlockLoader.class);
 
+    private final Pool<T> pool;
     private final KeyResolver keyResolver;
-    private final Pool<RefCountedMemorySegment> segmentPool;
     private final EncryptionMetadataCache encryptionMetadataCache;
+    private final boolean byteBufferMode;
 
     /**
      * Constructs a new CryptoDirectIOBlockLoader with the specified memory pool and key resolver.
      *
-     * @param segmentPool the memory segment pool for acquiring buffer space
+     * @param pool the memory pool for acquiring buffer space (MemorySegmentPool or ByteBufferPool)
      * @param keyResolver the resolver for obtaining encryption keys and initialization vectors
+     * @param encryptionMetadataCache cache for encryption metadata (footers, derived keys)
+     * @param byteBufferMode if true, acquires DirectByteBuffers; if false, acquires MemorySegments
      */
     public CryptoDirectIOBlockLoader(
-        Pool<RefCountedMemorySegment> segmentPool,
+        Pool<T> pool,
         KeyResolver keyResolver,
-        EncryptionMetadataCache encryptionMetadataCache
+        EncryptionMetadataCache encryptionMetadataCache,
+        boolean byteBufferMode
     ) {
-        this.segmentPool = segmentPool;
+        this.pool = pool;
         this.keyResolver = keyResolver;
         this.encryptionMetadataCache = encryptionMetadataCache;
+        this.byteBufferMode = byteBufferMode;
     }
 
     @Override
-    public RefCountedMemorySegment[] load(Path filePath, long startOffset, long blockCount, long poolTimeoutMs) throws Exception {
+    @SuppressWarnings("unchecked")
+    public T[] load(Path filePath, long startOffset, long blockCount, long poolTimeoutMs) throws Exception {
         if (!Files.exists(filePath)) {
             throw new NoSuchFileException(filePath.toString());
         }
@@ -86,7 +101,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
             throw new IllegalArgumentException("blockCount must be positive: " + blockCount);
         }
 
-        RefCountedMemorySegment[] result = new RefCountedMemorySegment[(int) blockCount];
+        T[] result = (T[]) new BlockCacheValue[(int) blockCount];
         long readLength = blockCount << CACHE_BLOCK_SIZE_POWER;
 
         try (
@@ -115,7 +130,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
                     fileKey,                                    // Derived file key (matches write path)
                     masterKey,                                  // Master key for IV computation
                     messageId,                                  // Message ID from footer
-                    org.opensearch.index.store.footer.EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE, // Frame size
+                    EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE, // Frame size
                     startOffset,                                 // File offset
                     filePath.toAbsolutePath().normalize().toString(),
                     encryptionMetadataCache
@@ -130,19 +145,29 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
 
             try {
                 while (blockIndex < blockCount && bytesCopied < bytesRead) {
-                    // Use caller-specified timeout (5s for critical loads, 50ms for prefetch)
-                    RefCountedMemorySegment handle = segmentPool.tryAcquire(poolTimeoutMs, TimeUnit.MILLISECONDS);
-
-                    MemorySegment pooled = handle.segment();
-
                     int remaining = (int) (bytesRead - bytesCopied);
                     int toCopy = Math.min(CACHE_BLOCK_SIZE, remaining);
 
-                    if (toCopy > 0) {
-                        MemorySegment.copy(readBytes, bytesCopied, pooled, 0, toCopy);
+                    if (byteBufferMode) {
+                        // ByteBuffer mode: acquire from ByteBufferPool, copy via MemorySegment.ofBuffer()
+                        T buf = pool.acquire();
+                        ByteBuffer direct = ((RefCountedByteBuffer) buf).buffer();
+                        direct.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+                        MemorySegment.copy(readBytes, bytesCopied, MemorySegment.ofBuffer(direct), 0, toCopy);
+                        result[blockIndex++] = buf;
+                    } else {
+                        // MemorySegment mode: acquire from MemorySegmentPool with caller-specified timeout
+                        // (5s for critical loads, 50ms for prefetch)
+                        T handle = pool.tryAcquire(poolTimeoutMs, TimeUnit.MILLISECONDS);
+                        MemorySegment pooled = ((RefCountedMemorySegment) handle).segment();
+
+                        if (toCopy > 0) {
+                            MemorySegment.copy(readBytes, bytesCopied, pooled, 0, toCopy);
+                        }
+
+                        result[blockIndex++] = handle;  // Store the handle, not the segment
                     }
 
-                    result[blockIndex++] = handle;  // Store the handle, not the segment
                     bytesCopied += toCopy;
                 }
 
@@ -165,7 +190,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
         }
     }
 
-    private void releaseHandles(RefCountedMemorySegment[] handles, int upTo) {
+    private void releaseHandles(T[] handles, int upTo) {
         for (int i = 0; i < upTo; i++) {
             if (handles[i] != null) {
                 handles[i].close();

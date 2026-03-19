@@ -45,8 +45,10 @@ public final class PoolBuilder {
      * providing proper cleanup when closed.
      */
     public static class PoolResources implements Closeable {
-        private final Pool<RefCountedMemorySegment> segmentPool;
-        private final BlockCache<RefCountedMemorySegment> blockCache;
+        private final Pool<?> pool;
+        private final BlockCache<?> blockCache;
+        private final com.github.benmanes.caffeine.cache.Cache<?, ?> sharedCaffeineCache;
+        private final boolean byteBufferMode;
         private final long maxCacheBlocks;
         private final int readAheadQueueSize;
         private final Worker sharedReadaheadWorker;
@@ -55,8 +57,10 @@ public final class PoolBuilder {
         private final ExecutorService readAheadExecutor;
 
         PoolResources(
-            Pool<RefCountedMemorySegment> segmentPool,
-            BlockCache<RefCountedMemorySegment> blockCache,
+            Pool<?> pool,
+            BlockCache<?> blockCache,
+            com.github.benmanes.caffeine.cache.Cache<?, ?> sharedCaffeineCache,
+            boolean byteBufferMode,
             long maxCacheBlocks,
             int readAheadQueueSize,
             Worker sharedReadaheadWorker,
@@ -64,8 +68,10 @@ public final class PoolBuilder {
             java.util.concurrent.ThreadPoolExecutor removalExecutor,
             ExecutorService readAheadExecutor
         ) {
-            this.segmentPool = segmentPool;
+            this.pool = pool;
             this.blockCache = blockCache;
+            this.sharedCaffeineCache = sharedCaffeineCache;
+            this.byteBufferMode = byteBufferMode;
             this.maxCacheBlocks = maxCacheBlocks;
             this.readAheadQueueSize = readAheadQueueSize;
             this.sharedReadaheadWorker = sharedReadaheadWorker;
@@ -74,22 +80,26 @@ public final class PoolBuilder {
             this.readAheadExecutor = readAheadExecutor;
         }
 
-        /**
-         * Returns the shared memory segment pool.
-         *
-         * @return the segment pool
-         */
-        public Pool<RefCountedMemorySegment> getSegmentPool() {
-            return segmentPool;
+        public Pool<?> getPool() {
+            return pool;
         }
 
-        /**
-         * Returns the shared block cache.
-         *
-         * @return the block cache
-         */
-        public BlockCache<RefCountedMemorySegment> getBlockCache() {
+        @SuppressWarnings("unchecked")
+        public <T> Pool<T> getPoolAs(Class<T> type) {
+            return (Pool<T>) pool;
+        }
+
+        public BlockCache<?> getBlockCache() {
             return blockCache;
+        }
+
+        @SuppressWarnings("unchecked")
+        public <K, V> com.github.benmanes.caffeine.cache.Cache<K, V> getSharedCaffeineCache() {
+            return (com.github.benmanes.caffeine.cache.Cache<K, V>) sharedCaffeineCache;
+        }
+
+        public boolean isByteBufferMode() {
+            return byteBufferMode;
         }
 
         /**
@@ -175,10 +185,10 @@ public final class PoolBuilder {
      */
     private static class TelemetryThread implements Closeable {
         private final Thread thread;
-        private final Pool<RefCountedMemorySegment> pool;
-        private final BlockCache<RefCountedMemorySegment> blockCache;
+        private final Pool<?> pool;
+        private final BlockCache<?> blockCache;
 
-        TelemetryThread(Pool<RefCountedMemorySegment> pool, BlockCache<RefCountedMemorySegment> blockCache) {
+        TelemetryThread(Pool<?> pool, BlockCache<?> blockCache) {
             this.pool = pool;
             this.blockCache = blockCache;
             this.thread = new Thread(this::run);
@@ -203,7 +213,8 @@ public final class PoolBuilder {
 
         private void publishStats() {
             try {
-                pool.recordStats();
+                if (pool != null)
+                    pool.recordStats();
                 blockCache.recordStats();
             } catch (Exception e) {
                 LOGGER.warn("Failed to log cache/pool stats", e);
@@ -244,20 +255,32 @@ public final class PoolBuilder {
         double cacheToPoolRatio = PoolSizeCalculator.calculateCacheToPoolRatio(offHeap, settings);
         double warmupPercentage = PoolSizeCalculator.calculateWarmupPercentage(offHeap, settings);
 
-        Pool<RefCountedMemorySegment> segmentPool = new MemorySegmentPool(reservedPoolSizeInBytes, CACHE_BLOCK_SIZE);
-        LOGGER
-            .info(
-                "Creating shared pool with sizeBytes={}, segmentSize={}, totalSegments={}",
-                reservedPoolSizeInBytes,
-                CACHE_BLOCK_SIZE,
-                maxBlocks
-            );
-
-        // Calculate cache size: cache = pool * ratio
         long maxCacheBlocks = (long) (maxBlocks * cacheToPoolRatio);
-        long warmupBlocks = (long) (maxCacheBlocks * warmupPercentage);
-        segmentPool.warmUp(warmupBlocks);
-        LOGGER.info("Warmed up {} blocks ({}% of {} cache blocks)", warmupBlocks, warmupPercentage * 100, maxCacheBlocks);
+        boolean byteBufferMode = org.opensearch.index.store.CryptoDirectoryFactory.byteBufferModeEnabled();
+
+        Pool<?> pool;
+        if (byteBufferMode) {
+            long bbPoolSize = (long) (maxCacheBlocks * 1.10) * CACHE_BLOCK_SIZE;
+            pool = new ByteBufferPool(bbPoolSize, CACHE_BLOCK_SIZE);
+            LOGGER
+                .info(
+                    "ByteBuffer mode enabled. Created ByteBufferPool: capacity={}blocks ({}MB)",
+                    (int) (maxCacheBlocks * 1.10),
+                    bbPoolSize / (1024 * 1024)
+                );
+        } else {
+            MemorySegmentPool msPool = new MemorySegmentPool(reservedPoolSizeInBytes, CACHE_BLOCK_SIZE);
+            long warmupBlocks = (long) (maxCacheBlocks * warmupPercentage);
+            msPool.warmUp(warmupBlocks);
+            LOGGER
+                .info(
+                    "MemorySegment mode. Created pool: sizeBytes={}, segments={}, warmed up {} blocks",
+                    reservedPoolSizeInBytes,
+                    maxBlocks,
+                    warmupBlocks
+                );
+            pool = msPool;
+        }
 
         // Calculate read-ahead queue size based on cache capacity
         // Pool constraint not needed since cache evictions automatically release pool memory
@@ -268,6 +291,7 @@ public final class PoolBuilder {
         BlockCacheBuilder.CacheWithExecutor<RefCountedMemorySegment, RefCountedMemorySegment> cacheWithExecutor = BlockCacheBuilder
             .build(CACHE_INITIAL_SIZE, maxCacheBlocks);
         BlockCache<RefCountedMemorySegment> blockCache = cacheWithExecutor.getCache();
+        com.github.benmanes.caffeine.cache.Cache<?, ?> sharedCaffeineCache = cacheWithExecutor.getCache().getCache();
         java.util.concurrent.ThreadPoolExecutor removalExecutor = cacheWithExecutor.getExecutor();
         LOGGER.info("Creating shared block cache with blocks={}", maxCacheBlocks);
 
@@ -289,11 +313,13 @@ public final class PoolBuilder {
         LOGGER.info("Created shared read-ahead worker: queueSize={} executorThreads={}", readAheadQueueSize, threads);
 
         // Start telemetry
-        TelemetryThread telemetry = new TelemetryThread(segmentPool, blockCache);
+        TelemetryThread telemetry = new TelemetryThread(pool, blockCache);
 
         return new PoolResources(
-            segmentPool,
+            pool,
             blockCache,
+            sharedCaffeineCache,
+            byteBufferMode,
             maxCacheBlocks,
             readAheadQueueSize,
             sharedReadaheadWorker,
