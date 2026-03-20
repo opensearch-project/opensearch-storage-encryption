@@ -474,4 +474,50 @@ public class HotPathReadBenchmarks {
             }
         }
     }
+
+    /**
+     * Simulates DocValues aggregation: many readLong(pos) calls within the same 8KB block
+     * before moving to the next block.
+     * Pattern: for each block, read 512 longs (4KB of an 8KB block) via RandomAccessInput,
+     * then move to the next block. This mirrors sorted numeric DocValues iteration where
+     * hundreds of doc values live in the same block.
+     */
+    @Benchmark
+    public void aggregationPatternReadLong(ThreadState ts, Blackhole bh) throws IOException {
+        final int blockSize = StaticConfigs.CACHE_BLOCK_SIZE;
+        final int readsPerBlock = 512;
+        for (int fileIdx = 0; fileIdx < ts.numFilesToRead; fileIdx++) {
+            IndexInput fileInput = ts.threadInputs[fileIdx];
+            RandomAccessInput in = (RandomAccessInput) fileInput;
+            for (long blockStart : ts.blockStartOffsets) {
+                long blockEnd = Math.min(blockStart + blockSize, ts.fileSize);
+                long usable = blockEnd - blockStart - Long.BYTES;
+                if (usable <= 0) continue;
+                for (int r = 0; r < readsPerBlock; r++) {
+                    long pos = blockStart + ((long) r * Long.BYTES % usable);
+                    bh.consume(in.readLong(pos));
+                }
+            }
+        }
+    }
+
+    /**
+     * Bulk sequential readBytes — simulates stored field / merge copy reads.
+     * Reads 64KB (8 blocks) at block-aligned offsets to exercise the aligned bulk path.
+     */
+    @Benchmark
+    public void bulkSequentialReadBytes(ThreadState ts, Blackhole bh) throws IOException {
+        final int bulkSize = StaticConfigs.CACHE_BLOCK_SIZE * 8; // 64KB — hits aligned path
+        byte[] buf = new byte[bulkSize];
+        for (int fileIdx = 0; fileIdx < ts.numFilesToRead; fileIdx++) {
+            IndexInput fileInput = ts.threadInputs[fileIdx];
+            fileInput.seek(0);
+            long pos = 0;
+            while (pos + bulkSize <= ts.fileSize) {
+                fileInput.readBytes(buf, 0, bulkSize);
+                bh.consume(buf[0]);
+                pos += bulkSize;
+            }
+        }
+    }
 }
