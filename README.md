@@ -91,8 +91,8 @@ I/O performance is enhanced through several optimization mechanisms. `ReadaheadM
 
 ## Requirements
 
-- **JDK**: 21 or higher
-- **OpenSearch**: 3.3.0-SNAPSHOT or compatible version
+- **JDK**: 25
+- **OpenSearch**: 3.6.0-SNAPSHOT or compatible version
 - **Master Key Provider**: Required for key management
 - **Operating System**: Linux recommended for Direct I/O features (io_uring)
 
@@ -302,9 +302,31 @@ After adding, removing, or renaming any `@Benchmark` method, regenerate the JMH 
 ./gradlew jmhPrepare
 ```
 
+### Running Benchmarks from Fat JAR
+
+You can also build a self-contained fat JAR and run benchmarks directly:
+
+```bash
+# Build the fat JAR
+./gradlew jmhJar
+
+# List all available benchmarks
+java --enable-preview --enable-native-access=ALL-UNNAMED \
+  -jar build/distributions/storage-encryption-jmh.jar -l
+
+# Run a specific benchmark with custom settings
+java --enable-preview --enable-native-access=ALL-UNNAMED \
+  -jar build/distributions/storage-encryption-jmh.jar RadixBlockTable -wi 2 -i 3 -f 1
+
+# Run all benchmarks
+java --enable-preview --enable-native-access=ALL-UNNAMED \
+  -jar build/distributions/storage-encryption-jmh.jar
+```
+
 ### Benchmark Classes
 
 - `HotPathReadBenchmarks` — 16 benchmark methods measuring throughput with data pre-warmed in block cache (BufferPool) or page cache (MMap). Covers all `RandomAccessInput` and `IndexInput` read APIs plus a mixed workload that randomly interleaves all API types.
+- `RadixBlockTableBenchmark` — 7 benchmark methods comparing L1/L2 cache lookup strategies: RadixBlockTable (two plain array loads), CaffeineBlockCache (ConcurrentHashMap), and stamp-gated cache (VarHandle acquire/release). Includes L1+L2 fallback paths and sparse directory growth scenarios.
 
 ### Filtering Benchmarks
 

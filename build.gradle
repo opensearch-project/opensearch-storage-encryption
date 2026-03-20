@@ -11,7 +11,7 @@
 
 buildscript {
     ext {
-        opensearch_version = System.getProperty("opensearch.version", "3.5.0-SNAPSHOT")
+        opensearch_version = System.getProperty("opensearch.version", "3.6.0-SNAPSHOT")
     }
 
     repositories {
@@ -32,6 +32,7 @@ plugins {
     id 'jacoco'
     id 'com.diffplug.spotless' version '6.25.0'
     id 'me.champeau.jmh' version '0.7.3'
+    id 'io.github.reyerizo.gradle.jcstress' version '0.9.0'
 }
 
 apply plugin: 'opensearch.opensearchplugin'
@@ -66,6 +67,10 @@ dependencies {
     runtimeOnly "org.apache.logging.log4j:log4j-slf4j-impl:${versions.log4j}"
     testImplementation "org.opensearch.test:framework:${opensearch_version}"
     testImplementation "commons-io:commons-io:2.13.0"
+    testImplementation 'org.openjdk.jmh:jmh-core:1.37'
+    testImplementation 'org.openjdk.jmh:jmh-generator-annprocess:1.37'
+    testAnnotationProcessor 'org.openjdk.jmh:jmh-generator-annprocess:1.37'
+    testImplementation 'org.apache.commons:commons-math3:3.6.1'
 
     // Integration test dependencies
     testImplementation "org.opensearch.plugin:reindex-client:${opensearch_version}"
@@ -121,45 +126,23 @@ testClusters.yamlRestTest {
 }
 
 compileJava {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
     options.encoding = 'UTF-8'
     options.compilerArgs << '-Xlint:unchecked' << '-Xlint:-deprecation'
 }
 
 compileTestJava {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
 }
 
 tasks.withType(JavaCompile).configureEach {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
     options.encoding = 'UTF-8'
-    options.release = 21
+    options.release = 25
     options.compilerArgs << '-Xlint:-deprecation'
-    options.compilerArgs += "--enable-preview"
-
-    // Patch all compiled class files to remove preview flag requirement by java
-    // this is like tricky java to not consider these files using preview.
-    doLast {
-        def patchedCount = 0
-        destinationDirectory.getAsFileTree().matching(new PatternSet().include('**/*.class')).each { classFile ->
-            new RandomAccessFile(classFile, 'rw').withCloseable { f ->
-                int magic = f.readInt()
-                if (magic != (int)0xCAFEBABE) return
-                f.seek(4L)
-                short minor = f.readShort()
-                short major = f.readShort()
-                if (major == 65 && minor == (short)0xFFFF) {
-                    f.seek(4L)
-                    f.writeShort(0)
-                    patchedCount++
-                }
-            }
-        }
-        logger.lifecycle("Patched ${patchedCount} class files to remove preview flag")
-    }
 }
 
 tasks.withType(Javadoc).configureEach {
@@ -167,8 +150,7 @@ tasks.withType(Javadoc).configureEach {
     options.charSet = 'UTF-8'
     options.addStringOption('Xdoclint:all', '-quiet')
     options.addStringOption('tag', 'opensearch.internal:a:Internal:')
-    options.addStringOption('source', '21')
-    options.addStringOption('-enable-preview', '-quiet')
+    options.addStringOption('source', '25')
     failOnError = false
 }
 
@@ -194,11 +176,49 @@ forbiddenApisMain.enabled = false
 forbiddenApisTest.enabled = false
 forbiddenApisJmh.enabled = false
 
+// JMH source set is managed by the me.champeau.jmh plugin.
+// The plugin auto-creates jmh source set, configurations, and tasks.
+// We only need the jmh {} config block below to customize behavior.
+
+// ---- JCStress configuration ----
+jcstress {
+    jcstressDependency 'org.openjdk.jcstress:jcstress-core:0.16'
+    mode = 'default'
+    verbose = true
+}
+
+// JCStress / test compile fixups: the opensearch build-tools plugin adds
+// -proc:none to ALL JavaCompile tasks. JCStress needs annotation processing
+// to generate META-INF/TestList, and JMH needs it for benchmark generation.
+afterEvaluate {
+    tasks.named('compileJcstressJava').configure {
+        sourceCompatibility = JavaVersion.VERSION_25
+        targetCompatibility = JavaVersion.VERSION_25
+        options.compilerArgs.removeAll { it == '-proc:none' }
+    }
+    tasks.named('compileTestJava').configure {
+        options.compilerArgs.removeAll { it == '-proc:none' }
+    }
+}
+
+// Wire jcstress into the standard test task so ./gradlew test runs both
+// unit tests and concurrency stress tests.
+tasks.named('test').configure {
+    finalizedBy tasks.named('jcstress')
+}
+
 task allTests {
     dependsOn test, internalClusterTest, yamlRestTest
     group = 'Verification'
-    description = 'Runs all tests (Unit, Integration, and YAML)'
+    description = 'Runs all tests (Unit, Integration, YAML, and JCStress)'
 }
+
+// JMH fat JAR and runner are provided by the me.champeau.jmh plugin.
+// Build:  ./gradlew jmhJar
+// Run:    java --enable-native-access=ALL-UNNAMED -jar build/distributions/storage-encryption-jmh.jar [regex] [jmh-args]
+// Examples:
+//   java --enable-native-access=ALL-UNNAMED -jar build/distributions/storage-encryption-jmh.jar -l
+//   java --enable-native-access=ALL-UNNAMED -jar build/distributions/storage-encryption-jmh.jar RadixBlockTable -wi 2 -i 3 -f 1
 
 spotless {
     java {
@@ -224,13 +244,9 @@ jmh {
     humanOutputFile = project.file("${project.buildDir}/reports/jmh/human.txt")
     failOnError = true
     forceGC = true
-    jvmArgsAppend = ['--enable-native-access=ALL-UNNAMED', '--enable-preview']
+    jvmArgsAppend = ['--enable-native-access=ALL-UNNAMED']
     duplicateClassesStrategy = DuplicatesStrategy.WARN
     zip64 = true
-}
-
-tasks.named('jmhCompileGeneratedClasses').configure {
-    options.compilerArgs += "--enable-preview"
 }
 
 // Copy JMH-generated resources (META-INF/BenchmarkList) and compiled harness classes
@@ -267,7 +283,7 @@ tasks.register('jmhPrepare') {
 // Also ensure IntelliJ module includes the generated classes directory
 idea {
     module {
-        testSourceDirs += file("${project.buildDir}/jmh-generated-classes")
-        testResourceDirs += file("${project.buildDir}/jmh-generated-resources")
+        testSources.from(file("${project.buildDir}/jmh-generated-classes"))
+        testResources.from(file("${project.buildDir}/jmh-generated-resources"))
     }
 }
