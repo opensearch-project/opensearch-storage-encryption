@@ -215,7 +215,7 @@ public final class RefCountedMemorySegment implements BlockCacheValue<RefCounted
      *  - drop cache's reference (refCount--)
      *
      * Done in a single CAS:
-     *   ns = s + (1<<32) - 1
+     *   ns = s + (1&lt;&lt;32) - 1
      */
     @Override
     public void close() {
