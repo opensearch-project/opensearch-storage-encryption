@@ -314,38 +314,6 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                     }
                 }
             });
-            // Release PinScope at the end of each search phase/slice.
-            indexModule.addSearchOperationListener(new SearchOperationListener() {
-                @Override
-                public void onSliceExecution(SearchContext searchContext) {
-                    PinScope.current().release();
-                }
-
-                @Override
-                public void onFailedSliceExecution(SearchContext searchContext) {
-                    PinScope.current().release();
-                }
-
-                @Override
-                public void onQueryPhase(SearchContext searchContext, long tookInNanos) {
-                    PinScope.current().release();
-                }
-
-                @Override
-                public void onFailedQueryPhase(SearchContext searchContext) {
-                    PinScope.current().release();
-                }
-
-                @Override
-                public void onFetchPhase(SearchContext searchContext, long tookInNanos) {
-                    PinScope.current().release();
-                }
-
-                @Override
-                public void onFailedFetchPhase(SearchContext searchContext) {
-                    PinScope.current().release();
-                }
-            });
         }
     }
 }

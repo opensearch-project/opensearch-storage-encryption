@@ -169,49 +169,46 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     private MemorySegment getCacheBlockWithOffset(long pos) throws IOException {
         final long fileOffset = absoluteBaseOffset + pos;
         final long blockOffset = fileOffset & ~CACHE_BLOCK_MASK;
-        final int offsetInBlock = (int) (fileOffset - blockOffset);
-        // Fast path: reuse current block if still valid.
-        // Safe for both master and slices: master owns its pin directly;
+        lastOffsetInBlock = (int) (fileOffset - blockOffset);
+        // Fast path: reuse current block if still valid (keeps method tiny for JIT inlining)
         if (blockOffset == currentBlockOffset && currentBlock != null) {
-            lastOffsetInBlock = offsetInBlock;
             return currentBlock.value().segment();
         }
+        return getCacheBlockSlow(blockOffset);
+    }
+
+    /**
+     * Slow path for cache block acquisition — separated to keep the fast path
+     * small enough for JIT inlining (~35 bytecodes).
+     */
+    private MemorySegment getCacheBlockSlow(long blockOffset) throws IOException {
         // Scoped pin fast path for slices: check if PinScope already holds this block.
-        // This avoids L1/L2 lookup + pin CAS when the same block is read repeatedly
-        // across slice calls.
         if (isSlice) {
             final PinScope scope = PinScope.current();
             final BlockCacheValue<RefCountedMemorySegment> scoped = scope.getIfMatch(path, blockOffset);
             if (scoped != null) {
                 currentBlockOffset = blockOffset;
                 currentBlock = scoped;
-                lastOffsetInBlock = offsetInBlock;
                 return scoped.value().segment();
             }
         }
         cacheHitHolder.reset();
-        // BlockSlotTinyCache returns already-pinned values
         final BlockCacheValue<RefCountedMemorySegment> cacheValue = blockSlotTinyCache.acquireRefCountedValue(blockOffset, cacheHitHolder);
         if (cacheValue == null) {
             throw new IOException("Failed to acquire cache value for block at offset " + blockOffset);
         }
         RefCountedMemorySegment pinnedBlock = cacheValue.value();
-        // Unpin old block before swapping (only for master inputs — slices delegate to PinScope)
         if (currentBlock != null && !isSlice) {
             currentBlock.unpin();
         }
         currentBlockOffset = blockOffset;
         currentBlock = cacheValue;
-        // For slices, transfer pin ownership to PinScope.
-        // PinScope.pin() unpins whatever it previously held, then takes ownership of this pin.
         if (isSlice) {
             PinScope.current().pin(path, blockOffset, cacheValue);
         }
-        // Notify readahead manager of access pattern
         if (readaheadContext != null) {
             readaheadContext.onAccess(blockOffset, cacheHitHolder.wasCacheHit());
         }
-        lastOffsetInBlock = offsetInBlock;
         return pinnedBlock.segment();
     }
 
