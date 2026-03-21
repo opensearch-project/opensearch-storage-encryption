@@ -167,7 +167,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     /**
      * Optimized method to get both cache block and offset in one operation.
      * Returns a pinned block that must be managed via currentBlock.
-     * Unpins the previous block on block transition.
      *
      * @param pos position relative to this input
      * @return MemorySegment for the cache block (offset available in lastOffsetInBlock)
@@ -176,42 +175,33 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     private MemorySegment getCacheBlockWithOffset(long pos) throws IOException {
         final long fileOffset = absoluteBaseOffset + pos;
         final long blockOffset = fileOffset & ~CACHE_BLOCK_MASK;
-        final int offsetInBlock = (int) (fileOffset - blockOffset);
-
-        // Fast path: reuse current block if still valid.
-        // this access is safe without generation check because currentBlock
-        // is pinned (refCount > 1) so it cannot be returned to pool or reused
-        // for different data while we hold it.
+        lastOffsetInBlock = (int) (fileOffset - blockOffset);
+        // Fast path: reuse current block if still valid (keeps method tiny for JIT inlining)
         if (blockOffset == currentBlockOffset && currentBlock != null) {
-            lastOffsetInBlock = offsetInBlock;
             return currentBlock.value().segment();
         }
+        return getCacheBlockSlow(blockOffset);
+    }
 
+    /**
+     * Slow path for cache block acquisition — separated to keep the fast path
+     * small enough for JIT inlining (~35 bytecodes).
+     */
+    private MemorySegment getCacheBlockSlow(long blockOffset) throws IOException {
         cacheHitHolder.reset();
-
-        // BlockSlotTinyCache returns already-pinned values
         final BlockCacheValue<RefCountedMemorySegment> cacheValue = blockSlotTinyCache.acquireRefCountedValue(blockOffset, cacheHitHolder);
-
         if (cacheValue == null) {
             throw new IOException("Failed to acquire cache value for block at offset " + blockOffset);
         }
-
         RefCountedMemorySegment pinnedBlock = cacheValue.value();
-
-        // Unpin old block before swapping
         if (currentBlock != null) {
             currentBlock.unpin();
         }
-
         currentBlockOffset = blockOffset;
         currentBlock = cacheValue;
-
-        // Notify readahead manager of access pattern
         if (readaheadContext != null) {
             readaheadContext.onAccess(blockOffset, cacheHitHolder.wasCacheHit());
         }
-
-        lastOffsetInBlock = offsetInBlock;
         return pinnedBlock.segment();
     }
 
