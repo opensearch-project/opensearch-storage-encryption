@@ -86,7 +86,12 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
         KeyResolver keyResolver = new TestKeyResolver(indexUuid, indexName, fsDirectory, provider, keyProvider, shardId);
         EncryptionMetadataCache encryptionMetadataCache = EncryptionMetadataCacheRegistry.getOrCreateCache(indexUuid, shardId, indexName);
 
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(segmentPool, keyResolver, encryptionMetadataCache);
+        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(
+            segmentPool,
+            keyResolver,
+            encryptionMetadataCache,
+            poolResources.getFileChannelCache()
+        );
 
         Worker worker = poolResources.getSharedReadaheadWorker();
 
@@ -105,7 +110,8 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
             directoryCache,
             loader,
             worker,
-            encryptionMetadataCache
+            encryptionMetadataCache,
+            poolResources.getFileChannelCache()
         );
     }
 

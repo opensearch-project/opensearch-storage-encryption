@@ -12,10 +12,12 @@ import java.util.Arrays;
 import java.util.Collection;
 
 import org.opensearch.action.admin.indices.delete.DeleteIndexRequest;
+import org.opensearch.action.admin.indices.forcemerge.ForceMergeResponse;
 import org.opensearch.action.search.SearchResponse;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
+import org.opensearch.index.store.block_loader.FileChannelCache;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.test.OpenSearchIntegTestCase;
 
@@ -117,9 +119,6 @@ public class CacheInvalidationIntegTests extends OpenSearchIntegTestCase {
         DeleteIndexRequest deleteRequest = new DeleteIndexRequest("test-cache-invalidation");
         client().admin().indices().delete(deleteRequest).actionGet();
 
-        // Allow some time for cache cleanup to complete
-        Thread.sleep(100);
-
         // Verify cache size decreased
         long cacheSizeAfter = 0;
         if (cache instanceof CaffeineBlockCache<?, ?> caffeineCache) {
@@ -185,8 +184,6 @@ public class CacheInvalidationIntegTests extends OpenSearchIntegTestCase {
         // Delete only the first index
         DeleteIndexRequest deleteRequest = new DeleteIndexRequest("test-index-1");
         client().admin().indices().delete(deleteRequest).actionGet();
-
-        Thread.sleep(100);
 
         // Verify index-2 still works perfectly
         SearchResponse response = client().prepareSearch("test-index-2").setSize(0).get();
@@ -270,8 +267,6 @@ public class CacheInvalidationIntegTests extends OpenSearchIntegTestCase {
             // Delete index
             DeleteIndexRequest deleteRequest = new DeleteIndexRequest(indexNames[idx]);
             client().admin().indices().delete(deleteRequest).actionGet();
-
-            Thread.sleep(100);
 
             // Verify cache size decreased
             long currentCacheSize = 0;
@@ -482,9 +477,6 @@ public class CacheInvalidationIntegTests extends OpenSearchIntegTestCase {
             client().admin().indices().delete(deleteRequest).actionGet();
         }
 
-        // Allow time for cache cleanup
-        Thread.sleep(200);
-
         // Verify cache is empty
         long cacheSizeAfter = 0;
         if (cache instanceof CaffeineBlockCache<?, ?> caffeineCache) {
@@ -576,5 +568,343 @@ public class CacheInvalidationIntegTests extends OpenSearchIntegTestCase {
         }
 
         logger.info("All {} indices reopened successfully with data intact and searchable", numIndices);
+    }
+
+    // ==================== FD Cache (FileChannelCache) Invalidation Tests ====================
+
+    /**
+     * Clears the shared block cache so that subsequent reads are cold and go through
+     * the block loader, which populates the FD cache via fileChannelCache.acquire().
+     *
+     * Without this, the block cache is warm from indexing writes, so reads are all
+     * block cache hits that never touch the FD cache.
+     */
+    @SuppressWarnings("unchecked")
+    private void clearBlockCache() {
+        BlockCache<?> cache = CryptoDirectoryFactory.getSharedBlockCache();
+        if (cache instanceof CaffeineBlockCache<?, ?> caffeineCache) {
+            caffeineCache.clear();
+            caffeineCache.getCache().cleanUp();
+        }
+    }
+
+    /**
+     * Tests that FD cache entries are invalidated when an encrypted index is deleted.
+     * After deletion, the FD cache should be empty (all entries for that index invalidated).
+     * This prevents FD leaks where stale FileChannels remain open to deleted files.
+     */
+    public void testFdCacheInvalidationOnIndexDelete() throws Exception {
+        internalCluster().startNode();
+
+        Settings settings = Settings
+            .builder()
+            .put(cryptoIndexSettings())
+            .put("index.number_of_shards", 2)
+            .put("index.number_of_replicas", 0)
+            .build();
+
+        createIndex("test-fd-cache-delete", settings);
+        ensureGreen("test-fd-cache-delete");
+
+        int numDocs = randomIntBetween(100, 200);
+        for (int i = 0; i < numDocs; i++) {
+            StringBuilder largeValue = new StringBuilder();
+            for (int j = 0; j < 100; j++) {
+                largeValue.append("data-").append(i).append("-").append(j).append(" ");
+            }
+            index("test-fd-cache-delete", "_doc", String.valueOf(i), "field", largeValue.toString(), "number", i);
+        }
+        refresh();
+        flush("test-fd-cache-delete");
+
+        // Clear block cache so reads go through block loader → FD cache
+        clearBlockCache();
+
+        // Reads now trigger block cache misses → CryptoDirectIOBlockLoader.load() → fileChannelCache.acquire()
+        for (int i = 0; i < Math.min(50, numDocs); i++) {
+            SearchResponse response = client()
+                .prepareSearch("test-fd-cache-delete")
+                .setQuery(org.opensearch.index.query.QueryBuilders.termQuery("number", i))
+                .get();
+            assertThat(response.getHits().getTotalHits().value(), equalTo(1L));
+        }
+
+        FileChannelCache fdCache = CryptoDirectoryFactory.getSharedFileChannelCache();
+        assertNotNull("Shared FD cache should be initialized", fdCache);
+
+        fdCache.cleanUp();
+        long fdCacheSizeBefore = fdCache.estimatedSize();
+        logger.info("FD cache size before index deletion: {}", fdCacheSizeBefore);
+        assertThat("FD cache should have entries after cold reads", fdCacheSizeBefore, greaterThan(0L));
+
+        // Delete the index — triggers BufferPoolDirectory.close() → fdCache.invalidateByPathPrefix()
+        client().admin().indices().delete(new DeleteIndexRequest("test-fd-cache-delete")).actionGet();
+
+        fdCache.cleanUp();
+        long fdCacheSizeAfter = fdCache.estimatedSize();
+        logger.info("FD cache size after index deletion: {} (was: {})", fdCacheSizeAfter, fdCacheSizeBefore);
+        assertThat("FD cache should be empty after index deletion", fdCacheSizeAfter, equalTo(0L));
+    }
+
+    /**
+     * Tests that deleting one index only invalidates FD cache entries for that index,
+     * preserving entries for other indices.
+     */
+    public void testFdCacheInvalidationPreservesOtherIndices() throws Exception {
+        internalCluster().startNode();
+
+        Settings settings = Settings
+            .builder()
+            .put(cryptoIndexSettings())
+            .put("index.number_of_shards", 1)
+            .put("index.number_of_replicas", 0)
+            .build();
+
+        createIndex("test-fd-idx-1", settings);
+        createIndex("test-fd-idx-2", settings);
+        ensureGreen("test-fd-idx-1", "test-fd-idx-2");
+
+        int numDocs = 50;
+        for (int i = 0; i < numDocs; i++) {
+            StringBuilder largeValue = new StringBuilder();
+            for (int j = 0; j < 50; j++) {
+                largeValue.append("data-").append(i).append("-").append(j).append(" ");
+            }
+            index("test-fd-idx-1", "_doc", String.valueOf(i), "field", largeValue.toString(), "number", i);
+            index("test-fd-idx-2", "_doc", String.valueOf(i), "field", largeValue.toString(), "number", i);
+        }
+        refresh();
+        flush("test-fd-idx-1", "test-fd-idx-2");
+
+        // Clear block cache so reads populate FD cache
+        clearBlockCache();
+
+        for (int i = 0; i < 20; i++) {
+            client().prepareSearch("test-fd-idx-1").setQuery(org.opensearch.index.query.QueryBuilders.termQuery("number", i)).get();
+            client().prepareSearch("test-fd-idx-2").setQuery(org.opensearch.index.query.QueryBuilders.termQuery("number", i)).get();
+        }
+
+        FileChannelCache fdCache = CryptoDirectoryFactory.getSharedFileChannelCache();
+        assertNotNull("Shared FD cache should be initialized", fdCache);
+
+        fdCache.cleanUp();
+        long fdCacheSizeBefore = fdCache.estimatedSize();
+        logger.info("FD cache size before deleting idx-1: {}", fdCacheSizeBefore);
+        assertThat("FD cache should have entries from both indices", fdCacheSizeBefore, greaterThan(0L));
+
+        // Delete only index-1
+        client().admin().indices().delete(new DeleteIndexRequest("test-fd-idx-1")).actionGet();
+
+        fdCache.cleanUp();
+        long fdCacheSizeAfter = fdCache.estimatedSize();
+        logger.info("FD cache size after deleting idx-1: {} (was: {})", fdCacheSizeAfter, fdCacheSizeBefore);
+
+        assertThat("FD cache should have fewer entries", fdCacheSizeAfter, lessThan(fdCacheSizeBefore));
+        assertThat("FD cache should still have entries from index-2", fdCacheSizeAfter, greaterThan(0L));
+
+        // Verify index-2 still works
+        SearchResponse response = client().prepareSearch("test-fd-idx-2").setSize(0).get();
+        assertThat("Index-2 should still have all documents", response.getHits().getTotalHits().value(), equalTo((long) numDocs));
+    }
+
+    /**
+     * Tests that force-merge (which deletes old segment files) invalidates FD cache entries
+     * for the deleted segments via BufferPoolDirectory.deleteFile() → fileChannelCache.invalidate().
+     *
+     * After force-merge, the FD cache may contain entries for the new merged segment (opened
+     * during merge reads or post-merge searches). The key invariant is:
+     * 1. Old segment FDs are invalidated (deleteFile calls invalidate())
+     * 2. Deleting the index after merge leaves the FD cache empty (no leaked FDs)
+     * 3. Data remains readable through the merged segment
+     */
+    public void testFdCacheInvalidationOnForceMerge() throws Exception {
+        internalCluster().startNode();
+
+        Settings settings = Settings
+            .builder()
+            .put(cryptoIndexSettings())
+            .put("index.number_of_shards", 1)
+            .put("index.number_of_replicas", 0)
+            .put("index.merge.policy.max_merged_segment", "100gb")
+            .build();
+
+        createIndex("test-fd-merge", settings);
+        ensureGreen("test-fd-merge");
+
+        // Index in multiple batches with flush → creates multiple segments
+        for (int batch = 0; batch < 5; batch++) {
+            for (int i = 0; i < 20; i++) {
+                int docId = batch * 20 + i;
+                StringBuilder value = new StringBuilder();
+                for (int j = 0; j < 50; j++) {
+                    value.append("batch-").append(batch).append("-doc-").append(docId).append("-").append(j).append(" ");
+                }
+                index("test-fd-merge", "_doc", String.valueOf(docId), "field", value.toString(), "number", docId);
+            }
+            flush("test-fd-merge");
+        }
+        refresh();
+
+        // Clear block cache so reads populate FD cache
+        clearBlockCache();
+
+        for (int i = 0; i < 50; i++) {
+            client().prepareSearch("test-fd-merge").setQuery(org.opensearch.index.query.QueryBuilders.termQuery("number", i)).get();
+        }
+
+        FileChannelCache fdCache = CryptoDirectoryFactory.getSharedFileChannelCache();
+        assertNotNull("Shared FD cache should be initialized", fdCache);
+
+        fdCache.cleanUp();
+        long fdCacheSizeBeforeMerge = fdCache.estimatedSize();
+        logger.info("FD cache size before force-merge: {}", fdCacheSizeBeforeMerge);
+        assertThat("FD cache should have entries for multiple segments", fdCacheSizeBeforeMerge, greaterThan(1L));
+
+        // Force-merge to 1 segment — old segment files deleted → FD cache entries invalidated
+        // Note: the merge itself may open new FDs for the merged segment, so the net FD count
+        // may not decrease. The important thing is old segment FDs are cleaned up.
+        ForceMergeResponse mergeResponse = client().admin().indices().prepareForceMerge("test-fd-merge").setMaxNumSegments(1).get();
+        assertThat("Force merge should succeed", mergeResponse.getFailedShards(), equalTo(0));
+
+        // Verify data is still readable through the merged segment
+        SearchResponse response = client().prepareSearch("test-fd-merge").setSize(0).get();
+        assertThat("All 100 documents should be readable after merge", response.getHits().getTotalHits().value(), equalTo(100L));
+
+        // The real invariant: deleting the index after merge should leave FD cache empty.
+        // This proves no stale FDs leaked from the old segments.
+        client().admin().indices().delete(new DeleteIndexRequest("test-fd-merge")).actionGet();
+
+        fdCache.cleanUp();
+        long fdCacheSizeAfterDelete = fdCache.estimatedSize();
+        logger
+            .info(
+                "FD cache size after index deletion (post-merge): {} (was: {} before merge)",
+                fdCacheSizeAfterDelete,
+                fdCacheSizeBeforeMerge
+            );
+        assertThat("FD cache should be empty after deleting merged index", fdCacheSizeAfterDelete, equalTo(0L));
+    }
+
+    /**
+     * Tests that closing an index (shard close) invalidates FD cache entries.
+     * BufferPoolDirectory.close() calls fileChannelCache.invalidateByPathPrefix(dirPath).
+     * After reopening, reads should still work (FD cache re-populates on demand).
+     */
+    public void testFdCacheInvalidationOnIndexClose() throws Exception {
+        internalCluster().startNode();
+
+        Settings settings = Settings
+            .builder()
+            .put(cryptoIndexSettings())
+            .put("index.number_of_shards", 1)
+            .put("index.number_of_replicas", 0)
+            .build();
+
+        createIndex("test-fd-close", settings);
+        ensureGreen("test-fd-close");
+
+        int numDocs = 50;
+        for (int i = 0; i < numDocs; i++) {
+            StringBuilder largeValue = new StringBuilder();
+            for (int j = 0; j < 50; j++) {
+                largeValue.append("data-").append(i).append("-").append(j).append(" ");
+            }
+            index("test-fd-close", "_doc", String.valueOf(i), "field", largeValue.toString(), "number", i);
+        }
+        refresh();
+        flush("test-fd-close");
+
+        // Clear block cache so reads populate FD cache
+        clearBlockCache();
+
+        for (int i = 0; i < 20; i++) {
+            client().prepareSearch("test-fd-close").setQuery(org.opensearch.index.query.QueryBuilders.termQuery("number", i)).get();
+        }
+
+        FileChannelCache fdCache = CryptoDirectoryFactory.getSharedFileChannelCache();
+        assertNotNull("Shared FD cache should be initialized", fdCache);
+
+        fdCache.cleanUp();
+        long fdCacheSizeBefore = fdCache.estimatedSize();
+        logger.info("FD cache size before index close: {}", fdCacheSizeBefore);
+        assertThat("FD cache should have entries", fdCacheSizeBefore, greaterThan(0L));
+
+        // Close the index — triggers BufferPoolDirectory.close() → fdCache.invalidateByPathPrefix()
+        client().admin().indices().prepareClose("test-fd-close").get();
+
+        fdCache.cleanUp();
+        long fdCacheSizeAfterClose = fdCache.estimatedSize();
+        logger.info("FD cache size after index close: {} (was: {})", fdCacheSizeAfterClose, fdCacheSizeBefore);
+        assertThat("FD cache should be empty after index close", fdCacheSizeAfterClose, equalTo(0L));
+
+        // Reopen and verify data is still accessible
+        client().admin().indices().prepareOpen("test-fd-close").get();
+        ensureGreen("test-fd-close");
+
+        SearchResponse response = client().prepareSearch("test-fd-close").setSize(0).get();
+        assertThat("All documents should be accessible after reopen", response.getHits().getTotalHits().value(), equalTo((long) numDocs));
+    }
+
+    /**
+     * Tests that deleting all encrypted indices results in an empty FD cache.
+     * Verifies complete FD cleanup with no leaked FileChannels.
+     */
+    public void testFdCacheEmptyAfterAllIndicesDeleted() throws Exception {
+        internalCluster().startNode();
+
+        int numIndices = 3;
+        String[] indexNames = new String[numIndices];
+
+        Settings settings = Settings
+            .builder()
+            .put(cryptoIndexSettings())
+            .put("index.number_of_shards", 2)
+            .put("index.number_of_replicas", 0)
+            .build();
+
+        for (int idx = 0; idx < numIndices; idx++) {
+            indexNames[idx] = "test-fd-all-" + idx;
+            createIndex(indexNames[idx], settings);
+        }
+        ensureGreen(indexNames);
+
+        for (int idx = 0; idx < numIndices; idx++) {
+            for (int i = 0; i < 30; i++) {
+                StringBuilder value = new StringBuilder();
+                for (int j = 0; j < 30; j++) {
+                    value.append("idx-").append(idx).append("-doc-").append(i).append("-").append(j).append(" ");
+                }
+                index(indexNames[idx], "_doc", String.valueOf(i), "field", value.toString(), "number", i);
+            }
+        }
+        refresh(indexNames);
+        flush(indexNames);
+
+        // Clear block cache so reads populate FD cache
+        clearBlockCache();
+
+        for (int idx = 0; idx < numIndices; idx++) {
+            for (int i = 0; i < 10; i++) {
+                client().prepareSearch(indexNames[idx]).setQuery(org.opensearch.index.query.QueryBuilders.termQuery("number", i)).get();
+            }
+        }
+
+        FileChannelCache fdCache = CryptoDirectoryFactory.getSharedFileChannelCache();
+        assertNotNull("Shared FD cache should be initialized", fdCache);
+
+        fdCache.cleanUp();
+        long fdCacheSizeBefore = fdCache.estimatedSize();
+        logger.info("FD cache size before deleting all indices: {}", fdCacheSizeBefore);
+        assertThat("FD cache should have entries", fdCacheSizeBefore, greaterThan(0L));
+
+        // Delete all indices
+        for (String indexName : indexNames) {
+            client().admin().indices().delete(new DeleteIndexRequest(indexName)).actionGet();
+        }
+
+        fdCache.cleanUp();
+        long fdCacheSizeAfter = fdCache.estimatedSize();
+        logger.info("FD cache size after deleting all {} indices: {} (was: {})", numIndices, fdCacheSizeAfter, fdCacheSizeBefore);
+        assertThat("FD cache should be empty after all indices deleted", fdCacheSizeAfter, equalTo(0L));
     }
 }

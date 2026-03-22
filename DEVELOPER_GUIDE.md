@@ -150,16 +150,41 @@ cd "${STORAGE_ENCRYPTION_DIR}"
 ./gradlew test
 ```
 
+This runs unit tests and then JCStress concurrency tests in `quick` mode (fast sanity check).
+
+### JCStress Concurrency Tests
+
+JCStress tests validate lock-free and concurrent data structures under real thread contention.
+The mode controls how many iterations and thread configurations are explored:
+
+| Command | Mode | Use case |
+|---------|------|----------|
+| `./gradlew test` | `quick` | Fast feedback during development (runs as finalizer after unit tests) |
+| `./gradlew jcstress` | `default` | Thorough testing before merging |
+| `./gradlew jcstress -Pjcstress.mode=stress` | `stress` | Maximum thoroughness for CI or pre-release validation |
+
+You can also skip jcstress entirely during development:
+
+```bash
+./gradlew test -x jcstress
+```
+
 ### Integration Tests
 
 ```bash
-./gradlew integrationTest
+./gradlew internalClusterTest
 ```
 
 ### YAML Rest Tests
 
 ```bash
 ./gradlew yamlRestTest
+```
+
+### All Tests
+
+```bash
+./gradlew allTests
 ```
 
 ## Debugging
