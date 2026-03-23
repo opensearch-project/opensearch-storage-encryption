@@ -13,6 +13,7 @@ import java.nio.file.StandardOpenOption;
 
 import org.openjdk.jcstress.annotations.*;
 import org.openjdk.jcstress.infra.results.*;
+import org.opensearch.common.SuppressForbidden;
 
 /**
  * JCStress tests for {@link FileChannelCache} and {@link RefCountedChannel}.
@@ -46,15 +47,33 @@ public class FileChannelCacheStressTests {
     private static final byte MAGIC = (byte) 0xCA;
     /** Size of temp files — small but enough to validate reads. */
     private static final int FILE_SIZE = 4096;
+    /** Shared temp directory for all jcstress test files. */
+    private static final Path TEMP_DIR;
+
+    static {
+        try {
+            TEMP_DIR = Files.createTempDirectory(Path.of(System.getProperty("java.io.tmpdir")), "jcstress-fcc");
+            // Register shutdown hook to clean up temp directory
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                try (var stream = Files.walk(TEMP_DIR)) {
+                    stream.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
+                        try {
+                            Files.deleteIfExists(p);
+                        } catch (IOException ignored) {}
+                    });
+                } catch (IOException ignored) {}
+            }));
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to create temp directory for jcstress tests", e);
+        }
+    }
 
     /**
      * Creates a temp file filled with {@link #MAGIC} bytes.
-     * The file is marked deleteOnExit for cleanup.
      */
     private static Path createTempFile() {
         try {
-            Path tmp = Files.createTempFile("jcstress-fcc-", ".dat");
-            tmp.toFile().deleteOnExit();
+            Path tmp = Files.createTempFile(TEMP_DIR, "jcstress-fcc-", ".dat");
             byte[] data = new byte[FILE_SIZE];
             java.util.Arrays.fill(data, MAGIC);
             Files.write(tmp, data);
@@ -68,6 +87,7 @@ public class FileChannelCacheStressTests {
      * Reads 64 bytes from offset 0 and validates all bytes match MAGIC.
      * Returns true if content is intact, false if channel is broken or data corrupt.
      */
+    @SuppressForbidden(reason = "FileChannel#read is required to validate channel liveness in stress tests")
     private static boolean readAndValidate(FileChannel fc) {
         try {
             ByteBuffer buf = ByteBuffer.allocate(64);

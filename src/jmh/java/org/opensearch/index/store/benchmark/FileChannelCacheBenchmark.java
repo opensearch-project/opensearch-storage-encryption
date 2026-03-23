@@ -5,9 +5,12 @@
 package org.opensearch.index.store.benchmark;
 
 import java.io.IOException;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Random;
@@ -28,23 +31,27 @@ import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
+import org.opensearch.index.store.block_loader.DirectIOReaderUtil;
 import org.opensearch.index.store.block_loader.FileChannelCache;
 import org.opensearch.index.store.block_loader.RefCountedChannel;
+import org.opensearch.index.store.bufferpoolfs.StaticConfigs;
 
 /**
  * JMH benchmark comparing I/O latency for small reads (8 KB) with and without
- * the FileChannelCache.
+ * the FileChannelCache, using O_DIRECT to bypass the OS page cache.
  *
  * <p>Three strategies are compared:
  * <ul>
- *   <li><b>openEveryTime</b>: open() + read() + close() per I/O — the baseline
- *       without FD caching. This is what any Directory implementation does today
- *       if it doesn't cache FileChannels.</li>
+ *   <li><b>openEveryTime</b>: open(O_DIRECT) + read() + close() per I/O — the baseline
+ *       without FD caching.</li>
  *   <li><b>cachedChannel</b>: acquire() from FileChannelCache + read() + release()
  *       — the FD cache approach. open() is amortized across many reads.</li>
- *   <li><b>singleChannel</b>: one pre-opened FileChannel, read() only — theoretical
- *       lower bound (no open/close, no cache lookup). Shows the pure read cost.</li>
+ *   <li><b>singleChannel</b>: one pre-opened O_DIRECT FileChannel, read() only —
+ *       theoretical lower bound (no open/close, no cache lookup).</li>
  * </ul>
+ *
+ * <p>All reads use sector-aligned buffers allocated via {@link Arena#allocate(long, long)}
+ * to satisfy O_DIRECT alignment requirements.
  *
  * <p>Run:
  * <pre>
@@ -61,10 +68,11 @@ import org.opensearch.index.store.block_loader.RefCountedChannel;
  */
 @BenchmarkMode({ Mode.AverageTime, Mode.Throughput })
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
-@Warmup(iterations = 3, time = 2)
-@Measurement(iterations = 5, time = 3)
-@Fork(value = 2, jvmArgsAppend = { "--enable-native-access=ALL-UNNAMED", "--enable-preview" })
+@Warmup(iterations = 2, time = 1)
+@Measurement(iterations = 3, time = 2)
+@Fork(value = 1, jvmArgsAppend = { "--enable-native-access=ALL-UNNAMED", "--enable-preview" })
 @Threads(1)
+@SuppressWarnings("preview")
 public class FileChannelCacheBenchmark {
 
     // ========================================================================
@@ -77,12 +85,14 @@ public class FileChannelCacheBenchmark {
         @Param({ "8192" })
         public int readSizeBytes;
 
-        @Param({ "1", "64", "256" })
+        @Param({ "1", "64" })
         public int numFiles;
 
         private Path tempDir;
         private String[] filePaths;
         private FileChannelCache fdCache;
+        private OpenOption directOption;
+        private int alignment;
 
         @Setup(Level.Trial)
         public void setup() throws Exception {
@@ -97,8 +107,12 @@ public class FileChannelCacheBenchmark {
                 filePaths[i] = f.toAbsolutePath().normalize().toString();
             }
 
+            // O_DIRECT setup
+            directOption = DirectIOReaderUtil.getDirectOpenOption();
+            alignment = StaticConfigs.getDirectIOAlignment(tempDir);
+
             // FD cache sized to hold all files (no eviction during benchmark)
-            fdCache = new FileChannelCache(Math.max(numFiles, 256), null);
+            fdCache = new FileChannelCache(Math.max(numFiles, 256), directOption);
         }
 
         @TearDown(Level.Trial)
@@ -111,20 +125,31 @@ public class FileChannelCacheBenchmark {
     }
 
     // ========================================================================
-    // Per-thread state — each JMH thread gets its own read buffer and RNG
+    // Per-thread state — each JMH thread gets its own aligned read buffer and RNG
     // ========================================================================
 
     @State(Scope.Thread)
     public static class ThreadState {
+        Arena arena;
         ByteBuffer readBuf;
         Random rng;
         int fileIndex;
 
         @Setup(Level.Iteration)
         public void setup(SharedState shared) {
-            readBuf = ByteBuffer.allocateDirect(shared.readSizeBytes);
+            arena = Arena.ofConfined();
+            // Allocate sector-aligned buffer for O_DIRECT reads
+            MemorySegment segment = arena.allocate(shared.readSizeBytes, shared.alignment);
+            readBuf = segment.asByteBuffer();
             rng = new Random(Thread.currentThread().threadId());
             fileIndex = 0;
+        }
+
+        @TearDown(Level.Iteration)
+        public void tearDown() {
+            if (arena != null) {
+                arena.close();
+            }
         }
 
         /** Round-robin across files to simulate multi-shard access */
@@ -142,7 +167,7 @@ public class FileChannelCacheBenchmark {
     }
 
     // ========================================================================
-    // Benchmark: open() + read() + close() per I/O — no FD caching
+    // Benchmark: open(O_DIRECT) + read() + close() per I/O — no FD caching
     // ========================================================================
 
     @Benchmark
@@ -151,7 +176,7 @@ public class FileChannelCacheBenchmark {
         long offset = ts.randomOffset(shared);
         ts.readBuf.clear();
 
-        try (FileChannel fc = FileChannel.open(Path.of(path), StandardOpenOption.READ)) {
+        try (FileChannel fc = FileChannel.open(Path.of(path), StandardOpenOption.READ, shared.directOption)) {
             int n = fc.read(ts.readBuf, offset);
             bh.consume(n);
         }
@@ -174,7 +199,7 @@ public class FileChannelCacheBenchmark {
     }
 
     // ========================================================================
-    // Benchmark: pre-opened channel, read() only — theoretical lower bound
+    // Benchmark: pre-opened O_DIRECT channel, read() only — theoretical lower bound
     // ========================================================================
 
     @State(Scope.Thread)
@@ -185,7 +210,7 @@ public class FileChannelCacheBenchmark {
         public void setup(SharedState shared) throws IOException {
             channels = new FileChannel[shared.numFiles];
             for (int i = 0; i < shared.numFiles; i++) {
-                channels[i] = FileChannel.open(Path.of(shared.filePaths[i]), StandardOpenOption.READ);
+                channels[i] = FileChannel.open(Path.of(shared.filePaths[i]), StandardOpenOption.READ, shared.directOption);
             }
         }
 
