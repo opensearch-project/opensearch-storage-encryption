@@ -797,6 +797,138 @@ public class FileChannelCacheTests extends OpenSearchTestCase {
     }
 
     /**
+     * Evict-then-re-acquire same path opens two FDs simultaneously.
+     *
+     * Scenario:
+     *   Thread A acquires ref for path (refCount=2: base + I/O)
+     *   Cache evicts the entry (size pressure) → base ref released (refCount=1)
+     *   Thread B acquires same path → cache miss → opens NEW FileChannel
+     *   Both FDs are open simultaneously and both work
+     *   Thread A releases → old FD closes (refCount 1→0)
+     *   Thread B releases → new FD stays in cache (refCount=1)
+     *
+     * This is safe because Lucene guarantees immutability: same path = same content.
+     * The temporary FD overshoot is bounded by concurrent in-flight I/Os at eviction time.
+     */
+    public void testEvictThenReAcquireSamePathOpensTwoFDs() throws Exception {
+        Path file = createTestFile();
+        String path = file.toAbsolutePath().normalize().toString();
+
+        CountDownLatch evicted = new CountDownLatch(1);
+
+        // maxSize=1 so inserting a second entry evicts the first
+        Cache<String, RefCountedChannel> rawCache = Caffeine
+            .newBuilder()
+            .maximumSize(1)
+            .evictionListener((String key, RefCountedChannel ref, RemovalCause cause) -> {
+                if (ref != null) {
+                    ref.releaseBase();
+                    if (key.equals(path)) {
+                        evicted.countDown();
+                    }
+                }
+            })
+            .build();
+
+        // Thread A: insert path and hold an I/O ref (refCount: 1→2)
+        FileChannel fcOld = FileChannel.open(file, StandardOpenOption.READ);
+        RefCountedChannel refOld = new RefCountedChannel(fcOld);
+        rawCache.put(path, refOld);
+        refOld.acquire(); // refCount=2 (base + I/O)
+
+        // Evict path by inserting a different key into the size=1 cache
+        Path dummyFile = createTestFile();
+        String dummyPath = dummyFile.toAbsolutePath().normalize().toString();
+        FileChannel fcDummy = FileChannel.open(dummyFile, StandardOpenOption.READ);
+        RefCountedChannel refDummy = new RefCountedChannel(fcDummy);
+        rawCache.put(dummyPath, refDummy);
+        rawCache.cleanUp();
+
+        // Wait for eviction of path
+        assertTrue("Eviction must fire for path", evicted.await(5, TimeUnit.SECONDS));
+
+        // Old FD must still be open — Thread A holds an I/O ref (refCount=1)
+        assertTrue("Old FD must survive eviction while I/O ref held", fcOld.isOpen());
+
+        // Thread B: re-acquire same path → cache miss → opens a NEW FD
+        FileChannel fcNew = FileChannel.open(file, StandardOpenOption.READ);
+        RefCountedChannel refNew = new RefCountedChannel(fcNew);
+        rawCache.put(path, refNew);
+        refNew.acquire(); // refCount=2 (base + I/O)
+
+        // Both FDs are open simultaneously
+        assertTrue("Old FD must still be open", fcOld.isOpen());
+        assertTrue("New FD must be open", fcNew.isOpen());
+        assertNotSame("Must be different FileChannel instances", fcOld, fcNew);
+
+        // Both FDs read the same content (Lucene immutability guarantee)
+        assertTrue("Old FD must read correctly", readAndValidate(fcOld, MAGIC));
+        assertTrue("New FD must read correctly", readAndValidate(fcNew, MAGIC));
+
+        // Thread A finishes I/O → release old ref → refCount 1→0 → old FD closes
+        refOld.close();
+        assertFalse("Old FD must close after last ref released", fcOld.isOpen());
+
+        // New FD still open (Thread B's I/O ref + cache base)
+        assertTrue("New FD must still be open", fcNew.isOpen());
+
+        // Thread B finishes I/O → release I/O ref → refCount 2→1 (cache base remains)
+        refNew.close();
+        assertTrue("New FD must stay open — cache still holds base ref", fcNew.isOpen());
+
+        // Cleanup
+        refDummy.releaseBase();
+        refNew.releaseBase();
+        rawCache.cleanUp();
+        assertFalse("New FD must close after cache cleanup", fcNew.isOpen());
+    }
+
+    /**
+     * Same scenario as above but using the real FileChannelCache API.
+     * Proves that acquire() transparently opens a new FD when the old one was evicted.
+     */
+    public void testEvictThenReAcquireViaFileChannelCacheAPI() throws Exception {
+        // maxSize=1 so the second distinct path evicts the first
+        FileChannelCache cache = new FileChannelCache(1, null);
+
+        Path file1 = createTestFile();
+        Path file2 = createTestFile();
+        String path1 = file1.toAbsolutePath().normalize().toString();
+        String path2 = file2.toAbsolutePath().normalize().toString();
+
+        // Thread A: acquire path1 and hold ref (simulating in-flight I/O)
+        RefCountedChannel heldRef = cache.acquire(path1);
+        FileChannel fcOld = heldRef.channel();
+        assertTrue("Old channel must be open", fcOld.isOpen());
+
+        // Evict path1 by loading path2 into the size=1 cache
+        try (RefCountedChannel ref2 = cache.acquire(path2)) {
+            assertTrue(readAndValidate(ref2.channel(), MAGIC));
+        }
+        cache.cleanUp(); // force eviction
+
+        // Old channel must still be open — heldRef keeps it alive
+        assertTrue("Old channel must survive eviction", fcOld.isOpen());
+
+        // Thread B: re-acquire path1 → cache miss → new FD
+        try (RefCountedChannel newRef = cache.acquire(path1)) {
+            FileChannel fcNew = newRef.channel();
+            assertTrue("New channel must be open", fcNew.isOpen());
+            assertNotSame("Must be a different FileChannel", fcOld, fcNew);
+
+            // Both readable simultaneously
+            assertTrue("Old channel readable", readAndValidate(fcOld, MAGIC));
+            assertTrue("New channel readable", readAndValidate(fcNew, MAGIC));
+        }
+
+        // Release Thread A's ref → old FD closes
+        heldRef.close();
+        assertFalse("Old channel must close after release", fcOld.isOpen());
+
+        cache.close();
+    }
+
+    /**
      * Verifies that invalidateByPathPrefix() closes all idle FileChannels
      * under the prefix. This catches FD leaks on shard close.
      */
