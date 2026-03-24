@@ -622,7 +622,9 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             throw new AssertionError(ioe);
         }
 
-        // Register with IndexInputScope for automatic cleanup when the task completes.
+        // Register with IndexInputScope for cleanup when the task completes.
+        // Slice close() only unpins — does NOT set isOpen=false — so merge
+        // threads that hold references can still use the slice.
         if (IndexInputScope.SCOPE.isBound()) {
             IndexInputScope.SCOPE.get().register(slice);
         }
@@ -637,28 +639,32 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             return;
         }
 
-        // Mark as closed to ensure all future accesses throw AlreadyClosedException
-        isOpen = false;
-
-        // Both master and slices must unpin their current block
-        if (currentBlock != null) {
-            currentBlock.unpin();
-            currentBlock = null;
-        }
+        unpinCurrentBlock();
 
         if (!isSlice) {
-            // Master instance cleanup
-            assert !isSlice : "Master instance should not be marked as slice";
+            // Only master sets isOpen=false. Slices remain "open" so Lucene
+            // merge threads that hold references can still use them — they
+            // simply re-acquire a block on next read.
+            isOpen = false;
 
             if (blockSlotTinyCache != null) {
                 blockSlotTinyCache.clear();
             }
 
             readaheadManager.close();
-        } else {
-            // Slice instance cleanup
-            assert isSlice : "Slice instance should be marked as slice";
-            // Slices share cache and readahead manager, so don't close them
+        }
+    }
+
+    /**
+     * Releases the currently pinned block without closing this IndexInput.
+     * Called by {@link IndexInputScope} at task end to release pins held by
+     * slices that may outlive the task.
+     */
+    void unpinCurrentBlock() {
+        if (currentBlock != null) {
+            currentBlock.unpin();
+            currentBlock = null;
+            currentBlockOffset = -1;
         }
     }
 }
