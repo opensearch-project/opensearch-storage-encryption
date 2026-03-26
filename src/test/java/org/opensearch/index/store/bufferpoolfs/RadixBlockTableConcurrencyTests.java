@@ -364,6 +364,64 @@ public class RadixBlockTableConcurrencyTests extends OpenSearchTestCase {
         }
     }
 
+    public void testP3bClearPostconditionRemovesPreExistingEntriesDuringConcurrentGrowth() throws Exception {
+        final int rounds = 20;
+        final int writerThreads = 4;
+        final int initialOuterSlots = 1024;
+        final int maxOuterSlotsDuringRound = initialOuterSlots + 256;
+
+        for (int round = 0; round < rounds; round++) {
+            RadixBlockTable<ByteBuffer> table = new RadixBlockTable<>(initialOuterSlots);
+            long stickyBlockId = ((long) (initialOuterSlots - 1)) << RadixBlockTable.PAGE_SHIFT;
+            table.put(stickyBlockId, createSentinel(stickyBlockId));
+
+            CountDownLatch readyLatch = new CountDownLatch(writerThreads);
+            CountDownLatch startLatch = new CountDownLatch(1);
+            AtomicBoolean running = new AtomicBoolean(true);
+
+            ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+            try {
+                for (int w = 0; w < writerThreads; w++) {
+                    final int writerId = w;
+                    final ByteBuffer marker = createSentinel(10_000L + writerId);
+                    executor.submit(() -> {
+                        readyLatch.countDown();
+                        try {
+                            startLatch.await();
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
+
+                        int iter = 0;
+                        while (running.get()) {
+                            int len = table.directoryLength();
+                            long growthOuter = len < maxOuterSlotsDuringRound ? (long) len + writerId + 1 : (long) initialOuterSlots + writerId;
+                            long blockId = growthOuter << RadixBlockTable.PAGE_SHIFT;
+                            table.put(blockId, marker);
+                            iter++;
+                            if ((iter & 0x1F) == 0) {
+                                Thread.yield();
+                            }
+                        }
+                    });
+                }
+
+                assertTrue(readyLatch.await(10, TimeUnit.SECONDS));
+                startLatch.countDown();
+                Thread.sleep(20);
+
+                table.clear();
+                running.set(false);
+            } finally {
+                executor.shutdown();
+                assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+            }
+
+            assertNull("pre-clear entry survived clear in round " + round, table.get(stickyBlockId));
+        }
+    }
+
     // ========================================================================
     // P4: Stale reads are benign — high-contention put/remove/get
     // ========================================================================

@@ -6,7 +6,7 @@ package org.opensearch.index.store.bufferpoolfs;
 
 /**
  * A two-level radix table mapping blockIds to values of type {@code V}.
- * Designed as a per-VFD L1 lookup cache, but generic enough for any
+ * Designed as a per-file L1 lookup cache, but generic enough for any
  * blockId-to-value mapping.
  *
  * <h2>Structure</h2>
@@ -49,6 +49,36 @@ package org.opensearch.index.store.bufferpoolfs;
  *   <li>No {@code volatile}, no {@code VarHandle}, no CAS on the read path.</li>
  * </ul>
  *
+ * <h2>Expected ownership and lifecycle</h2>
+ * <ul>
+ *   <li>This table may be shared by multiple parent IndexInput instances that open
+ *       the same absolute file path, and by each parent's clones/slices.</li>
+ *   <li>Recommended ownership model: keep the table in a higher-level cache keyed by
+ *       absolute file path (or equivalent file identity) and manage a thread-safe
+ *       shared refcount. Decrement on parent close, and remove the table from the
+ *       external cache when the shared refcount reaches 0.</li>
+ *   <li>Under that model, {@link #clear()} is optional for correctness; once the table is
+ *       unreachable, GC reclaims it. Use {@link #clear()} only if deterministic eager release
+ *       is desired while the table object itself remains reachable.</li>
+ *   <li>Clones/slices must not outlive the parent lifecycle contract. This class does not
+ *       enforce close state; callers must prevent post-close use at a higher layer.</li>
+ *   <li>Callers should provide non-negative block IDs in the valid cache-block address space
+ *       for the backing file.</li>
+ * </ul>
+ *
+ * <h2>How entries are removed from this L1 table</h2>
+ * <ul>
+ *   <li><b>Targeted eviction:</b> call {@link #remove(long)} for a specific block ID
+ *       when L2/owner evicts that block; this nulls the slot.</li>
+ *   <li><b>Inner-array reclamation:</b> after {@link #remove(long)}, if an inner page has
+ *       no remaining non-null slots, the page is detached from the outer directory.</li>
+ *   <li><b>Whole-table reset:</b> {@link #clear()} swaps to an empty directory, dropping
+ *       all L1 entries at once.</li>
+ *   <li><b>Lifecycle removal:</b> when the external owner removes the table from its
+ *       absolute-path cache at refcount 0, the table and any remaining entries are reclaimed
+ *       by GC once unreachable.</li>
+ * </ul>
+ *
  * <h2>Formal correctness properties</h2>
  * <ol>
  *   <li><b>No torn references:</b> JLS §17.7 — reference read/write is atomic.</li>
@@ -57,8 +87,8 @@ package org.opensearch.index.store.bufferpoolfs;
  *       the reference before the null-write safely completes its read (the
  *       value is still valid until GC collects it after all references
  *       are released).</li>
- *   <li><b>No memory leak:</b> {@link #clear()} nulls all inner arrays.
- *       {@link #remove} reclaims empty inner arrays. Eviction nulls
+ *   <li><b>No memory leak:</b> {@link #clear()} atomically swaps the directory
+ *       to a fresh empty one. {@link #remove} reclaims empty inner arrays. Eviction nulls
  *       individual slots.</li>
  *   <li><b>Stale reads are benign:</b> A reader seeing a stale non-null
  *       reference reads valid (possibly evicted) data — harmless for a cache.
@@ -120,8 +150,6 @@ public final class RadixBlockTable<V> {
      * Stores a value at the given blockId.
      * Allocates the inner array lazily if needed (synchronized for allocation only).
      * The slot write itself is a plain store.
-     *
-     * 
      */
     public void put(long blockId, V value) {
         int outer = (int) (blockId >>> PAGE_SHIFT);
@@ -203,14 +231,16 @@ public final class RadixBlockTable<V> {
     }
 
     /**
-     * Clears all entries. Called on parent IndexInput close.
-     * Nulls all inner arrays.
+     * Clears all entries.
+     * Atomically swaps to a fresh empty directory of the same length.
+     * <p>
+     * Optional in a refcounted ownership model where the table is removed from the
+     * external cache when its refcount reaches 0. In that case, making the table
+     * unreachable is sufficient for reclamation, and {@code clear()} is only for
+     * eager memory release while the table remains reachable.
      */
-    public void clear() {
-        Object[][] dir = directory;
-        for (int i = 0; i < dir.length; i++) {
-            dir[i] = null;
-        }
+    public synchronized void clear() {
+        directory = new Object[directory.length][];
     }
 
     /**
