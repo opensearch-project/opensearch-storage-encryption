@@ -396,7 +396,9 @@ public class RadixBlockTableConcurrencyTests extends OpenSearchTestCase {
                         int iter = 0;
                         while (running.get()) {
                             int len = table.directoryLength();
-                            long growthOuter = len < maxOuterSlotsDuringRound ? (long) len + writerId + 1 : (long) initialOuterSlots + writerId;
+                            long growthOuter = len < maxOuterSlotsDuringRound
+                                ? (long) len + writerId + 1
+                                : (long) initialOuterSlots + writerId;
                             long blockId = growthOuter << RadixBlockTable.PAGE_SHIFT;
                             table.put(blockId, marker);
                             iter++;
