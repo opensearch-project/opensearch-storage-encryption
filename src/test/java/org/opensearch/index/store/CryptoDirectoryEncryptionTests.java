@@ -454,7 +454,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
             memorySegmentPool,
             keyResolverA,
-            encryptionMetadataCache
+            encryptionMetadataCache,
+            false
         );
 
         // Create per-directory cache and worker
@@ -486,9 +487,9 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 keyResolverA,
                 memorySegmentPool,
                 blockCacheA,
-                blockLoaderA,
                 readAheadWorkerA,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                false
             )
         ) {
             // Write data
@@ -532,7 +533,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
             memorySegmentPool,
             keyResolverA,
-            encryptionMetadataCache
+            encryptionMetadataCache,
+            false
         );
 
         // Create per-directory cache and worker
@@ -564,9 +566,9 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 keyResolverA,
                 memorySegmentPool,
                 blockCacheA,
-                blockLoaderA,
                 readAheadWorkerA,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                false
             )
         ) {
             // Write data
@@ -609,7 +611,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
             memorySegmentPool,
             keyResolverA,
-            encryptionMetadataCache
+            encryptionMetadataCache,
+            false
         );
 
         // Create per-directory cache and worker
@@ -641,9 +644,9 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 keyResolverA,
                 memorySegmentPool,
                 blockCacheA,
-                blockLoaderA,
                 readAheadWorkerA,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                false
             )
         ) {
             // Write data
@@ -687,7 +690,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
             memorySegmentPool,
             keyResolverA,
-            encryptionMetadataCache
+            encryptionMetadataCache,
+            false
         );
 
         // Create per-directory cache and worker
@@ -719,9 +723,9 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 keyResolverA,
                 memorySegmentPool,
                 blockCacheA,
-                blockLoaderA,
                 readAheadWorkerA,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                false
             )
         ) {
             // Write data

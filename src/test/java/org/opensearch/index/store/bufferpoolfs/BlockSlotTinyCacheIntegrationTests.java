@@ -51,11 +51,13 @@ public class BlockSlotTinyCacheIntegrationTests extends OpenSearchTestCase {
     @Before
     public void setUp() throws Exception {
         super.setUp();
+        org.opensearch.index.store.metrics.CryptoMetricsService
+            .initialize(org.opensearch.telemetry.metrics.noop.NoopMetricsRegistry.INSTANCE);
         arena = Arena.ofConfined();
         testPath = Paths.get("/test/file.dat");
 
         // Create a simulated cache with pool and eviction
-        simulatedCache = new SimulatedBlockCache(arena, 10); // Pool of 10 segments
+        simulatedCache = new SimulatedBlockCache(arena, 100); // Pool of 100 segments
 
         // Create tiny cache on top of simulated cache
         tinyCache = new BlockSlotTinyCache(simulatedCache, testPath, FILE_SIZE);

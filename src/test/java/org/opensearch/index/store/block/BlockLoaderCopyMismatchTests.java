@@ -27,6 +27,7 @@ import org.opensearch.index.store.CryptoDirectoryFactory;
 import org.opensearch.index.store.DummyKeyProvider;
 import org.opensearch.index.store.PanamaNativeAccess;
 import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
@@ -69,7 +70,14 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
         super.setUp();
         // Save and disable write-through cache so reads go through the BlockLoader (Direct I/O)
         originalWriteCacheEnabled = CryptoDirectoryFactory.isWriteCacheEnabled();
-        CryptoDirectoryFactory.setNodeSettings(Settings.builder().put("node.store.crypto.write_cache_enabled", false).build());
+        CryptoDirectoryFactory
+            .setNodeSettings(
+                Settings
+                    .builder()
+                    .put("node.store.crypto.write_cache_enabled", false)
+                    .put("node.store.crypto.byte_buffer_mode_enabled", false)
+                    .build()
+            );
         Path path = createTempDir();
         Provider provider = Security.getProvider(DEFAULT_CRYPTO_PROVIDER);
         MasterKeyProvider keyProvider = DummyKeyProvider.create();
@@ -83,7 +91,7 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
             .build();
 
         this.poolResources = PoolBuilder.build(nodeSettings);
-        Pool<RefCountedMemorySegment> segmentPool = poolResources.getSegmentPool();
+        Pool<RefCountedMemorySegment> segmentPool = (Pool<RefCountedMemorySegment>) poolResources.getPool();
 
         String indexUuid = randomAlphaOfLength(10);
         String indexName = randomAlphaOfLength(10);
@@ -96,7 +104,12 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
         EncryptionMetadataCache encryptionMetadataCache = EncryptionMetadataCacheRegistry.getOrCreateCache(indexUuid, shardId, indexName);
         this.encryptionMetadataCache = encryptionMetadataCache;
 
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(segmentPool, keyResolver, encryptionMetadataCache);
+        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(
+            segmentPool,
+            keyResolver,
+            encryptionMetadataCache,
+            false
+        );
 
         Worker worker = poolResources.getSharedReadaheadWorker();
 
@@ -117,9 +130,9 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
             keyResolver,
             segmentPool,
             directoryCache,
-            loader,
             worker,
-            encryptionMetadataCache
+            encryptionMetadataCache,
+            false
         );
     }
 
@@ -359,16 +372,16 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
         // The loader will try to copy min(32768, 8192) = 8192 bytes into a 4096-byte segment
         int blockCount = 2;
         try {
-            Pool<RefCountedMemorySegment> pool = poolResources.getSegmentPool();
+            Pool<RefCountedMemorySegment> pool = (Pool<RefCountedMemorySegment>) poolResources.getPool();
 
-            BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encryptionMetadataCache);
+            BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encryptionMetadataCache, false);
 
-            RefCountedMemorySegment[] blocks = loader.load(filePath, 0, blockCount, 5000);
+            BlockCacheValue[] blocks = loader.load(filePath, 0, blockCount, 5000);
 
             // If we get here without exception, verify the data is correct
             for (int b = 0; b < blockCount; b++) {
                 assertNotNull("Block " + b + " should not be null", blocks[b]);
-                MemorySegment seg = blocks[b].segment();
+                MemorySegment seg = ((RefCountedMemorySegment) blocks[b]).segment();
 
                 int blockStart = b * CACHE_BLOCK_SIZE;
                 for (int i = 0; i < CACHE_BLOCK_SIZE && (blockStart + i) < fileSize; i++) {
@@ -416,19 +429,19 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
         writeFile(fileName, expected);
 
         Path filePath = bufferPoolDirectory.getDirectory().resolve(fileName);
-        Pool<RefCountedMemorySegment> pool = poolResources.getSegmentPool();
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encryptionMetadataCache);
+        Pool<RefCountedMemorySegment> pool = (Pool<RefCountedMemorySegment>) poolResources.getPool();
+        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encryptionMetadataCache, false);
 
-        RefCountedMemorySegment[] blocks = loader.load(filePath, 0, 1, 5000);
+        BlockCacheValue[] blocks = loader.load(filePath, 0, 1, 5000);
         try {
             assertNotNull("Block 0 should not be null", blocks[0]);
-            MemorySegment seg = blocks[0].segment();
+            MemorySegment seg = ((RefCountedMemorySegment) blocks[0]).segment();
             for (int i = 0; i < CACHE_BLOCK_SIZE; i++) {
                 byte actual = seg.get(LAYOUT_BYTE, i);
                 assertEquals("Corruption at offset " + i + " with larger FS block size", expected[i], actual);
             }
         } finally {
-            for (RefCountedMemorySegment b : blocks) {
+            for (BlockCacheValue b : blocks) {
                 if (b != null)
                     b.close();
             }
@@ -451,14 +464,14 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
         writeFile(fileName, expected);
 
         Path filePath = bufferPoolDirectory.getDirectory().resolve(fileName);
-        Pool<RefCountedMemorySegment> pool = poolResources.getSegmentPool();
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encryptionMetadataCache);
+        Pool<RefCountedMemorySegment> pool = (Pool<RefCountedMemorySegment>) poolResources.getPool();
+        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encryptionMetadataCache, false);
 
-        RefCountedMemorySegment[] blocks = loader.load(filePath, 0, blockCount, 5000);
+        BlockCacheValue[] blocks = loader.load(filePath, 0, blockCount, 5000);
         try {
             for (int b = 0; b < blockCount; b++) {
                 assertNotNull("Block " + b + " should not be null", blocks[b]);
-                MemorySegment seg = blocks[b].segment();
+                MemorySegment seg = ((RefCountedMemorySegment) blocks[b]).segment();
                 int blockStart = b * CACHE_BLOCK_SIZE;
                 for (int i = 0; i < CACHE_BLOCK_SIZE && (blockStart + i) < fileSize; i++) {
                     byte actual = seg.get(LAYOUT_BYTE, i);
@@ -470,7 +483,7 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
                 }
             }
         } finally {
-            for (RefCountedMemorySegment b : blocks) {
+            for (BlockCacheValue b : blocks) {
                 if (b != null)
                     b.close();
             }
@@ -496,19 +509,19 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
         writeFile(fileName, expected);
 
         Path filePath = bufferPoolDirectory.getDirectory().resolve(fileName);
-        Pool<RefCountedMemorySegment> pool = poolResources.getSegmentPool();
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encryptionMetadataCache);
+        Pool<RefCountedMemorySegment> pool = (Pool<RefCountedMemorySegment>) poolResources.getPool();
+        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encryptionMetadataCache, false);
 
-        RefCountedMemorySegment[] blocks = loader.load(filePath, 0, 1, 5000);
+        BlockCacheValue[] blocks = loader.load(filePath, 0, 1, 5000);
         try {
             assertNotNull("Block 0 should not be null", blocks[0]);
-            MemorySegment seg = blocks[0].segment();
+            MemorySegment seg = ((RefCountedMemorySegment) blocks[0]).segment();
             for (int i = 0; i < CACHE_BLOCK_SIZE; i++) {
                 byte actual = seg.get(LAYOUT_BYTE, i);
                 assertEquals("Corruption at offset " + i + " with 4KB FS block size", expected[i], actual);
             }
         } finally {
-            for (RefCountedMemorySegment b : blocks) {
+            for (BlockCacheValue b : blocks) {
                 if (b != null)
                     b.close();
             }
@@ -532,14 +545,14 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
         writeFile(fileName, expected);
 
         Path filePath = bufferPoolDirectory.getDirectory().resolve(fileName);
-        Pool<RefCountedMemorySegment> pool = poolResources.getSegmentPool();
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encryptionMetadataCache);
+        Pool<RefCountedMemorySegment> pool = (Pool<RefCountedMemorySegment>) poolResources.getPool();
+        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encryptionMetadataCache, false);
 
-        RefCountedMemorySegment[] blocks = loader.load(filePath, 0, blockCount, 5000);
+        BlockCacheValue[] blocks = loader.load(filePath, 0, blockCount, 5000);
         try {
             for (int b = 0; b < blockCount; b++) {
                 assertNotNull("Block " + b + " should not be null", blocks[b]);
-                MemorySegment seg = blocks[b].segment();
+                MemorySegment seg = ((RefCountedMemorySegment) blocks[b]).segment();
                 int blockStart = b * CACHE_BLOCK_SIZE;
                 for (int i = 0; i < CACHE_BLOCK_SIZE && (blockStart + i) < fileSize; i++) {
                     byte actual = seg.get(LAYOUT_BYTE, i);
@@ -551,7 +564,7 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
                 }
             }
         } finally {
-            for (RefCountedMemorySegment b : blocks) {
+            for (BlockCacheValue b : blocks) {
                 if (b != null)
                     b.close();
             }

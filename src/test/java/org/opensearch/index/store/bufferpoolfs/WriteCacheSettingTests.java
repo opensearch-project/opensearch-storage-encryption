@@ -70,13 +70,14 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
             .put("node.store.crypto.warmup_percentage", 0.0)
             .put("node.store.crypto.cache_to_pool_ratio", 0.8)
             .put("node.store.crypto.write_cache_enabled", true)
+            .put("node.store.crypto.byte_buffer_mode_enabled", false)
             .build();
 
         // Initialize the static volatile from settings
         CryptoDirectoryFactory.setNodeSettings(nodeSettings);
 
         this.poolResources = PoolBuilder.build(nodeSettings);
-        Pool<RefCountedMemorySegment> segmentPool = poolResources.getSegmentPool();
+        Pool<RefCountedMemorySegment> segmentPool = (Pool<RefCountedMemorySegment>) poolResources.getPool();
 
         String indexUuid = randomAlphaOfLength(10);
         String indexName = randomAlphaOfLength(10);
@@ -86,7 +87,12 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
         KeyResolver keyResolver = new TestKeyResolver(indexUuid, indexName, fsDirectory, provider, keyProvider, shardId);
         EncryptionMetadataCache encryptionMetadataCache = EncryptionMetadataCacheRegistry.getOrCreateCache(indexUuid, shardId, indexName);
 
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(segmentPool, keyResolver, encryptionMetadataCache);
+        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(
+            segmentPool,
+            keyResolver,
+            encryptionMetadataCache,
+            false
+        );
 
         Worker worker = poolResources.getSharedReadaheadWorker();
 
@@ -94,7 +100,13 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
         CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> sharedCaffeineCache =
             (CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment>) poolResources.getBlockCache();
 
-        this.directoryCache = new CaffeineBlockCache<>(sharedCaffeineCache.getCache(), loader, poolResources.getMaxCacheBlocks());
+        @SuppressWarnings({ "unchecked", "rawtypes" })
+        BlockCache<RefCountedMemorySegment> dirCache = new CaffeineBlockCache(
+            poolResources.getSharedCaffeineCache(),
+            loader,
+            poolResources.getMaxCacheBlocks()
+        );
+        this.directoryCache = dirCache;
 
         this.bufferPoolDirectory = new BufferPoolDirectory(
             dirPath,
@@ -103,9 +115,9 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
             keyResolver,
             segmentPool,
             directoryCache,
-            loader,
             worker,
-            encryptionMetadataCache
+            encryptionMetadataCache,
+            false
         );
     }
 
@@ -126,7 +138,14 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
      */
     public void testWriteCacheEnabledPopulatesCache() throws IOException {
         // Ensure write caching is on
-        CryptoDirectoryFactory.setNodeSettings(Settings.builder().put("node.store.crypto.write_cache_enabled", true).build());
+        CryptoDirectoryFactory
+            .setNodeSettings(
+                Settings
+                    .builder()
+                    .put("node.store.crypto.write_cache_enabled", true)
+                    .put("node.store.crypto.byte_buffer_mode_enabled", false)
+                    .build()
+            );
 
         String fileName = "test_cached_" + randomAlphaOfLength(6);
         byte[] data = new byte[CACHE_BLOCK_SIZE * 3]; // 3 full blocks
@@ -148,7 +167,14 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
      */
     public void testWriteCacheDisabledSkipsCache() throws IOException {
         // Disable write caching
-        CryptoDirectoryFactory.setNodeSettings(Settings.builder().put("node.store.crypto.write_cache_enabled", false).build());
+        CryptoDirectoryFactory
+            .setNodeSettings(
+                Settings
+                    .builder()
+                    .put("node.store.crypto.write_cache_enabled", false)
+                    .put("node.store.crypto.byte_buffer_mode_enabled", false)
+                    .build()
+            );
 
         String fileName = "test_not_cached_" + randomAlphaOfLength(6);
         byte[] data = new byte[CACHE_BLOCK_SIZE * 3];
@@ -172,7 +198,14 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
      */
     public void testWriteCacheToggleDynamic() throws IOException {
         // 1. Write with caching enabled
-        CryptoDirectoryFactory.setNodeSettings(Settings.builder().put("node.store.crypto.write_cache_enabled", true).build());
+        CryptoDirectoryFactory
+            .setNodeSettings(
+                Settings
+                    .builder()
+                    .put("node.store.crypto.write_cache_enabled", true)
+                    .put("node.store.crypto.byte_buffer_mode_enabled", false)
+                    .build()
+            );
 
         String cachedFile = "toggle_cached_" + randomAlphaOfLength(6);
         byte[] data1 = new byte[CACHE_BLOCK_SIZE * 2];
@@ -186,7 +219,14 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
         assertNotNull("Block should be cached after write with setting enabled", directoryCache.get(new FileBlockCacheKey(cachedPath, 0)));
 
         // 2. Disable and write another file
-        CryptoDirectoryFactory.setNodeSettings(Settings.builder().put("node.store.crypto.write_cache_enabled", false).build());
+        CryptoDirectoryFactory
+            .setNodeSettings(
+                Settings
+                    .builder()
+                    .put("node.store.crypto.write_cache_enabled", false)
+                    .put("node.store.crypto.byte_buffer_mode_enabled", false)
+                    .build()
+            );
 
         String uncachedFile = "toggle_uncached_" + randomAlphaOfLength(6);
         byte[] data2 = new byte[CACHE_BLOCK_SIZE * 2];
@@ -203,7 +243,14 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
         );
 
         // 3. Re-enable and verify caching works again
-        CryptoDirectoryFactory.setNodeSettings(Settings.builder().put("node.store.crypto.write_cache_enabled", true).build());
+        CryptoDirectoryFactory
+            .setNodeSettings(
+                Settings
+                    .builder()
+                    .put("node.store.crypto.write_cache_enabled", true)
+                    .put("node.store.crypto.byte_buffer_mode_enabled", false)
+                    .build()
+            );
 
         String recachedFile = "toggle_recached_" + randomAlphaOfLength(6);
         byte[] data3 = new byte[CACHE_BLOCK_SIZE * 2];
