@@ -23,6 +23,7 @@ import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.SettingsFilter;
+import org.opensearch.common.util.concurrent.OpenSearchExecutors;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
@@ -56,6 +57,8 @@ import org.opensearch.rest.RestHandler;
 import org.opensearch.script.ScriptService;
 import org.opensearch.telemetry.metrics.MetricsRegistry;
 import org.opensearch.telemetry.tracing.Tracer;
+import org.opensearch.threadpool.ExecutorBuilder;
+import org.opensearch.threadpool.FixedExecutorBuilder;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.client.Client;
 import org.opensearch.watcher.ResourceWatcherService;
@@ -71,11 +74,27 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
      */
     public static final String CRYPTO_PLUGIN_ENABLED = "plugins.crypto.enabled";
 
+    public static final String CRYPTO_PLUGIN_THREADPOOL_PREFETCH = "crypto_plugin_prefetch_threadpool";
+
     /**
      * Setting for controlling whether the crypto plugin is enabled.
      */
     public static final Setting<Boolean> CRYPTO_PLUGIN_ENABLED_SETTING = Setting
         .boolSetting(CRYPTO_PLUGIN_ENABLED, false, Setting.Property.NodeScope, Setting.Property.Filtered, Setting.Property.Final);
+
+    /**
+     * Setting for overriding the prefetch thread pool queue size.
+     * If not set (-1), calculated dynamically based on cache size.
+     */
+    public static final Setting<Integer> PREFETCH_QUEUE_SIZE_SETTING = Setting
+        .intSetting("node.store.crypto.prefetch.queue_size", -1, -1, Setting.Property.NodeScope);
+
+    /**
+     * Setting for overriding the prefetch thread pool thread count.
+     * If not set (-1), calculated dynamically based on queue size.
+     */
+    public static final Setting<Integer> PREFETCH_THREAD_COUNT_SETTING = Setting
+        .intSetting("node.store.crypto.prefetch.thread_count", -1, -1, Setting.Property.NodeScope);
 
     private NodeEnvironment nodeEnvironment;
     private final boolean enabled;
@@ -145,9 +164,37 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                 CryptoDirectoryFactory.WRITE_CACHE_ENABLED_SETTING,
                 PoolSizeCalculator.NODE_POOL_SIZE_PERCENTAGE_SETTING,
                 PoolSizeCalculator.NODE_CACHE_TO_POOL_RATIO_SETTING,
-                PoolSizeCalculator.NODE_WARMUP_PERCENTAGE_SETTING
+                PoolSizeCalculator.NODE_WARMUP_PERCENTAGE_SETTING,
+                PREFETCH_QUEUE_SIZE_SETTING,
+                PREFETCH_THREAD_COUNT_SETTING
             );
         return settings;
+    }
+
+    public List<ExecutorBuilder<?>> getExecutorBuilders(Settings settings) {
+        // Check for user overrides, otherwise calculate dynamically
+        int queueSize = PREFETCH_QUEUE_SIZE_SETTING.get(settings);
+        int threads = PREFETCH_THREAD_COUNT_SETTING.get(settings);
+
+        if (threads == -1) {
+            threads = OpenSearchExecutors.allocatedProcessors(settings) * 4;
+        }
+        if (queueSize == -1) {
+            queueSize = threads * 1000;
+        }
+
+        log.info("Prefetch thread pool configured: threads={}, queueSize={}", threads, queueSize);
+
+        return Arrays
+            .asList(
+                new FixedExecutorBuilder(
+                    settings,
+                    CRYPTO_PLUGIN_THREADPOOL_PREFETCH,
+                    threads,
+                    queueSize,
+                    "plugins.crypto.threadpool.prefetch"
+                )
+            );
     }
 
     /**
@@ -199,9 +246,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
             log.debug("Crypto Directory Plugin is disabled. Skipping component initialization.");
             return Collections.emptyList();
         }
-
         this.nodeEnvironment = nodeEnvironment;
-
         // Store remote store parameters for CryptoEngineFactory to access
         CryptoDirectoryPlugin.repositoriesServiceSupplier = repositoriesServiceSupplier;
         // Create RemoteStoreSettings with node settings and cluster settings
@@ -222,8 +267,10 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         // Pool resources are lazily initialized on first cryptofs shard creation
         // This prevents allocation on dedicated master nodes which never create shards
         CryptoDirectoryFactory.setNodeSettings(environment.settings());
+        CryptoDirectoryFactory.setThreadPool(threadPool);
         CryptoMetricsService.initialize(metricsRegistry);
 
+        log.info("Crypto Directory Plugin ready");
         return Collections.emptyList();
     }
 

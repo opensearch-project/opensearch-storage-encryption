@@ -306,7 +306,7 @@ public final class QueuingWorker implements Worker {
                     );
             }
 
-            task.blockCache.loadForPrefetch(task.path, task.offset, task.blockCount);
+            task.blockCache.loadAllBlocks(task.path, task.offset, task.blockCount);
 
             task.doneNanos = System.nanoTime();
             inFlight.remove(task);

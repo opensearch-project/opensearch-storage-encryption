@@ -6,6 +6,7 @@ package org.opensearch.index.store.bufferpoolfs;
 
 import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_MASK;
 import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE_POWER;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -14,6 +15,8 @@ import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
@@ -44,6 +47,8 @@ import org.opensearch.index.store.read_ahead.ReadaheadManager;
  */
 @SuppressWarnings("preview")
 public class CachedMemorySegmentIndexInput extends IndexInput implements RandomAccessInput {
+    private static final Logger LOGGER = LogManager.getLogger(CachedMemorySegmentIndexInput.class);
+
     static final ValueLayout.OfByte LAYOUT_BYTE = ValueLayout.JAVA_BYTE;
     static final ValueLayout.OfShort LAYOUT_LE_SHORT = ValueLayout.JAVA_SHORT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
     static final ValueLayout.OfInt LAYOUT_LE_INT = ValueLayout.JAVA_INT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
@@ -764,6 +769,19 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         }
 
         return slice;
+    }
+
+    @Override
+    public void prefetch(long offset, long length) throws IOException {
+        ensureOpen();
+
+        final long startFileOffset = absoluteBaseOffset + offset;
+        final long startBlockOffset = startFileOffset & ~CACHE_BLOCK_MASK;
+        final long endFileOffset = absoluteBaseOffset + offset + length;
+        final long endBlockOffset = (endFileOffset + CACHE_BLOCK_MASK) & ~CACHE_BLOCK_MASK;
+        final long blockCount = (endBlockOffset - startBlockOffset) >>> CACHE_BLOCK_SIZE_POWER;
+
+        blockCache.loadMissingBlocks(path, startBlockOffset, blockCount);
     }
 
     @Override

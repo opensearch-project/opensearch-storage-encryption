@@ -69,7 +69,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         worker = new QueuingWorker(100, executor);
 
         // Mock successful load
-        when(mockBlockCache.loadForPrefetch(any(), anyLong(), anyLong())).thenReturn(Map.of());
+        when(mockBlockCache.loadAllBlocks(any(), anyLong(), anyLong())).thenReturn(0L);
 
         boolean accepted = worker.schedule(mockBlockCache, TEST_PATH, 0, 10);
 
@@ -78,8 +78,8 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         // Give worker time to process
         Thread.sleep(100);
 
-        // Verify loadForPrefetch was called
-        verify(mockBlockCache).loadForPrefetch(TEST_PATH, 0, 10);
+        // Verify loadForReadAhead was called
+        verify(mockBlockCache).loadAllBlocks(TEST_PATH, 0, 10);
     }
 
     /**
@@ -89,7 +89,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         worker = new QueuingWorker(2, executor);
 
         // Make BlockCache slow to process
-        when(mockBlockCache.loadForPrefetch(any(), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(mockBlockCache.loadAllBlocks(any(), anyLong(), anyLong())).thenAnswer(invocation -> {
             Thread.sleep(500);
             return Map.of();
         });
@@ -129,7 +129,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         worker = new QueuingWorker(100, executor);
 
         // Make loads slow
-        when(mockBlockCache.loadForPrefetch(any(), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(mockBlockCache.loadAllBlocks(any(), anyLong(), anyLong())).thenAnswer(invocation -> {
             Thread.sleep(200);
             return Map.of();
         });
@@ -174,7 +174,7 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
     public void testLargeBlockCountChunking() throws Exception {
         worker = new QueuingWorker(200, executor);
 
-        when(mockBlockCache.loadForPrefetch(any(), anyLong(), anyLong())).thenReturn(Map.of());
+        when(mockBlockCache.loadAllBlocks(any(), anyLong(), anyLong())).thenReturn(0L);
 
         // Request 200 blocks (should be split into chunks of 128 max)
         boolean accepted = worker.schedule(mockBlockCache, TEST_PATH, 0, 200);
@@ -185,6 +185,6 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         Thread.sleep(200);
 
         // Should have been called at least twice (200/128 = 2 chunks)
-        verify(mockBlockCache, org.mockito.Mockito.atLeast(2)).loadForPrefetch(any(), anyLong(), anyLong());
+        verify(mockBlockCache, org.mockito.Mockito.atLeast(2)).loadAllBlocks(any(), anyLong(), anyLong());
     }
 }
