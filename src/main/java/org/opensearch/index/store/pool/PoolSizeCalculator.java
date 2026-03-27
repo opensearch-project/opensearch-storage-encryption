@@ -11,6 +11,7 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Setting.Property;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.index.store.bufferpoolfs.StaticConfigs;
 import org.opensearch.monitor.os.OsProbe;
 
 /**
@@ -46,6 +47,27 @@ public final class PoolSizeCalculator {
      */
     public static final Setting<Double> NODE_WARMUP_PERCENTAGE_SETTING = Setting
         .doubleSetting("node.store.crypto.warmup_percentage", 0.05, 0.0, 1.0, Property.NodeScope);
+
+    /**
+     * Maximum number of cached FileChannels in the node-level FileChannelCache.
+     * Default is {@link StaticConfigs#DEFAULT_MAX_FILE_CHANNELS} (256).
+     */
+    public static final Setting<Integer> NODE_MAX_FILE_CHANNELS_SETTING = Setting
+        .intSetting("node.store.crypto.max_file_channels", StaticConfigs.DEFAULT_MAX_FILE_CHANNELS, 1, Property.NodeScope);
+
+    /**
+     * Expiry time in seconds for idle FileChannels in the FileChannelCache.
+     * Channels not accessed within this duration are evicted.
+     * Default is {@link StaticConfigs#DEFAULT_FD_CACHE_EXPIRE_AFTER_ACCESS_SECONDS} (300s).
+     * Set to 0 to disable time-based expiry (size-based eviction only).
+     */
+    public static final Setting<Long> NODE_FD_CACHE_EXPIRE_SECONDS_SETTING = Setting
+        .longSetting(
+            "node.store.crypto.fd_cache_expire_after_access_seconds",
+            StaticConfigs.DEFAULT_FD_CACHE_EXPIRE_AFTER_ACCESS_SECONDS,
+            0L,
+            Property.NodeScope
+        );
 
     private static final long MB_TO_BYTES = 1024L * 1024L;
     private static final long GB_TO_BYTES = 1024L * 1024L * 1024L;

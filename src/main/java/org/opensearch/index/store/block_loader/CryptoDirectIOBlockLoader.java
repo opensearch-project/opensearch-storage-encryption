@@ -44,6 +44,7 @@ import org.opensearch.index.store.pool.Pool;
  * <li>Automatic in-place decryption of loaded blocks</li>
  * <li>Memory pool integration for efficient buffer management</li>
  * <li>Block-aligned operations for optimal storage performance</li>
+ * <li>Cached FileChannels via {@link FileChannelCache} to avoid per-load open/close overhead</li>
  * </ul>
  *
  * @opensearch.internal
@@ -55,21 +56,26 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
     private final KeyResolver keyResolver;
     private final Pool<RefCountedMemorySegment> segmentPool;
     private final EncryptionMetadataCache encryptionMetadataCache;
+    private final FileChannelCache fileChannelCache;
 
     /**
      * Constructs a new CryptoDirectIOBlockLoader with the specified memory pool and key resolver.
      *
      * @param segmentPool the memory segment pool for acquiring buffer space
      * @param keyResolver the resolver for obtaining encryption keys and initialization vectors
+     * @param encryptionMetadataCache cache for encryption metadata
+     * @param fileChannelCache node-level cache of FileChannels bounded by max open FDs
      */
     public CryptoDirectIOBlockLoader(
         Pool<RefCountedMemorySegment> segmentPool,
         KeyResolver keyResolver,
-        EncryptionMetadataCache encryptionMetadataCache
+        EncryptionMetadataCache encryptionMetadataCache,
+        FileChannelCache fileChannelCache
     ) {
         this.segmentPool = segmentPool;
         this.keyResolver = keyResolver;
         this.encryptionMetadataCache = encryptionMetadataCache;
+        this.fileChannelCache = fileChannelCache;
     }
 
     @Override
@@ -88,19 +94,16 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
 
         RefCountedMemorySegment[] result = new RefCountedMemorySegment[(int) blockCount];
         long readLength = blockCount << CACHE_BLOCK_SIZE_POWER;
+        String normalizedPath = filePath.toAbsolutePath().normalize().toString();
 
-        try (
-            Arena arena = Arena.ofConfined();
-            FileChannel channel = FileChannel.open(filePath, StandardOpenOption.READ, DirectIOReaderUtil.getDirectOpenOption())
-        ) {
-            MemorySegment readBytes = directIOReadAligned(channel, filePath, startOffset, readLength, arena);
+        try (Arena arena = Arena.ofConfined(); RefCountedChannel ref = fileChannelCache.acquire(normalizedPath)) {
+            MemorySegment readBytes = directIOReadAligned(ref.channel(), filePath, startOffset, readLength, arena);
             long bytesRead = readBytes.byteSize();
 
-            String normalizedPath = filePath.toAbsolutePath().normalize().toString();
             byte[] masterKey = keyResolver.getDataKey().getEncoded();
 
             // Get footer from disk and load metadata (footer + derived key) atomically into cache
-            EncryptionFooter footer = readFooterFromDisk(filePath, masterKey);
+            EncryptionFooter footer = readFooterFromDisk(normalizedPath, filePath, masterKey);
 
             // Get or create metadata atomically - ensures footer and key are always consistent
             var metadata = encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, masterKey);
@@ -112,12 +115,12 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
                 .decryptInPlaceFrameBased(
                     readBytes.address(),
                     readBytes.byteSize(),
-                    fileKey,                                    // Derived file key (matches write path)
-                    masterKey,                                  // Master key for IV computation
-                    messageId,                                  // Message ID from footer
-                    org.opensearch.index.store.footer.EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE, // Frame size
-                    startOffset,                                 // File offset
-                    filePath.toAbsolutePath().normalize().toString(),
+                    fileKey,
+                    masterKey,
+                    messageId,
+                    EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE,
+                    startOffset,
+                    normalizedPath,
                     encryptionMetadataCache
                 );
 
@@ -130,9 +133,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
 
             try {
                 while (blockIndex < blockCount && bytesCopied < bytesRead) {
-                    // Use caller-specified timeout (5s for critical loads, 50ms for prefetch)
                     RefCountedMemorySegment handle = segmentPool.tryAcquire(poolTimeoutMs, TimeUnit.MILLISECONDS);
-
                     MemorySegment pooled = handle.segment();
 
                     int remaining = (int) (bytesRead - bytesCopied);
@@ -142,10 +143,9 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
                         MemorySegment.copy(readBytes, bytesCopied, pooled, 0, toCopy);
                     }
 
-                    result[blockIndex++] = handle;  // Store the handle, not the segment
+                    result[blockIndex++] = handle;
                     bytesCopied += toCopy;
                 }
-
             } catch (InterruptedException e) {
                 releaseHandles(result, blockIndex);
                 Thread.currentThread().interrupt();
@@ -156,7 +156,6 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
             }
 
             return result;
-
         } catch (NoSuchFileException e) {
             throw e;
         } catch (Exception e) {
@@ -173,16 +172,14 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
         }
     }
 
-    private EncryptionFooter readFooterFromDisk(Path filePath, byte[] masterKey) throws IOException {
-        String normalizedPath = filePath.toAbsolutePath().normalize().toString();
-
+    private EncryptionFooter readFooterFromDisk(String normalizedPath, Path filePath, byte[] masterKey) throws IOException {
         // Check cache first for fast path
         EncryptionFooter cachedFooter = encryptionMetadataCache.getFooter(normalizedPath);
         if (cachedFooter != null) {
             return cachedFooter;
         }
 
-        // Cache miss - read from disk
+        // Cache miss - read from disk using a buffered channel (footer reads are small, no O_DIRECT needed)
         try (FileChannel channel = FileChannel.open(filePath, StandardOpenOption.READ)) {
             long fileSize = channel.size();
             if (fileSize < EncryptionMetadataTrailer.MIN_FOOTER_SIZE) {
@@ -196,7 +193,6 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
 
             // Check if this is an OSEF file
             if (!isValidOSEFFile(minFooterBytes)) {
-                // Not an OSEF file
                 throw new IOException("Not an OSEF file -" + filePath);
             }
 

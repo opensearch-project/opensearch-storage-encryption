@@ -36,6 +36,7 @@ import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
+import org.opensearch.index.store.block_loader.FileChannelCache;
 import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.cipher.EncryptionMetadataCacheRegistry;
@@ -498,7 +499,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(
             resources.getSegmentPool(),
             keyResolver,
-            encryptionMetadataCache
+            encryptionMetadataCache,
+            resources.getFileChannelCache()
         );
 
         // Cache architecture: One shared Caffeine cache storage, multiple wrapper instances
@@ -530,7 +532,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             directoryCache,
             loader,
             readaheadWorker,
-            encryptionMetadataCache
+            encryptionMetadataCache,
+            resources.getFileChannelCache()
         );
     }
 
@@ -617,5 +620,12 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      */
     public static BlockCache<?> getSharedBlockCache() {
         return poolResources != null ? poolResources.getBlockCache() : null;
+    }
+
+    /**
+     * Returns the shared node-level FileChannelCache, or null if not yet initialized.
+     */
+    public static FileChannelCache getSharedFileChannelCache() {
+        return poolResources != null ? poolResources.getFileChannelCache() : null;
     }
 }

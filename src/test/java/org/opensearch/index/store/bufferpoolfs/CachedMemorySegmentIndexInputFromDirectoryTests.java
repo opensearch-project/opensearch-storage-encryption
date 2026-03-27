@@ -115,7 +115,12 @@ public class CachedMemorySegmentIndexInputFromDirectoryTests extends BaseIndexIn
 
         EncryptionMetadataCache encryptionMetadataCache = EncryptionMetadataCacheRegistry.getOrCreateCache(indexUuid, shardId, indexName);
 
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(segmentPool, keyResolver, encryptionMetadataCache);
+        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(
+            segmentPool,
+            keyResolver,
+            encryptionMetadataCache,
+            poolResources.getFileChannelCache()
+        );
 
         Worker worker = poolResources.getSharedReadaheadWorker();
 
@@ -137,7 +142,8 @@ public class CachedMemorySegmentIndexInputFromDirectoryTests extends BaseIndexIn
             directoryCache,
             loader,
             worker,
-            encryptionMetadataCache
+            encryptionMetadataCache,
+            poolResources.getFileChannelCache()
         );
     }
 

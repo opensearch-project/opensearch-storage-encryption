@@ -4,10 +4,6 @@
  */
 package org.opensearch.index.store.bufferpoolfs;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -324,23 +320,28 @@ public class BlockSlotTinyCacheIntegrationTests extends OpenSearchTestCase {
 
         @Override
         public BlockCacheValue<RefCountedMemorySegment> getOrLoad(BlockCacheKey key) throws IOException {
-            return cache.computeIfAbsent(key, k -> {
-                // Simulate cache full - evict oldest entry
-                if (cache.size() >= poolSize) {
-                    evictOne();
-                }
+            BlockCacheValue<RefCountedMemorySegment> existing = cache.get(key);
+            if (existing != null) {
+                return existing;
+            }
 
-                // Get segment from pool (round-robin)
-                int idx = poolIndex.getAndIncrement() % poolSize;
-                RefCountedMemorySegment segment = pool[idx];
+            // Evict BEFORE inserting to avoid recursive ConcurrentHashMap update.
+            // computeIfAbsent + cache.remove inside the lambda is illegal (recursive update).
+            if (cache.size() >= poolSize) {
+                evictOne();
+            }
 
-                // If segment is in use, reset it (simulates recycling)
-                if (segment.getRefCount() == 0) {
-                    segment.reset();
-                }
+            // Get segment from pool (round-robin)
+            int idx = poolIndex.getAndIncrement() % poolSize;
+            RefCountedMemorySegment segment = pool[idx];
 
-                return segment;
-            });
+            // If segment is in use, reset it (simulates recycling)
+            if (segment.getRefCount() == 0) {
+                segment.reset();
+            }
+
+            cache.putIfAbsent(key, segment);
+            return cache.get(key);
         }
 
         private void evictOne() {
