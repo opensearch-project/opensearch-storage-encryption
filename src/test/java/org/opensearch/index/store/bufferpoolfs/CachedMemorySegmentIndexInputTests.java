@@ -56,6 +56,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         mockReadaheadContext = mock(ReadaheadContext.class);
         testPath = Paths.get("/test/exhaustive.dat");
         arena = Arena.ofAuto();
+        // Clear any stale PinScope state from previous tests on this thread
+        PinScope.current().release();
     }
 
     /**
