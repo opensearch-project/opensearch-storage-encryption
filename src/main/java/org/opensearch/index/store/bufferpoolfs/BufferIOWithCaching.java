@@ -21,6 +21,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.OutputStreamIndexOutput;
 import org.opensearch.common.SuppressForbidden;
+import org.opensearch.index.store.CryptoDirectoryFactory;
 import org.opensearch.index.store.PanamaNativeAccess;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
@@ -257,6 +258,10 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             int blockOffset,
             int chunkLen
         ) {
+            if (!CryptoDirectoryFactory.isWriteCacheEnabled()) {
+                return;
+            }
+
             // Cache fully-aligned full blocks immediately
             if (blockOffset == 0 && chunkLen == CACHE_BLOCK_SIZE) {
                 try {
@@ -395,6 +400,9 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         }
 
         private void cacheFinalPartialBlock() {
+            if (!CryptoDirectoryFactory.isWriteCacheEnabled()) {
+                return;
+            }
             if (partialBlockLength == 0 || lastCachedBlockOffset < 0 || streamOffset <= 0) {
                 return;
             }

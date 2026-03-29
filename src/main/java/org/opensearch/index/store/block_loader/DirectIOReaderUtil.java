@@ -4,7 +4,7 @@
  */
 package org.opensearch.index.store.block_loader;
 
-import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.DIRECT_IO_ALIGNMENT;
+import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.getDirectIOAlignment;
 
 import java.io.IOException;
 import java.lang.foreign.Arena;
@@ -12,10 +12,10 @@ import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.OpenOption;
+import java.nio.file.Path;
 import java.util.Arrays;
 
 import org.opensearch.common.SuppressForbidden;
-import org.opensearch.index.store.PanamaNativeAccess;
 
 /**
  * Utility class for Direct I/O operations with proper alignment handling.
@@ -89,14 +89,16 @@ public class DirectIOReaderUtil {
      * </pre>
      *
      * @param channel the file channel to read from
+     * @param filePath the path of the file being read (used to determine filesystem block size)
      * @param offset the byte offset in the file to start reading from
      * @param length the number of bytes to read
      * @param arena the memory arena for allocating the result segment
      * @return a memory segment containing the read data
      * @throws IOException if the read operation fails
      */
-    public static MemorySegment directIOReadAligned(FileChannel channel, long offset, long length, Arena arena) throws IOException {
-        int alignment = Math.max(DIRECT_IO_ALIGNMENT, PanamaNativeAccess.getPageSize());
+    public static MemorySegment directIOReadAligned(FileChannel channel, Path filePath, long offset, long length, Arena arena)
+        throws IOException {
+        int alignment = getDirectIOAlignment(filePath);
 
         // Require alignment to be a power of 2
         if ((alignment & (alignment - 1)) != 0) {

@@ -91,8 +91,8 @@ I/O performance is enhanced through several optimization mechanisms. `ReadaheadM
 
 ## Requirements
 
-- **JDK**: 21 or higher
-- **OpenSearch**: 3.3.0-SNAPSHOT or compatible version
+- **JDK**: 25
+- **OpenSearch**: 3.6.0-SNAPSHOT or compatible version
 - **Master Key Provider**: Required for key management
 - **Operating System**: Linux recommended for Direct I/O features (io_uring)
 
@@ -265,6 +265,91 @@ Run the test suites:
 # All tests
 ./gradlew allTests
 ```
+
+## JMH Benchmarks
+
+The project includes JMH microbenchmarks for measuring read throughput of the BufferPool (encrypted) directory vs MMap (plaintext) directory. Benchmark sources live under `src/jmh/java/org/opensearch/index/store/benchmark/`.
+
+### Running Benchmarks
+
+```bash
+# Full run (defaults: 2 forks, 3 warmup iterations, 5 measurement iterations, 3s/5s durations)
+./gradlew jmh
+
+# Quick smoke test with overrides
+./gradlew jmh -Pjmh.fork=1 -Pjmh.wi=1 -Pjmh.i=1 -Pjmh.w=1s -Pjmh.r=1s
+```
+
+All JMH parameters are overridable via `-P` flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-Pjmh.fork` | `2` | Number of forked JVM processes |
+| `-Pjmh.wi` | `3` | Warmup iterations |
+| `-Pjmh.i` | `5` | Measurement iterations |
+| `-Pjmh.w` | `3s` | Warmup iteration duration |
+| `-Pjmh.r` | `5s` | Measurement iteration duration |
+
+Results are written to:
+- `build/reports/jmh/human.txt` — human-readable output
+- `build/reports/jmh/results.json` — JSON format for tooling
+
+### Regenerating JMH Harness Classes
+
+After adding, removing, or renaming any `@Benchmark` method, regenerate the JMH harness:
+
+```bash
+./gradlew jmhPrepare
+```
+
+### Running Benchmarks from Fat JAR
+
+You can also build a self-contained fat JAR and run benchmarks directly:
+
+```bash
+# Build the fat JAR
+./gradlew jmhJar
+
+# List all available benchmarks
+java --enable-preview --enable-native-access=ALL-UNNAMED \
+  -jar build/distributions/storage-encryption-jmh.jar -l
+
+# Run a specific benchmark with custom settings
+java --enable-preview --enable-native-access=ALL-UNNAMED \
+  -jar build/distributions/storage-encryption-jmh.jar RadixBlockTable -wi 2 -i 3 -f 1
+
+# Run all benchmarks
+java --enable-preview --enable-native-access=ALL-UNNAMED \
+  -jar build/distributions/storage-encryption-jmh.jar
+```
+
+### Benchmark Classes
+
+- `HotPathReadBenchmarks` — 16 benchmark methods measuring throughput with data pre-warmed in block cache (BufferPool) or page cache (MMap). Covers all `RandomAccessInput` and `IndexInput` read APIs plus a mixed workload that randomly interleaves all API types.
+- `RadixBlockTableBenchmark` — 7 benchmark methods comparing L1/L2 cache lookup strategies: RadixBlockTable (two plain array loads), CaffeineBlockCache (ConcurrentHashMap), and stamp-gated cache (VarHandle acquire/release). Includes L1+L2 fallback paths and sparse directory growth scenarios.
+
+### Filtering Benchmarks
+
+Use `-Pjmh.includes` to run a specific benchmark method (regex match):
+
+```bash
+# Run only the sequential readByte benchmark
+./gradlew jmh -Pjmh.includes='sequentialReadBytesFromClone'
+
+# Run all random read benchmarks
+./gradlew jmh -Pjmh.includes='randomRead.*'
+```
+
+### Key Parameters
+
+| Parameter | Values | Description |
+|-----------|--------|-------------|
+| `directoryType` | `bufferpool`, `mmap`, `multisegment_mmap_impl` | `bufferpool`: encrypted block cache + direct I/O; `mmap`: single contiguous mmap (Lucene default); `multisegment_mmap_impl`: mmap chunked at `CACHE_BLOCK_SIZE` boundaries |
+| `fileSizeMB` | `32` | Size of each test file in MB |
+| `threadCount` | `8` | Number of concurrent reader threads per benchmark invocation |
+| `numFilesToRead` | `1` | Number of files read per invocation |
+
+> **Note:** The `@Warmup`, `@Measurement`, and `@Fork` annotations in `HotPathReadBenchmarks` take precedence over `-Pjmh.*` command-line flags. To override them, edit the annotation values directly in the source.
 
 ## Limitations
 
