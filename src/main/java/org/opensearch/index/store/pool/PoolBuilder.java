@@ -255,9 +255,9 @@ public final class PoolBuilder {
 
         // Calculate cache size: cache = pool * ratio
         long maxCacheBlocks = (long) (maxBlocks * cacheToPoolRatio);
-        long warmupBlocks = (long) (maxCacheBlocks * warmupPercentage);
-        segmentPool.warmUp(warmupBlocks);
-        LOGGER.info("Warmed up {} blocks ({}% of {} cache blocks)", warmupBlocks, warmupPercentage * 100, maxCacheBlocks);
+        // Pre-provision all pool buffers into freelist for zero-malloc hot path
+        segmentPool.warmUp(maxBlocks);
+        LOGGER.info("Pre-provisioned {} blocks into freelist (cache max={} blocks)", maxBlocks, maxCacheBlocks);
 
         // Calculate read-ahead queue size based on cache capacity
         // Pool constraint not needed since cache evictions automatically release pool memory

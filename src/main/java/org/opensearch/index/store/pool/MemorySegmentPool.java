@@ -6,228 +6,267 @@ package org.opensearch.index.store.pool;
 
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
-import java.util.ArrayDeque;
-import java.util.Deque;
+import java.lang.ref.Cleaner;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.Condition;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.SuppressForbidden;
-import org.opensearch.index.store.PanamaNativeAccess;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
 
 /**
- * High-performance primary memory pool for off-heap memory segment allocation using
- * pure Panama FFM API (malloc/free) without arenas.
+ * Lock-free pool for off-heap memory segments backed by direct ByteBuffers.
  *
- * <p>This pool manages fixed-size native segments, allocated on-demand
- * via libc malloc() and released via free(). Segments are recycled
- * through a freelist for performance. Optionally, memory is zeroed on release
- * for security.
+ * <p>Allocates via {@link ByteBuffer#allocateDirect(int)} and wraps as
+ * {@link MemorySegment} via {@link MemorySegment#ofBuffer(ByteBuffer)}.
+ * Uses a {@link ConcurrentLinkedQueue} freelist for lock-free acquire/release.
  *
- * <p>Thread-safe via an internal {@link ReentrantLock}.
- * Cached stats minimize lock contention during monitoring.
+ * <p>When a {@link RefCountedMemorySegment} wrapper is GC'd, the {@link Cleaner}
+ * allocates a <b>new</b> DirectByteBuffer into the freelist. The old buffer is
+ * freed by GC's own DirectByteBuffer Cleaner. This ensures:
+ * <ul>
+ *   <li>No use-after-recycle corruption (old buffer is never reused)</li>
+ *   <li>Zero malloc on the hot read path (freelist provides pre-allocated buffers)</li>
+ *   <li>Bounded native memory (pool tracks total provisioned count)</li>
+ * </ul>
+ *
+ * <p>Requires jemalloc ({@code LD_PRELOAD}) for efficient malloc/free without
+ * glibc arena fragmentation.
+ *
+ * <p>Thread-safe via lock-free {@link ConcurrentLinkedQueue} and {@link AtomicInteger}.
  *
  * @opensearch.internal
  */
 @SuppressWarnings("preview")
-@SuppressForbidden(reason = "Uses Panama FFI for native memory allocation")
+@SuppressForbidden(reason = "Uses ByteBuffer.allocateDirect for native memory allocation")
 public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoCloseable {
 
     private static final Logger LOGGER = LogManager.getLogger(MemorySegmentPool.class);
+    private static final Cleaner CLEANER = Cleaner.create();
+    private static final int MAX_RETRY_ATTEMPTS = 20;
+    private static final long RETRY_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(50);
+    private static final long GC_REQUEST_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(10);
 
-    private final ReentrantLock lock = new ReentrantLock();
-    private final Condition notEmpty = lock.newCondition();
-    private final Deque<RefCountedMemorySegment> freeList = new ArrayDeque<>();
-
+    private final ConcurrentLinkedQueue<ByteBuffer> freeList = new ConcurrentLinkedQueue<>();
     private final int segmentSize;
     private final int maxSegments;
     private final long totalMemory;
-    private final boolean requiresZeroing;
+    private final AtomicInteger buffersInUse = new AtomicInteger(0);
+    private final AtomicInteger totalProvisioned = new AtomicInteger(0);
+    private final java.util.concurrent.atomic.AtomicLong lastGCRequestNanos = new java.util.concurrent.atomic.AtomicLong(0);
 
     private volatile boolean closed = false;
-    private int allocatedSegments = 0;
-    private volatile int cachedFreeListSize = 0;
 
     /**
-     * Creates a pool with lazy allocation and memory zeroing enabled for security.
+     * Creates a pool with the specified total memory and segment size.
      *
      * @param totalMemory total memory in bytes (must be a multiple of segmentSize)
      * @param segmentSize size of each memory segment in bytes
      */
     public MemorySegmentPool(long totalMemory, int segmentSize) {
-        this(totalMemory, segmentSize, true);
-    }
-
-    /**
-     * Creates a pool with configurable allocation strategy and zeroing behavior.
-     *
-     * @param totalMemory total memory in bytes (must be a multiple of segmentSize)
-     * @param segmentSize size of each memory segment in bytes
-     * @param requiresZeroing if true, memory is zeroed on release for security
-     */
-    public MemorySegmentPool(long totalMemory, int segmentSize, boolean requiresZeroing) {
         if (totalMemory % segmentSize != 0) {
             throw new IllegalArgumentException("Total memory must be a multiple of segment size");
         }
         this.totalMemory = totalMemory;
         this.segmentSize = segmentSize;
         this.maxSegments = (int) (totalMemory / segmentSize);
-        this.requiresZeroing = requiresZeroing;
+    }
+
+    /**
+     * Compatibility constructor — ignores requiresZeroing (GC handles cleanup).
+     */
+    public MemorySegmentPool(long totalMemory, int segmentSize, boolean requiresZeroing) {
+        this(totalMemory, segmentSize);
     }
 
     @Override
     public RefCountedMemorySegment acquire() throws InterruptedException {
-        lock.lock();
-        try {
-            while (true) {
-                if (closed) {
-                    throw new IllegalStateException("Pool is closed");
-                }
-
-                // Try freelist first
-                if (!freeList.isEmpty()) {
-                    RefCountedMemorySegment refSeg = freeList.removeFirst();
-                    cachedFreeListSize = freeList.size();
-                    refSeg.reset();
-                    return refSeg;
-                }
-
-                // Try allocate new segment if under capacity
-                if (allocatedSegments < maxSegments) {
-                    MemorySegment seg = PanamaNativeAccess.malloc(segmentSize);
-                    RefCountedMemorySegment refSeg = new RefCountedMemorySegment(seg, segmentSize, this::release);
-                    allocatedSegments++;
-                    LOGGER.trace("Allocated new native segment, total allocated={}", allocatedSegments);
-                    return refSeg;
-                }
-
-                // Pool exhausted - wait for a segment to be released
-                LOGGER.debug("Pool exhausted (allocated={}, max={}), waiting for release", allocatedSegments, maxSegments);
-                notEmpty.await();
-            }
-        } finally {
-            lock.unlock();
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedException("Thread interrupted before pool acquire");
         }
+        if (closed) {
+            throw new IllegalStateException("Pool is closed");
+        }
+
+        // Fast path: grab from freelist (no malloc, lock-free CAS)
+        ByteBuffer buf = freeList.poll();
+        if (buf != null) {
+            buf.clear().order(ByteOrder.LITTLE_ENDIAN);
+            buffersInUse.incrementAndGet();
+            return wrapAndRegister(buf);
+        }
+
+        // Freelist empty — trigger GC and retry
+        long startNanos = System.nanoTime();
+        for (int attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
+            requestGCIfNeeded();
+            java.util.concurrent.locks.LockSupport.parkNanos(RETRY_WAIT_NANOS * attempt);
+
+            buf = freeList.poll();
+            if (buf != null) {
+                long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
+                buf.clear().order(ByteOrder.LITTLE_ENDIAN);
+                buffersInUse.incrementAndGet();
+                LOGGER
+                    .info(
+                        "Freelist replenished after {} retries ({}ms), provisioned={}, inUse={}, freeList={}",
+                        attempt,
+                        elapsedMs,
+                        totalProvisioned.get(),
+                        buffersInUse.get(),
+                        freeList.size()
+                    );
+                return wrapAndRegister(buf);
+            }
+
+            if (Thread.currentThread().isInterrupted()) {
+                throw new InterruptedException("Thread interrupted while waiting for freelist");
+            }
+        }
+
+        // All retries exhausted — fail
+        long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
+        throw new IllegalStateException(
+            "Freelist empty after "
+                + MAX_RETRY_ATTEMPTS
+                + " retries ("
+                + elapsedMs
+                + "ms). "
+                + "provisioned="
+                + totalProvisioned.get()
+                + ", max="
+                + maxSegments
+                + ", inUse="
+                + buffersInUse.get()
+                + ", freeList="
+                + freeList.size()
+        );
     }
 
     @Override
     public RefCountedMemorySegment tryAcquire(long timeout, TimeUnit unit) throws Exception {
-        long deadlineNanos = System.nanoTime() + unit.toNanos(timeout);
-        lock.lock();
-        try {
-            while (true) {
-                if (closed) {
-                    throw new IllegalStateException("Pool is closed");
-                }
+        if (closed) {
+            throw new IllegalStateException("Pool is closed");
+        }
 
-                // Try freelist first
-                if (!freeList.isEmpty()) {
-                    RefCountedMemorySegment refSeg = freeList.removeFirst();
-                    cachedFreeListSize = freeList.size();
-                    refSeg.reset();
-                    return refSeg;
-                }
+        ByteBuffer buf = freeList.poll();
+        if (buf != null) {
+            buf.clear().order(ByteOrder.LITTLE_ENDIAN);
+            buffersInUse.incrementAndGet();
+            return wrapAndRegister(buf);
+        }
 
-                // Try allocate new segment if under capacity
-                if (allocatedSegments < maxSegments) {
-                    MemorySegment seg = PanamaNativeAccess.malloc(segmentSize);
-                    RefCountedMemorySegment refSeg = new RefCountedMemorySegment(seg, segmentSize, this::release);
-                    allocatedSegments++;
-                    LOGGER.trace("Allocated new native segment, total allocated={}", allocatedSegments);
-                    return refSeg;
-                }
+        // Freelist empty — trigger GC and retry with timeout
+        long startNanos = System.nanoTime();
+        long deadlineNanos = startNanos + unit.toNanos(timeout);
+        for (int attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
+            requestGCIfNeeded();
+            java.util.concurrent.locks.LockSupport.parkNanos(RETRY_WAIT_NANOS * attempt);
 
-                // Pool exhausted - wait with timeout for a segment to be released
-                long remainingNanos = deadlineNanos - System.nanoTime();
-                if (remainingNanos <= 0) {
-                    LOGGER
-                        .warn(
-                            "Pool acquisition timed out after {}ms (allocated={}, max={})",
-                            unit.toMillis(timeout),
-                            allocatedSegments,
-                            maxSegments
-                        );
-                    throw new IOException(
-                        "Pool acquisition timed out after "
-                            + timeout
-                            + " "
-                            + unit.toString().toLowerCase()
-                            + " (allocated="
-                            + allocatedSegments
-                            + ", max="
-                            + maxSegments
-                            + ")"
-                    );
-                }
-
-                LOGGER
-                    .debug(
-                        "Pool exhausted (allocated={}, max={}), waiting up to {}ms for release",
-                        allocatedSegments,
-                        maxSegments,
-                        TimeUnit.NANOSECONDS.toMillis(remainingNanos)
-                    );
-                notEmpty.await(remainingNanos, TimeUnit.NANOSECONDS);
+            buf = freeList.poll();
+            if (buf != null) {
+                long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
+                buf.clear().order(ByteOrder.LITTLE_ENDIAN);
+                buffersInUse.incrementAndGet();
+                LOGGER.info("Freelist replenished after {} retries ({}ms)", attempt, elapsedMs);
+                return wrapAndRegister(buf);
             }
-        } finally {
-            lock.unlock();
+
+            if (System.nanoTime() > deadlineNanos)
+                break;
+        }
+
+        long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
+        throw new IOException(
+            "Freelist empty after retries ("
+                + elapsedMs
+                + "ms). "
+                + "provisioned="
+                + totalProvisioned.get()
+                + ", max="
+                + maxSegments
+                + ", inUse="
+                + buffersInUse.get()
+                + ", freeList="
+                + freeList.size()
+        );
+    }
+
+    private RefCountedMemorySegment wrapAndRegister(ByteBuffer direct) {
+        MemorySegment seg = MemorySegment.ofBuffer(direct);
+        RefCountedMemorySegment wrapper = new RefCountedMemorySegment(seg, segmentSize, this::release);
+        // When wrapper is GC'd: old buffer freed by GC, NEW buffer allocated into freelist
+        CLEANER.register(wrapper, new ReplenishFreeList(freeList, segmentSize, buffersInUse, this));
+        return wrapper;
+    }
+
+    /**
+     * Invoked by Cleaner when a RefCountedMemorySegment wrapper becomes phantom reachable.
+     * Decrements buffersInUse and allocates a NEW DirectByteBuffer into the freelist.
+     * The old buffer is freed separately by DirectByteBuffer's own JDK Cleaner.
+     *
+     * <p>Must NOT reference the old wrapper or its ByteBuffer/MemorySegment (would prevent GC).
+     */
+    private static class ReplenishFreeList implements Runnable {
+        private final ConcurrentLinkedQueue<ByteBuffer> freeList;
+        private final int size;
+        private final AtomicInteger buffersInUse;
+        private final MemorySegmentPool pool;
+
+        ReplenishFreeList(ConcurrentLinkedQueue<ByteBuffer> freeList, int size, AtomicInteger buffersInUse, MemorySegmentPool pool) {
+            this.freeList = freeList;
+            this.size = size;
+            this.buffersInUse = buffersInUse;
+            this.pool = pool;
+        }
+
+        @Override
+        public void run() {
+            buffersInUse.decrementAndGet();
+            if (pool.isClosed())
+                return;
+            try {
+                ByteBuffer fresh = ByteBuffer.allocateDirect(size).order(ByteOrder.LITTLE_ENDIAN);
+                freeList.offer(fresh);
+            } catch (OutOfMemoryError e) {
+                LogManager.getLogger(MemorySegmentPool.class).warn("Failed to replenish freelist: direct memory exhausted");
+            }
+        }
+    }
+
+    private void requestGCIfNeeded() {
+        long now = System.nanoTime();
+        long last = lastGCRequestNanos.get();
+        if (now - last > GC_REQUEST_INTERVAL_NANOS && lastGCRequestNanos.compareAndSet(last, now)) {
+            LOGGER
+                .warn(
+                    "Pool exhausted (inUse={}, provisioned={}, max={}, freeList={}), requesting GC",
+                    buffersInUse.get(),
+                    totalProvisioned.get(),
+                    maxSegments,
+                    freeList.size()
+                );
+            System.gc();
         }
     }
 
     @Override
     public void release(RefCountedMemorySegment refSegment) {
-        lock.lock();
-        try {
-            if (closed) {
-                // Free directly if pool is closed
-                PanamaNativeAccess.free(refSegment.segment());
-                return;
-            }
-
-            if (requiresZeroing) {
-                refSegment.segment().fill((byte) 0);
-            }
-
-            freeList.addLast(refSegment);
-            cachedFreeListSize = freeList.size();
-            notEmpty.signal();
-        } finally {
-            lock.unlock();
-        }
+        // No-op: Cleaner handles replenishment when wrapper is GC'd.
+        // The ref-counted release path (from cache eviction) calls this,
+        // but actual native memory lifecycle is managed by GC + Cleaner.
     }
 
     /**
-     * Release multiple segments efficiently in one lock operation.
-     *
-     * @param segments the segments to release
+     * Release multiple segments. No-op for same reason as release().
      */
     public void releaseAll(RefCountedMemorySegment... segments) {
-        if (segments.length == 0)
-            return;
-        lock.lock();
-        try {
-            if (closed) {
-                for (RefCountedMemorySegment s : segments) {
-                    PanamaNativeAccess.free(s.segment());
-                }
-                return;
-            }
-
-            for (RefCountedMemorySegment s : segments) {
-                if (requiresZeroing) {
-                    s.segment().fill((byte) 0);
-                }
-                freeList.addLast(s);
-            }
-            cachedFreeListSize = freeList.size();
-            notEmpty.signalAll();
-        } finally {
-            lock.unlock();
-        }
+        // No-op
     }
 
     @Override
@@ -237,27 +276,14 @@ public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoClo
 
     @Override
     public long availableMemory() {
-        int free = cachedFreeListSize;
-        int allocated = allocatedSegments;
-        int canAllocate = Math.max(0, maxSegments - allocated);
-        return (long) (free + canAllocate) * segmentSize;
+        return (long) (freeList.size() + Math.max(0, maxSegments - totalProvisioned.get())) * segmentSize;
     }
 
     /**
-     * Returns the accurate available memory by acquiring the lock.
-     * This is more accurate than {@link #availableMemory()} but requires locking.
-     *
-     * @return available memory in bytes
+     * Returns the accurate available memory (same as availableMemory for lock-free impl).
      */
     public long availableMemoryAccurate() {
-        lock.lock();
-        try {
-            int free = freeList.size();
-            int canAlloc = Math.max(0, maxSegments - allocatedSegments);
-            return (long) (free + canAlloc) * segmentSize;
-        } finally {
-            lock.unlock();
-        }
+        return availableMemory();
     }
 
     @Override
@@ -267,53 +293,60 @@ public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoClo
 
     /**
      * Returns current pool statistics.
-     *
-     * @return pool statistics snapshot
      */
     public PoolStats getStats() {
-        return new PoolStats(maxSegments, allocatedSegments, freeList.size(), maxSegments - allocatedSegments);
+        return new PoolStats(maxSegments, totalProvisioned.get(), buffersInUse.get(), freeList.size());
+    }
+
+    public int getBuffersInUse() {
+        return buffersInUse.get();
+    }
+
+    public int getTotalProvisioned() {
+        return totalProvisioned.get();
+    }
+
+    public int getFreeListSize() {
+        return freeList.size();
     }
 
     @Override
     public boolean isUnderPressure() {
-        int free = cachedFreeListSize;
-        int unallocated = maxSegments - allocatedSegments;
-        return (free + unallocated) < (maxSegments * 0.1);
+        return freeList.isEmpty() && (maxSegments - totalProvisioned.get()) < (maxSegments * 0.1);
     }
 
     @Override
     public void warmUp(long targetSegments) {
-        targetSegments = Math.min(targetSegments, maxSegments);
-        lock.lock();
-        try {
-            while (allocatedSegments < targetSegments) {
-                MemorySegment seg = PanamaNativeAccess.malloc(segmentSize);
-                RefCountedMemorySegment refSeg = new RefCountedMemorySegment(seg, segmentSize, this::release);
-                freeList.addLast(refSeg);
-                allocatedSegments++;
+        long toAllocate = Math.min(targetSegments, maxSegments);
+        LOGGER.info("Warming up freelist with {} buffers (max={})", toAllocate, maxSegments);
+        for (long i = 0; i < toAllocate; i++) {
+            try {
+                ByteBuffer buf = ByteBuffer.allocateDirect(segmentSize).order(ByteOrder.LITTLE_ENDIAN);
+                freeList.offer(buf);
+                totalProvisioned.incrementAndGet();
+            } catch (OutOfMemoryError e) {
+                LOGGER.warn("Warmup stopped at {} buffers: direct memory exhausted", i);
+                break;
             }
-            cachedFreeListSize = freeList.size();
-        } finally {
-            lock.unlock();
         }
+        LOGGER.info("Warmup complete: freeList={}, provisioned={}", freeList.size(), totalProvisioned.get());
     }
 
     @Override
     public void close() {
-        lock.lock();
-        try {
-            if (closed)
-                return;
-            closed = true;
-            while (!freeList.isEmpty()) {
-                RefCountedMemorySegment seg = freeList.removeFirst();
-                PanamaNativeAccess.free(seg.segment());
-            }
-            cachedFreeListSize = 0;
-            notEmpty.signalAll();
-        } finally {
-            lock.unlock();
-        }
+        if (closed)
+            return;
+        closed = true;
+        int drained = 0;
+        while (freeList.poll() != null)
+            drained++;
+        LOGGER
+            .info(
+                "MemorySegmentPool closed: drained {} freelist buffers, inUse={}, provisioned={}",
+                drained,
+                buffersInUse.get(),
+                totalProvisioned.get()
+            );
     }
 
     @Override
@@ -323,20 +356,17 @@ public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoClo
 
     @Override
     public String poolStats() {
-        int free = cachedFreeListSize;
-        int allocated = allocatedSegments;
-        int unalloc = maxSegments - allocated;
-        double utilization = (double) (allocated - free) / maxSegments;
-        double allocation = (double) allocated / maxSegments;
+        int inUse = buffersInUse.get();
+        int provisioned = totalProvisioned.get();
+        int free = freeList.size();
         return String
             .format(
-                "PoolStats[max=%d, allocated=%d, free=%d, unallocated=%d, utilization=%.1f%%, allocation=%.1f%%]",
+                "PoolStats[max=%d, provisioned=%d, inUse=%d, freeList=%d, utilization=%.1f%%]",
                 maxSegments,
-                allocated,
+                provisioned,
+                inUse,
                 free,
-                unalloc,
-                utilization * 100,
-                allocation * 100
+                maxSegments > 0 ? (double) inUse / maxSegments * 100 : 0
             );
     }
 
@@ -345,49 +375,39 @@ public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoClo
      */
     @SuppressForbidden(reason = "custom string builder")
     public static class PoolStats {
-        /** Maximum number of segments the pool can allocate. */
         public final int maxSegments;
-        /** Number of segments currently allocated. */
-        public final int allocatedSegments;
-        /** Number of segments in the free list. */
-        public final int freeSegments;
-        /** Number of segments that can still be allocated. */
-        public final int unallocatedSegments;
-        /** Ratio of segments in use (allocated - free) / max. */
+        public final int totalProvisioned;
+        public final int buffersInUse;
+        public final int freeListSize;
         public final double utilizationRatio;
-        /** Ratio of allocated segments to max segments. */
-        public final double allocationRatio;
 
-        PoolStats(int maxSegments, int allocatedSegments, int freeSegments, int unallocatedSegments) {
+        PoolStats(int maxSegments, int totalProvisioned, int buffersInUse, int freeListSize) {
             this.maxSegments = maxSegments;
-            this.allocatedSegments = allocatedSegments;
-            this.freeSegments = freeSegments;
-            this.unallocatedSegments = unallocatedSegments;
-            this.utilizationRatio = (double) (allocatedSegments - freeSegments) / maxSegments;
-            this.allocationRatio = (double) allocatedSegments / maxSegments;
+            this.totalProvisioned = totalProvisioned;
+            this.buffersInUse = buffersInUse;
+            this.freeListSize = freeListSize;
+            this.utilizationRatio = maxSegments > 0 ? (double) buffersInUse / maxSegments : 0;
         }
 
         @Override
         public String toString() {
             return String
                 .format(
-                    "PoolStats[max=%d, allocated=%d, free=%d, unallocated=%d, utilization=%.1f%%, allocation=%.1f%%]",
+                    "PoolStats[max=%d, provisioned=%d, inUse=%d, freeList=%d, utilization=%.1f%%]",
                     maxSegments,
-                    allocatedSegments,
-                    freeSegments,
-                    unallocatedSegments,
-                    utilizationRatio * 100,
-                    allocationRatio * 100
+                    totalProvisioned,
+                    buffersInUse,
+                    freeListSize,
+                    utilizationRatio * 100
                 );
         }
     }
 
     @Override
     public void recordStats() {
-        double utilization = (double) (allocatedSegments - cachedFreeListSize) / maxSegments;
-        double allocation = (double) allocatedSegments / maxSegments;
-        CryptoMetricsService
-            .getInstance()
-            .recordPoolStats(SegmentType.PRIMARY, maxSegments, allocatedSegments, cachedFreeListSize, utilization, allocation);
+        int inUse = buffersInUse.get();
+        int free = freeList.size();
+        double pct = maxSegments > 0 ? (double) inUse / maxSegments : 0;
+        CryptoMetricsService.getInstance().recordPoolStats(SegmentType.PRIMARY, maxSegments, inUse, free, pct, pct);
     }
 }
