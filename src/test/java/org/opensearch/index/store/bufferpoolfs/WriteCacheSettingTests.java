@@ -94,7 +94,12 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
         CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> sharedCaffeineCache =
             (CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment>) poolResources.getBlockCache();
 
-        this.directoryCache = new CaffeineBlockCache<>(sharedCaffeineCache.getCache(), loader, poolResources.getMaxCacheBlocks());
+        this.directoryCache = new CaffeineBlockCache<>(
+            sharedCaffeineCache.getCache(),
+            loader,
+            poolResources.getMaxCacheBlocks(),
+            poolResources.getPrefetchTracker()
+        );
 
         this.bufferPoolDirectory = new BufferPoolDirectory(
             dirPath,

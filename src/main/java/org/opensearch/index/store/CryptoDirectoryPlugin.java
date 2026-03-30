@@ -160,6 +160,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                 CryptoDirectoryFactory.NODE_KEY_REFRESH_INTERVAL_SETTING,
                 CryptoDirectoryFactory.NODE_KEY_EXPIRY_INTERVAL_SETTING,
                 CryptoDirectoryFactory.WRITE_CACHE_ENABLED_SETTING,
+                CryptoDirectoryFactory.PREFETCH_ENABLED_SETTING,
                 PoolSizeCalculator.NODE_POOL_SIZE_PERCENTAGE_SETTING,
                 PoolSizeCalculator.NODE_CACHE_TO_POOL_RATIO_SETTING,
                 PoolSizeCalculator.NODE_WARMUP_PERCENTAGE_SETTING,
@@ -178,11 +179,11 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
      */
     @Override
     public Map<String, DirectoryFactory> getDirectoryFactories() {
-        // if (isDisabled()) {
-        // log.debug("Crypto Directory Plugin is disabled. No directory factories will be registered.");
-        // return Collections.emptyMap();
-        // }
-        log.debug("Crypto Directory Plugin is enabled with crypto plugin {}. Registering cryptofs directory factory.", isDisabled());
+        if (isDisabled()) {
+            log.debug("Crypto Directory Plugin is disabled. No directory factories will be registered.");
+            return Collections.emptyMap();
+        }
+        log.debug("Crypto Directory Plugin is enabled. Registering cryptofs directory factory.");
         return Collections.singletonMap(CryptoDirectoryFactory.STORE_TYPE, new CryptoDirectoryFactory());
     }
 
@@ -192,8 +193,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
     @Override
     public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {
         if (isDisabled()) {
-            // return Optional.empty();
-            log.warn("Using plugin with crypto disabled");
+            return Optional.empty();
         }
 
         // Only provide our custom engine factory for cryptofs indices
@@ -221,7 +221,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
     ) {
         if (isDisabled()) {
             log.debug("Crypto Directory Plugin is disabled. Skipping component initialization.");
-            // return Collections.emptyList();
+            return Collections.emptyList();
         }
         this.nodeEnvironment = nodeEnvironment;
         // Store remote store parameters for CryptoEngineFactory to access

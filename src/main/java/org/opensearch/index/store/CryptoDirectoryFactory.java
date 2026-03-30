@@ -87,6 +87,17 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     private static volatile boolean writeCacheEnabled = true;
 
     /**
+     * Controls whether prefetch is enabled for bufferpool directories.
+     */
+    public static final Setting<Boolean> PREFETCH_ENABLED_SETTING = Setting
+        .boolSetting("node.store.crypto.prefetch.enabled", true, Property.NodeScope, Property.Dynamic);
+
+    /**
+     * Current value of the prefetch enabled setting, updated dynamically via cluster settings.
+     */
+    private static volatile boolean prefetchEnabled = true;
+
+    /**
      * Shared pool resources including pool, cache, and telemetry.
      * Lazily initialized on first cryptofs shard creation and shared across all CryptoBufferPoolFSDirectory instances.
      * This prevents resource allocation on dedicated master nodes which never create shards.
@@ -550,6 +561,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     public static void setNodeSettings(Settings settings) {
         nodeSettings = settings;
         writeCacheEnabled = WRITE_CACHE_ENABLED_SETTING.get(settings);
+        prefetchEnabled = PREFETCH_ENABLED_SETTING.get(settings);
     }
 
     public static void setThreadPool(ThreadPool tp) {
@@ -572,6 +584,10 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                 LOGGER.info("Updating write_cache_enabled to {}", value);
                 writeCacheEnabled = value;
             });
+            service.getClusterSettings().addSettingsUpdateConsumer(PREFETCH_ENABLED_SETTING, value -> {
+                LOGGER.info("Updating prefetch.enabled to {}", value);
+                prefetchEnabled = value;
+            });
         }
     }
 
@@ -583,6 +599,16 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      */
     public static boolean isWriteCacheEnabled() {
         return writeCacheEnabled;
+    }
+
+    /**
+     * Returns whether prefetch (readahead) is currently enabled.
+     * This is read by the read path to decide whether to perform async prefetching.
+     *
+     * @return true if prefetch is enabled
+     */
+    public static boolean isPrefetchEnabled() {
+        return prefetchEnabled;
     }
 
     /**

@@ -330,7 +330,6 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
             );
     }
 
-    @Override
     public String prefetchStats() {
         return prefetchTracker.stats();
     }

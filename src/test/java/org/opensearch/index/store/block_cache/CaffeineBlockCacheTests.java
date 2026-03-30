@@ -343,24 +343,30 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
         long startOffset = 0L;
         long blockCount = 3L;
 
-        CountDownLatch loadComplete = new CountDownLatch(1);
-        BlockCacheValue<String>[] loadedValues = new BlockCacheValue[] {
-            createMockValue("block0"),
-            createMockValue("block1"),
-            createMockValue("block2") };
+        CountDownLatch loadComplete = new CountDownLatch(3);
+        BlockCacheValue<String>[] block0 = new BlockCacheValue[] { createMockValue("block0") };
+        BlockCacheValue<String>[] block1 = new BlockCacheValue[] { createMockValue("block1") };
+        BlockCacheValue<String>[] block2 = new BlockCacheValue[] { createMockValue("block2") };
 
-        when(mockLoader.load(eq(path), eq(startOffset), eq(blockCount), anyLong())).thenAnswer(inv -> {
-            try {
-                return loadedValues;
-            } finally {
-                loadComplete.countDown();
-            }
+        when(mockLoader.load(eq(path), eq(0L), eq(1L), anyLong())).thenAnswer(inv -> {
+            loadComplete.countDown();
+            return block0;
+        });
+        when(mockLoader.load(eq(path), eq(8192L), eq(1L), anyLong())).thenAnswer(inv -> {
+            loadComplete.countDown();
+            return block1;
+        });
+        when(mockLoader.load(eq(path), eq(16384L), eq(1L), anyLong())).thenAnswer(inv -> {
+            loadComplete.countDown();
+            return block2;
         });
 
         blockCache.loadMissingBlocks(path, startOffset, blockCount);
 
         assertTrue("Load should complete", loadComplete.await(5, TimeUnit.SECONDS));
-        verify(mockLoader, times(1)).load(eq(path), eq(startOffset), eq(blockCount), anyLong());
+        verify(mockLoader, times(1)).load(eq(path), eq(0L), eq(1L), anyLong());
+        verify(mockLoader, times(1)).load(eq(path), eq(8192L), eq(1L), anyLong());
+        verify(mockLoader, times(1)).load(eq(path), eq(16384L), eq(1L), anyLong());
     }
 
     /**
@@ -371,15 +377,17 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
         long startOffset = 0L;
         long blockCount = 2L;
 
-        CountDownLatch loadComplete = new CountDownLatch(1);
-        BlockCacheValue<String>[] loadedValues = new BlockCacheValue[] { createMockValue("block0"), createMockValue("block1") };
+        CountDownLatch loadComplete = new CountDownLatch(2);
+        BlockCacheValue<String>[] block0 = new BlockCacheValue[] { createMockValue("block0") };
+        BlockCacheValue<String>[] block1 = new BlockCacheValue[] { createMockValue("block1") };
 
-        when(mockLoader.load(eq(path), eq(startOffset), eq(blockCount), anyLong())).thenAnswer(inv -> {
-            try {
-                return loadedValues;
-            } finally {
-                loadComplete.countDown();
-            }
+        when(mockLoader.load(eq(path), eq(0L), eq(1L), anyLong())).thenAnswer(inv -> {
+            loadComplete.countDown();
+            return block0;
+        });
+        when(mockLoader.load(eq(path), eq(8192L), eq(1L), anyLong())).thenAnswer(inv -> {
+            loadComplete.countDown();
+            return block1;
         });
 
         blockCache.loadMissingBlocks(path, startOffset, blockCount);

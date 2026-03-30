@@ -9,6 +9,8 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 
+import org.opensearch.index.store.CryptoDirectoryFactory;
+
 /**
  * Tracks prefetch deduplication state and statistics.
  * Encapsulates the in-flight dedup map, counters, and async executor for prefetch operations.
@@ -53,6 +55,9 @@ public class PrefetchTracker {
      * @param task the runnable to execute
      */
     public void execute(Runnable task) {
+        if (!CryptoDirectoryFactory.isPrefetchEnabled()) {
+            return;
+        }
         if (inflightCount.get() > maxInflight) {
             executeRejections.increment();
             return;
