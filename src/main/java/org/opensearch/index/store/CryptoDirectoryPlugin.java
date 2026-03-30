@@ -23,7 +23,6 @@ import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.SettingsFilter;
-import org.opensearch.common.util.concurrent.OpenSearchExecutors;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
@@ -58,7 +57,6 @@ import org.opensearch.script.ScriptService;
 import org.opensearch.telemetry.metrics.MetricsRegistry;
 import org.opensearch.telemetry.tracing.Tracer;
 import org.opensearch.threadpool.ExecutorBuilder;
-import org.opensearch.threadpool.FixedExecutorBuilder;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.client.Client;
 import org.opensearch.watcher.ResourceWatcherService;
@@ -172,29 +170,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
     }
 
     public List<ExecutorBuilder<?>> getExecutorBuilders(Settings settings) {
-        // Check for user overrides, otherwise calculate dynamically
-        int queueSize = PREFETCH_QUEUE_SIZE_SETTING.get(settings);
-        int threads = PREFETCH_THREAD_COUNT_SETTING.get(settings);
-
-        if (threads == -1) {
-            threads = OpenSearchExecutors.allocatedProcessors(settings) * 4;
-        }
-        if (queueSize == -1) {
-            queueSize = threads * 1000;
-        }
-
-        log.info("Prefetch thread pool configured: threads={}, queueSize={}", threads, queueSize);
-
-        return Arrays
-            .asList(
-                new FixedExecutorBuilder(
-                    settings,
-                    CRYPTO_PLUGIN_THREADPOOL_PREFETCH,
-                    threads,
-                    queueSize,
-                    "plugins.crypto.threadpool.prefetch"
-                )
-            );
+        return Collections.emptyList();
     }
 
     /**
@@ -202,11 +178,11 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
      */
     @Override
     public Map<String, DirectoryFactory> getDirectoryFactories() {
-        if (isDisabled()) {
-            log.debug("Crypto Directory Plugin is disabled. No directory factories will be registered.");
-            return Collections.emptyMap();
-        }
-        log.debug("Crypto Directory Plugin is enabled. Registering cryptofs directory factory.");
+        // if (isDisabled()) {
+        // log.debug("Crypto Directory Plugin is disabled. No directory factories will be registered.");
+        // return Collections.emptyMap();
+        // }
+        log.debug("Crypto Directory Plugin is enabled with crypto plugin {}. Registering cryptofs directory factory.", isDisabled());
         return Collections.singletonMap(CryptoDirectoryFactory.STORE_TYPE, new CryptoDirectoryFactory());
     }
 
@@ -216,7 +192,8 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
     @Override
     public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {
         if (isDisabled()) {
-            return Optional.empty();
+            // return Optional.empty();
+            log.warn("Using plugin with crypto disabled");
         }
 
         // Only provide our custom engine factory for cryptofs indices
@@ -244,7 +221,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
     ) {
         if (isDisabled()) {
             log.debug("Crypto Directory Plugin is disabled. Skipping component initialization.");
-            return Collections.emptyList();
+            // return Collections.emptyList();
         }
         this.nodeEnvironment = nodeEnvironment;
         // Store remote store parameters for CryptoEngineFactory to access

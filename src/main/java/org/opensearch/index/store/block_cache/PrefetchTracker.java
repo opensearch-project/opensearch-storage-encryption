@@ -6,7 +6,8 @@ package org.opensearch.index.store.block_cache;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  * Tracks prefetch deduplication state and statistics.
@@ -17,30 +18,50 @@ import java.util.concurrent.atomic.AtomicLong;
 public class PrefetchTracker {
 
     private final ConcurrentHashMap<BlockCacheKey, Boolean> inflight = new ConcurrentHashMap<>();
+    private final AtomicInteger inflightCount = new AtomicInteger();
     private final Executor executor;
 
-    private final AtomicLong loadMissingBlocksCalls = new AtomicLong();
-    private final AtomicLong blocksRequested = new AtomicLong();
-    private final AtomicLong blocksLoaded = new AtomicLong();
-    private final AtomicLong blocksDeduped = new AtomicLong();
-    private final AtomicLong blocksCacheHit = new AtomicLong();
+    private final LongAdder prefetchCalls = new LongAdder();
+    private final LongAdder blocksRequested = new LongAdder();
+    private final LongAdder blocksLoaded = new LongAdder();
+    private final LongAdder blocksDeduped = new LongAdder();
+    private final LongAdder blocksCacheHit = new LongAdder();
+    private final LongAdder executeRejections = new LongAdder();
+    private final LongAdder prefetchTimeNs = new LongAdder();
+
+    private final int maxInflight;
 
     /**
      * Creates a prefetch tracker with the given async executor.
      *
      * @param executor the executor for async prefetch operations (must not be null)
+     * @param maxInflight maximum in-flight prefetch tasks before dropping new submissions
      */
-    public PrefetchTracker(Executor executor) {
+    public PrefetchTracker(Executor executor, int maxInflight) {
         this.executor = executor;
+        this.maxInflight = maxInflight;
+    }
+
+    public PrefetchTracker(Executor executor) {
+        this(executor, 10_000);
     }
 
     /**
      * Submits a task for async prefetch execution.
+     * Drops the task if too many prefetch operations are already in-flight.
      *
      * @param task the runnable to execute
      */
     public void execute(Runnable task) {
-        executor.execute(task);
+        if (inflightCount.get() > maxInflight) {
+            executeRejections.increment();
+            return;
+        }
+        try {
+            executor.execute(task);
+        } catch (Exception e) {
+            executeRejections.increment();
+        }
     }
 
     /**
@@ -51,87 +72,110 @@ public class PrefetchTracker {
      */
     public boolean putIfAbsent(BlockCacheKey key) {
         if (inflight.putIfAbsent(key, Boolean.TRUE) == null) {
+            inflightCount.incrementAndGet();
             return true;
         }
-        blocksDeduped.incrementAndGet();
+        blocksDeduped.increment();
         return false;
     }
 
     public void remove(BlockCacheKey key) {
-        inflight.remove(key);
+        if (inflight.remove(key) != null) {
+            inflightCount.decrementAndGet();
+        }
     }
 
     public int size() {
-        return inflight.size();
+        return inflightCount.get();
     }
 
     public boolean isEmpty() {
-        return inflight.isEmpty();
+        return inflightCount.get() == 0;
     }
 
     public void clear() {
         inflight.clear();
     }
 
-    public void recordLoadMissingBlocksCall(long blockCount) {
-        loadMissingBlocksCalls.incrementAndGet();
-        blocksRequested.addAndGet(blockCount);
+    public void recordPrefetchCall(long blockCount) {
+        prefetchCalls.increment();
+        blocksRequested.add(blockCount);
+    }
+
+    public void recordPrefetchTimeNs(long nanos) {
+        prefetchTimeNs.add(nanos);
     }
 
     public void recordBlocksLoaded(long count) {
-        blocksLoaded.addAndGet(count);
+        blocksLoaded.add(count);
     }
 
     public void recordCacheHits(long count) {
-        blocksCacheHit.addAndGet(count);
+        blocksCacheHit.add(count);
     }
 
     public String stats() {
-        long calls = loadMissingBlocksCalls.get();
-        long requested = blocksRequested.get();
-        long loaded = blocksLoaded.get();
-        long deduped = blocksDeduped.get();
-        long cacheHit = blocksCacheHit.get();
+        long calls = prefetchCalls.sum();
+        long requested = blocksRequested.sum();
+        long loaded = blocksLoaded.sum();
+        long deduped = blocksDeduped.sum();
+        long cacheHit = blocksCacheHit.sum();
+        long rejections = executeRejections.sum();
+        long timeMs = prefetchTimeNs.sum() / 1_000_000;
+        double cacheHitRate = requested > 0 ? (100.0 * cacheHit / requested) : 0;
         double loadRatio = requested > 0 ? (100.0 * loaded / requested) : 0;
         return String
             .format(
-                "Prefetch[calls=%d, requested=%d, loaded=%d, deduped=%d, cacheHit=%d, loadRatio=%.2f%%, inflight=%d]",
+                "Prefetch[calls=%d, requested=%d, loaded=%d, deduped=%d, cacheHit=%d, hitRatio=%.2f%%, loadRatio=%.2f%%, timeMs=%d, inflight=%d, rejections=%d]",
                 calls,
                 requested,
                 loaded,
                 deduped,
                 cacheHit,
+                cacheHitRate,
                 loadRatio,
-                inflight.size()
+                timeMs,
+                inflight.size(),
+                rejections
             );
     }
 
     public long getCalls() {
-        return loadMissingBlocksCalls.get();
+        return prefetchCalls.sum();
     }
 
     public long getBlocksRequested() {
-        return blocksRequested.get();
+        return blocksRequested.sum();
     }
 
     public long getBlocksLoaded() {
-        return blocksLoaded.get();
+        return blocksLoaded.sum();
     }
 
     public long getBlocksDeduped() {
-        return blocksDeduped.get();
+        return blocksDeduped.sum();
     }
 
     public long getBlocksCacheHit() {
-        return blocksCacheHit.get();
+        return blocksCacheHit.sum();
     }
 
-    // Testing only
-    void resetStats() {
-        loadMissingBlocksCalls.set(0);
-        blocksRequested.set(0);
-        blocksLoaded.set(0);
-        blocksDeduped.set(0);
-        blocksCacheHit.set(0);
+    public long getExecuteRejections() {
+        return executeRejections.sum();
+    }
+
+    public long getPrefetchTimeNs() {
+        return prefetchTimeNs.sum();
+    }
+
+    // Testing and benchmarking
+    public void resetStats() {
+        prefetchCalls.reset();
+        blocksRequested.reset();
+        blocksLoaded.reset();
+        blocksDeduped.reset();
+        blocksCacheHit.reset();
+        executeRejections.reset();
+        prefetchTimeNs.reset();
     }
 }

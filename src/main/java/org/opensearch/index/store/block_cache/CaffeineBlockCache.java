@@ -185,7 +185,8 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      */
     @Override
     public void loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException {
-        prefetchTracker.recordLoadMissingBlocksCall(blockCount);
+        prefetchTracker.recordPrefetchCall(blockCount);
+        long t0 = System.nanoTime();
         try {
             prefetchTracker.execute(() -> {
                 try {
@@ -196,65 +197,52 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
             });
         } catch (Exception e) {
             LOGGER.warn("prefetch task rejected: path={} offset={} count={} e={}", filePath, startOffset, blockCount, e.getMessage());
+        } finally {
+            prefetchTracker.recordPrefetchTimeNs(System.nanoTime() - t0);
         }
     }
 
-    private void loadMissingBlocksSync(Path filePath, long startOffset, long blockCount) throws IOException {
-        long totalLoaded = 0;
-
-        // Check which blocks are already cached
-        FileBlockCacheKey[] missingKeys = new FileBlockCacheKey[(int) blockCount];
-        int missingCount = 0;
-        long cacheHitCount = 0;
-
+    private void loadMissingBlocksSync(Path filePath, long startOffset, long blockCount) {
+        BlockCacheKey[] keys = new BlockCacheKey[(int) blockCount];
+        int keyCount = 0;
         for (int i = 0; i < blockCount; i++) {
             long blockOffset = startOffset + i * CACHE_BLOCK_SIZE;
-            FileBlockCacheKey key = (FileBlockCacheKey) createBlockKey(filePath, blockOffset);
-            // check if this block is already in progress
+            BlockCacheKey key = createBlockKey(filePath, blockOffset);
             if (prefetchTracker.putIfAbsent(key)) {
-                if (cache.getIfPresent(key) == null) {
-                    missingKeys[missingCount++] = key;
-                } else {
-                    prefetchTracker.remove(key);
-                    cacheHitCount++;
-                }
+                keys[keyCount++] = key;
             }
         }
 
-        if (cacheHitCount > 0) {
-            prefetchTracker.recordCacheHits(cacheHitCount);
-        }
-
-        if (missingCount == 0) {
-            return; // All blocks already cached
-        }
-
-        // Load consecutive ranges
-        int rangeStart = 0;
-        while (rangeStart < missingCount) {
-            long rangeStartOffset = missingKeys[rangeStart].offset();
-            int rangeLength = 1;
-
-            // Find consecutive blocks
-            while (rangeStart + rangeLength < missingCount
-                && missingKeys[rangeStart + rangeLength].offset() == rangeStartOffset + rangeLength * CACHE_BLOCK_SIZE) {
-                rangeLength++;
-            }
+        long[] loaded = { 0 };
+        long failed = 0;
+        for (int i = 0; i < keyCount; i++) {
+            BlockCacheKey key = keys[i];
             try {
-                long loadedFor = loadAllBlocks(filePath, rangeStartOffset, rangeLength);
-                totalLoaded += loadedFor;
+                cache.get(key, k -> {
+                    try {
+                        V[] result = blockLoader.load(k.filePath(), k.offset(), 1, 50);
+                        @SuppressWarnings("unchecked")
+                        BlockCacheValue<T> value = (BlockCacheValue<T>) result[0];
+                        loaded[0]++;
+                        return value;
+                    } catch (Exception e) {
+                        return handleLoadException(k, e);
+                    }
+                });
             } catch (Exception e) {
-                LOGGER.warn("failed to prefetch block: path={} offset={} count={}", filePath, rangeStartOffset, rangeLength, e);
+                LOGGER.warn("Prefetch load failed: path={} offset={}", filePath, key.offset(), e);
+                failed++;
             } finally {
-                // Remove loaded blocks from prefetch tracker
-                for (int i = 0; i < rangeLength; i++) {
-                    prefetchTracker.remove(missingKeys[rangeStart + i]);
-                }
+                prefetchTracker.remove(key);
             }
-            rangeStart += rangeLength;
         }
-
-        prefetchTracker.recordBlocksLoaded(totalLoaded);
+        if (loaded[0] > 0) {
+            prefetchTracker.recordBlocksLoaded(loaded[0]);
+        }
+        long cacheHits = keyCount - loaded[0] - failed;
+        if (cacheHits > 0) {
+            prefetchTracker.recordCacheHits(cacheHits);
+        }
     }
 
     /**
@@ -342,6 +330,11 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
             );
     }
 
+    @Override
+    public String prefetchStats() {
+        return prefetchTracker.stats();
+    }
+
     /**
      * Get the underlying Caffeine cache instance.
      * This is used for sharing the cache storage across multiple BlockCache instances
@@ -377,6 +370,8 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 prefetchTracker.getBlocksCacheHit(),
                 prefetchTracker.size()
             );
+        LOGGER.info("{}", stats);
+        LOGGER.info("{}", prefetchTracker.stats());
     }
 
     @Override
