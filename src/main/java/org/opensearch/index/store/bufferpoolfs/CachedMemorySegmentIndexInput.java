@@ -169,17 +169,23 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     private MemorySegment getCacheBlockWithOffset(long pos) throws IOException {
         final long fileOffset = absoluteBaseOffset + pos;
         final long blockOffset = fileOffset & ~CACHE_BLOCK_MASK;
-        final int offsetInBlock = (int) (fileOffset - blockOffset);
+        lastOffsetInBlock = (int) (fileOffset - blockOffset);
 
         // Fast path: reuse current block if still valid.
         // this access is safe without generation check because currentBlock
         // is pinned (refCount > 1) so it cannot be returned to pool or reused
         // for different data while we hold it.
         if (blockOffset == currentBlockOffset && currentBlock != null) {
-            lastOffsetInBlock = offsetInBlock;
             return currentBlock.value().segment();
         }
+        return acquireCacheBlockOnMiss(blockOffset);
+    }
 
+    /**
+    * Slow path for cache block acquisition — separated to keep the fast path
+    * small enough for JIT inlining.
+    */
+    private MemorySegment acquireCacheBlockOnMiss(long blockOffset) throws IOException {
         cacheHitHolder.reset();
 
         // BlockSlotTinyCache returns already-pinned values
@@ -204,7 +210,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             readaheadContext.onAccess(blockOffset, cacheHitHolder.wasCacheHit());
         }
 
-        lastOffsetInBlock = offsetInBlock;
         return pinnedBlock.segment();
     }
 
