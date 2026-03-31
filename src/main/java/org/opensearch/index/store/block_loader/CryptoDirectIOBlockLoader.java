@@ -22,7 +22,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.cipher.MemorySegmentDecryptor;
 import org.opensearch.index.store.footer.EncryptionFooter;
@@ -49,11 +49,11 @@ import org.opensearch.index.store.pool.Pool;
  * @opensearch.internal
  */
 @SuppressWarnings("preview")
-public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySegment> {
+public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedByteBuffer> {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOBlockLoader.class);
 
     private final KeyResolver keyResolver;
-    private final Pool<RefCountedMemorySegment> segmentPool;
+    private final Pool<RefCountedByteBuffer> segmentPool;
     private final EncryptionMetadataCache encryptionMetadataCache;
 
     /**
@@ -63,7 +63,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
      * @param keyResolver the resolver for obtaining encryption keys and initialization vectors
      */
     public CryptoDirectIOBlockLoader(
-        Pool<RefCountedMemorySegment> segmentPool,
+        Pool<RefCountedByteBuffer> segmentPool,
         KeyResolver keyResolver,
         EncryptionMetadataCache encryptionMetadataCache
     ) {
@@ -73,7 +73,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
     }
 
     @Override
-    public RefCountedMemorySegment[] load(Path filePath, long startOffset, long blockCount, long poolTimeoutMs) throws Exception {
+    public RefCountedByteBuffer[] load(Path filePath, long startOffset, long blockCount, long poolTimeoutMs) throws Exception {
         if (!Files.exists(filePath)) {
             throw new NoSuchFileException(filePath.toString());
         }
@@ -86,7 +86,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
             throw new IllegalArgumentException("blockCount must be positive: " + blockCount);
         }
 
-        RefCountedMemorySegment[] result = new RefCountedMemorySegment[(int) blockCount];
+        RefCountedByteBuffer[] result = new RefCountedByteBuffer[(int) blockCount];
         long readLength = blockCount << CACHE_BLOCK_SIZE_POWER;
 
         try (
@@ -131,7 +131,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
             try {
                 while (blockIndex < blockCount && bytesCopied < bytesRead) {
                     // Use caller-specified timeout (5s for critical loads, 50ms for prefetch)
-                    RefCountedMemorySegment handle = segmentPool.tryAcquire(poolTimeoutMs, TimeUnit.MILLISECONDS);
+                    RefCountedByteBuffer handle = segmentPool.tryAcquire(poolTimeoutMs, TimeUnit.MILLISECONDS);
 
                     MemorySegment pooled = handle.segment();
 
@@ -165,7 +165,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
         }
     }
 
-    private void releaseHandles(RefCountedMemorySegment[] handles, int upTo) {
+    private void releaseHandles(RefCountedByteBuffer[] handles, int upTo) {
         for (int i = 0; i < upTo; i++) {
             if (handles[i] != null) {
                 handles[i].close();

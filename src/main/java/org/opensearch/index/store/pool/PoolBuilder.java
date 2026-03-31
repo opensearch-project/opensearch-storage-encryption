@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.settings.Settings;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheBuilder;
 import org.opensearch.index.store.read_ahead.Worker;
@@ -45,8 +45,8 @@ public final class PoolBuilder {
      * providing proper cleanup when closed.
      */
     public static class PoolResources implements Closeable {
-        private final Pool<RefCountedMemorySegment> segmentPool;
-        private final BlockCache<RefCountedMemorySegment> blockCache;
+        private final Pool<RefCountedByteBuffer> segmentPool;
+        private final BlockCache<RefCountedByteBuffer> blockCache;
         private final long maxCacheBlocks;
         private final int readAheadQueueSize;
         private final Worker sharedReadaheadWorker;
@@ -55,8 +55,8 @@ public final class PoolBuilder {
         private final ExecutorService readAheadExecutor;
 
         PoolResources(
-            Pool<RefCountedMemorySegment> segmentPool,
-            BlockCache<RefCountedMemorySegment> blockCache,
+            Pool<RefCountedByteBuffer> segmentPool,
+            BlockCache<RefCountedByteBuffer> blockCache,
             long maxCacheBlocks,
             int readAheadQueueSize,
             Worker sharedReadaheadWorker,
@@ -79,7 +79,7 @@ public final class PoolBuilder {
          *
          * @return the segment pool
          */
-        public Pool<RefCountedMemorySegment> getSegmentPool() {
+        public Pool<RefCountedByteBuffer> getSegmentPool() {
             return segmentPool;
         }
 
@@ -88,7 +88,7 @@ public final class PoolBuilder {
          *
          * @return the block cache
          */
-        public BlockCache<RefCountedMemorySegment> getBlockCache() {
+        public BlockCache<RefCountedByteBuffer> getBlockCache() {
             return blockCache;
         }
 
@@ -175,10 +175,10 @@ public final class PoolBuilder {
      */
     private static class TelemetryThread implements Closeable {
         private final Thread thread;
-        private final Pool<RefCountedMemorySegment> pool;
-        private final BlockCache<RefCountedMemorySegment> blockCache;
+        private final Pool<RefCountedByteBuffer> pool;
+        private final BlockCache<RefCountedByteBuffer> blockCache;
 
-        TelemetryThread(Pool<RefCountedMemorySegment> pool, BlockCache<RefCountedMemorySegment> blockCache) {
+        TelemetryThread(Pool<RefCountedByteBuffer> pool, BlockCache<RefCountedByteBuffer> blockCache) {
             this.pool = pool;
             this.blockCache = blockCache;
             this.thread = new Thread(this::run);
@@ -244,7 +244,7 @@ public final class PoolBuilder {
         double cacheToPoolRatio = PoolSizeCalculator.calculateCacheToPoolRatio(offHeap, settings);
         double warmupPercentage = PoolSizeCalculator.calculateWarmupPercentage(offHeap, settings);
 
-        Pool<RefCountedMemorySegment> segmentPool = new MemorySegmentPool(reservedPoolSizeInBytes, CACHE_BLOCK_SIZE);
+        Pool<RefCountedByteBuffer> segmentPool = new MemorySegmentPool(reservedPoolSizeInBytes, CACHE_BLOCK_SIZE);
         LOGGER
             .info(
                 "Creating shared pool with sizeBytes={}, segmentSize={}, totalSegments={}",
@@ -265,11 +265,14 @@ public final class PoolBuilder {
         LOGGER.info("Calculated read-ahead queue size={} (cache={} blocks)", readAheadQueueSize, maxCacheBlocks);
 
         // Initialize shared cache with removal listener and get its executor
-        BlockCacheBuilder.CacheWithExecutor<RefCountedMemorySegment, RefCountedMemorySegment> cacheWithExecutor = BlockCacheBuilder
+        BlockCacheBuilder.CacheWithExecutor<RefCountedByteBuffer, RefCountedByteBuffer> cacheWithExecutor = BlockCacheBuilder
             .build(CACHE_INITIAL_SIZE, maxCacheBlocks);
-        BlockCache<RefCountedMemorySegment> blockCache = cacheWithExecutor.getCache();
+        BlockCache<RefCountedByteBuffer> blockCache = cacheWithExecutor.getCache();
         java.util.concurrent.ThreadPoolExecutor removalExecutor = cacheWithExecutor.getExecutor();
         LOGGER.info("Creating shared block cache with blocks={}", maxCacheBlocks);
+
+        // Wire cache size into pool's GC debt monitor
+        ((MemorySegmentPool) segmentPool).setCacheEntriesSupplier(blockCache::getCacheSize);
 
         // Calculate worker threads using principled drain-time approach
         int threads = ReadAheadSizingPolicy.calculateWorkerThreads(readAheadQueueSize);

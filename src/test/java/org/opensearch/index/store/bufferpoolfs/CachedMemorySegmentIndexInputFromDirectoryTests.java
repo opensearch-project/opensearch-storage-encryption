@@ -29,7 +29,7 @@ import org.opensearch.index.store.CaffeineThreadLeakFilter;
 import org.opensearch.index.store.CryptoDirectoryFactory;
 import org.opensearch.index.store.DummyKeyProvider;
 import org.opensearch.index.store.PanamaNativeAccess;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
@@ -104,7 +104,7 @@ public class CachedMemorySegmentIndexInputFromDirectoryTests extends BaseIndexIn
         Provider provider = Security.getProvider(DEFAULT_CRYPTO_PROVIDER);
         MasterKeyProvider keyProvider = DummyKeyProvider.create();
         this.poolResources = PoolBuilder.build(createNodeSettings());
-        Pool<RefCountedMemorySegment> segmentPool = poolResources.getSegmentPool();
+        Pool<RefCountedByteBuffer> segmentPool = poolResources.getSegmentPool();
 
         String indexUuid = randomAlphaOfLength(10);
         String indexName = randomAlphaOfLength(10);
@@ -115,14 +115,14 @@ public class CachedMemorySegmentIndexInputFromDirectoryTests extends BaseIndexIn
 
         EncryptionMetadataCache encryptionMetadataCache = EncryptionMetadataCacheRegistry.getOrCreateCache(indexUuid, shardId, indexName);
 
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(segmentPool, keyResolver, encryptionMetadataCache);
+        BlockLoader<RefCountedByteBuffer> loader = new CryptoDirectIOBlockLoader(segmentPool, keyResolver, encryptionMetadataCache);
 
         Worker worker = poolResources.getSharedReadaheadWorker();
 
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> sharedCaffeineCache =
-            (CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment>) poolResources.getBlockCache();
+        CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer> sharedCaffeineCache =
+            (CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer>) poolResources.getBlockCache();
 
-        BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
+        BlockCache<RefCountedByteBuffer> directoryCache = new CaffeineBlockCache<>(
             sharedCaffeineCache.getCache(),
             loader,
             poolResources.getMaxCacheBlocks()

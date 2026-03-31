@@ -25,7 +25,7 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.common.SuppressForbidden;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
@@ -69,8 +69,8 @@ public class BufferPoolDirectory extends FSDirectory {
     private static final Logger LOGGER = LogManager.getLogger(BufferPoolDirectory.class);
     private final AtomicLong nextTempFileCounter = new AtomicLong();
 
-    private final Pool<RefCountedMemorySegment> memorySegmentPool;
-    private final BlockCache<RefCountedMemorySegment> blockCache;
+    private final Pool<RefCountedByteBuffer> memorySegmentPool;
+    private final BlockCache<RefCountedByteBuffer> blockCache;
     private final Worker readAheadworker;
     private final Provider provider;
     private final Path dirPath;
@@ -95,9 +95,9 @@ public class BufferPoolDirectory extends FSDirectory {
         LockFactory lockFactory,
         Provider provider,
         KeyResolver keyResolver,
-        Pool<RefCountedMemorySegment> memorySegmentPool,
-        BlockCache<RefCountedMemorySegment> blockCache,
-        BlockLoader<RefCountedMemorySegment> blockLoader,
+        Pool<RefCountedByteBuffer> memorySegmentPool,
+        BlockCache<RefCountedByteBuffer> blockCache,
+        BlockLoader<RefCountedByteBuffer> blockLoader,
         Worker worker,
         EncryptionMetadataCache encryptionMetadataCache
     )

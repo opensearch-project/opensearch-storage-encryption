@@ -33,7 +33,7 @@ import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.BufferedChecksum;
 import org.apache.lucene.store.IndexOutput;
 import org.opensearch.common.SuppressForbidden;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
@@ -74,8 +74,8 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
     private static final Logger LOGGER = LogManager.getLogger(DirectIOWithIoUringIndexOutput.class);
 
     private static final int BUFFER_SIZE = 1 << DIRECT_IO_WRITE_BUFFER_SIZE_POWER;
-    private final Pool<RefCountedMemorySegment> memorySegmentPool;
-    private final BlockCache<RefCountedMemorySegment> blockCache;
+    private final Pool<RefCountedByteBuffer> memorySegmentPool;
+    private final BlockCache<RefCountedByteBuffer> blockCache;
     private final FileChannel channel;          // for sync operations (truncate)
     private final IoUringFile ioUringFile;      // for async write operations
     private final ByteBuffer buffer;            // logical data buffer
@@ -108,8 +108,8 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
     public DirectIOWithIoUringIndexOutput(
         Path path,
         String name,
-        Pool<RefCountedMemorySegment> memorySegmentPool,
-        BlockCache<RefCountedMemorySegment> blockCache,
+        Pool<RefCountedByteBuffer> memorySegmentPool,
+        BlockCache<RefCountedByteBuffer> blockCache,
         IoEventLoopGroup group
     )
         throws IOException {
@@ -266,7 +266,7 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
 
     private void tryCachePlaintextSegment(MemorySegment cacheSegment, int size, long offset) {
         try {
-            final RefCountedMemorySegment refSegment = memorySegmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
+            final RefCountedByteBuffer refSegment = memorySegmentPool.tryAcquire(10, TimeUnit.MILLISECONDS);
 
             final MemorySegment pooledSlice = refSegment.segment().asSlice(0, size);
             MemorySegment.copy(cacheSegment, 0, pooledSlice, 0, size);

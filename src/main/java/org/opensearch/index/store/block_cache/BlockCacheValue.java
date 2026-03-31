@@ -27,7 +27,7 @@ package org.opensearch.index.store.block_cache;
  * hold a pin. Implementations should ensure {@link #tryPin()} fails (returns {@code false})
  * once the value has been retired.
  *
- * @param <T> The wrapped resource type (e.g., a read-only view like RefCountedMemorySegment)
+ * @param <T> The wrapped resource type (e.g., a read-only view like RefCountedByteBuffer)
  */
 public interface BlockCacheValue<T> extends AutoCloseable {
 

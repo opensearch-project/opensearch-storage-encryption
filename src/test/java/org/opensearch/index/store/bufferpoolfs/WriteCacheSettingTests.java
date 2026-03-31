@@ -23,7 +23,7 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.CaffeineThreadLeakFilter;
 import org.opensearch.index.store.CryptoDirectoryFactory;
 import org.opensearch.index.store.DummyKeyProvider;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
@@ -49,7 +49,7 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
 
     private BufferPoolDirectory bufferPoolDirectory;
     private PoolBuilder.PoolResources poolResources;
-    private BlockCache<RefCountedMemorySegment> directoryCache;
+    private BlockCache<RefCountedByteBuffer> directoryCache;
     private Path dirPath;
     private boolean originalWriteCacheEnabled;
 
@@ -76,7 +76,7 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
         CryptoDirectoryFactory.setNodeSettings(nodeSettings);
 
         this.poolResources = PoolBuilder.build(nodeSettings);
-        Pool<RefCountedMemorySegment> segmentPool = poolResources.getSegmentPool();
+        Pool<RefCountedByteBuffer> segmentPool = poolResources.getSegmentPool();
 
         String indexUuid = randomAlphaOfLength(10);
         String indexName = randomAlphaOfLength(10);
@@ -86,13 +86,13 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
         KeyResolver keyResolver = new TestKeyResolver(indexUuid, indexName, fsDirectory, provider, keyProvider, shardId);
         EncryptionMetadataCache encryptionMetadataCache = EncryptionMetadataCacheRegistry.getOrCreateCache(indexUuid, shardId, indexName);
 
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(segmentPool, keyResolver, encryptionMetadataCache);
+        BlockLoader<RefCountedByteBuffer> loader = new CryptoDirectIOBlockLoader(segmentPool, keyResolver, encryptionMetadataCache);
 
         Worker worker = poolResources.getSharedReadaheadWorker();
 
         @SuppressWarnings("unchecked")
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> sharedCaffeineCache =
-            (CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment>) poolResources.getBlockCache();
+        CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer> sharedCaffeineCache =
+            (CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer>) poolResources.getBlockCache();
 
         this.directoryCache = new CaffeineBlockCache<>(sharedCaffeineCache.getCache(), loader, poolResources.getMaxCacheBlocks());
 
@@ -139,7 +139,7 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
         // The first block (offset 0) should be in cache
         Path filePath = dirPath.resolve(fileName);
         FileBlockCacheKey key = new FileBlockCacheKey(filePath, 0);
-        BlockCacheValue<RefCountedMemorySegment> cached = directoryCache.get(key);
+        BlockCacheValue<RefCountedByteBuffer> cached = directoryCache.get(key);
         assertNotNull("Block at offset 0 should be cached when write_cache_enabled=true", cached);
     }
 
@@ -162,7 +162,7 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
         Path filePath = dirPath.resolve(fileName);
         for (int i = 0; i < 3; i++) {
             FileBlockCacheKey key = new FileBlockCacheKey(filePath, (long) i * CACHE_BLOCK_SIZE);
-            BlockCacheValue<RefCountedMemorySegment> cached = directoryCache.get(key);
+            BlockCacheValue<RefCountedByteBuffer> cached = directoryCache.get(key);
             assertNull("Block at offset " + (i * CACHE_BLOCK_SIZE) + " should NOT be cached when write_cache_enabled=false", cached);
         }
     }

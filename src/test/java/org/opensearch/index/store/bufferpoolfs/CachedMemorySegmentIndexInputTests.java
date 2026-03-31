@@ -17,12 +17,13 @@ import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
 import org.junit.Before;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
@@ -40,7 +41,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     private static final ValueLayout.OfLong LAYOUT_LE_LONG = ValueLayout.JAVA_LONG_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
     private static final ValueLayout.OfFloat LAYOUT_LE_FLOAT = ValueLayout.JAVA_FLOAT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
 
-    private BlockCache<RefCountedMemorySegment> mockCache;
+    private BlockCache<RefCountedByteBuffer> mockCache;
     private BlockSlotTinyCache mockTinyCache;
     private ReadaheadManager mockReadaheadManager;
     private ReadaheadContext mockReadaheadContext;
@@ -1407,12 +1408,12 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     }
 
     private void setupBlock(long offset, MemorySegment segment) throws IOException {
-        // Create a real RefCountedMemorySegment with a no-op releaser
-        RefCountedMemorySegment refSegment = new RefCountedMemorySegment(segment, (int) segment.byteSize(), (seg) -> {
-            // No-op releaser for tests
-        });
+        // Copy data from arena segment into a direct ByteBuffer
+        ByteBuffer buf = ByteBuffer.allocateDirect(BLOCK_SIZE).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        MemorySegment.copy(segment, 0, MemorySegment.ofBuffer(buf), 0, Math.min(BLOCK_SIZE, (int) segment.byteSize()));
+        RefCountedByteBuffer refSegment = new RefCountedByteBuffer(buf, BLOCK_SIZE);
 
-        BlockCacheValue<RefCountedMemorySegment> value = mock(BlockCacheValue.class);
+        BlockCacheValue<RefCountedByteBuffer> value = mock(BlockCacheValue.class);
         when(value.value()).thenReturn(refSegment);
         when(value.tryPin()).thenReturn(true);
 

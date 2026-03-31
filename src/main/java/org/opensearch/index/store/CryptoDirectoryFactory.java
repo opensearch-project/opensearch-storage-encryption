@@ -31,7 +31,7 @@ import org.opensearch.crypto.CryptoHandlerRegistry;
 import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.shard.ShardPath;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
@@ -467,7 +467,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         *
         * Shared Resources:
         * -----------------
-        * - sharedSegmentPool: Pool of RefCountedMemorySegments (initialized in initializeSharedPool)
+        * - sharedSegmentPool: Pool of RefCountedByteBuffers (initialized in initializeSharedPool)
         * - sharedBlockCache: Caffeine cache storing decrypted blocks (initialized in initializeSharedPool)
         *
         * Per-Directory Resources:
@@ -478,7 +478,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         *
         * Memory Lifecycle:
         * -----------------
-        * 1. Cache miss: Loader reads encrypted data, decrypts it, stores in RefCountedMemorySegment
+        * 1. Cache miss: Loader reads encrypted data, decrypts it, stores in RefCountedByteBuffer
         * 2. Initial refCount=1 (cache's reference)
         * 3. Reader pins: refCount incremented via tryPin()
         * 4. Reader unpins: refCount decremented via decRef()
@@ -495,7 +495,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         PoolBuilder.PoolResources resources = ensurePoolInitialized();
 
         // Create a per-directory loader that uses this directory's keyIvResolver for decryption
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(
+        BlockLoader<RefCountedByteBuffer> loader = new CryptoDirectIOBlockLoader(
             resources.getSegmentPool(),
             keyResolver,
             encryptionMetadataCache
@@ -508,10 +508,10 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         // * Shared cache capacity across all directories
         // * Per-directory decryption via directory-specific loaders with unique keyIvResolvers
         // * Unified eviction policy managed by the shared cache
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> sharedCaffeineCache =
-            (CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment>) resources.getBlockCache();
+        CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer> sharedCaffeineCache =
+            (CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer>) resources.getBlockCache();
 
-        BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
+        BlockCache<RefCountedByteBuffer> directoryCache = new CaffeineBlockCache<>(
             sharedCaffeineCache.getCache(),
             loader,
             resources.getMaxCacheBlocks()

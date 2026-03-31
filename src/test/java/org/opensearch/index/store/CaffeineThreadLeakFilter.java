@@ -17,6 +17,6 @@ import com.carrotsearch.randomizedtesting.ThreadFilter;
 public class CaffeineThreadLeakFilter implements ThreadFilter {
     @Override
     public boolean reject(Thread t) {
-        return t.getName().startsWith("ForkJoinPool.commonPool-worker-");
+        return t.getName().startsWith("ForkJoinPool.commonPool-worker-") || t.getName().startsWith("pool-gc-debt-monitor");
     }
 }

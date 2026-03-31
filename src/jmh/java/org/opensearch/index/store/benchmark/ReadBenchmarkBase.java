@@ -25,7 +25,7 @@ import org.openjdk.jmh.annotations.State;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.CryptoDirectoryFactory;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
@@ -137,7 +137,7 @@ public class ReadBenchmarkBase {
             .build();
 
         this.poolResources = PoolBuilder.build(nodeSettings);
-        Pool<RefCountedMemorySegment> segmentPool = poolResources.getSegmentPool();
+        Pool<RefCountedByteBuffer> segmentPool = poolResources.getSegmentPool();
 
         String indexUuid = "bench-idx-" + System.nanoTime();
         String indexName = "bench-index";
@@ -148,14 +148,14 @@ public class ReadBenchmarkBase {
 
         EncryptionMetadataCache encMetaCache = EncryptionMetadataCacheRegistry.getOrCreateCache(indexUuid, shardId, indexName);
 
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(segmentPool, keyResolver, encMetaCache);
+        BlockLoader<RefCountedByteBuffer> loader = new CryptoDirectIOBlockLoader(segmentPool, keyResolver, encMetaCache);
         Worker worker = poolResources.getSharedReadaheadWorker();
 
         @SuppressWarnings("unchecked")
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> sharedCache =
-            (CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment>) poolResources.getBlockCache();
+        CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer> sharedCache =
+            (CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer>) poolResources.getBlockCache();
 
-        BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
+        BlockCache<RefCountedByteBuffer> directoryCache = new CaffeineBlockCache<>(
             sharedCache.getCache(),
             loader,
             poolResources.getMaxCacheBlocks()

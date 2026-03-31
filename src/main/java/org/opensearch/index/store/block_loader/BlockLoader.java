@@ -16,7 +16,7 @@ import org.opensearch.index.store.block_cache.BlockCacheKey;
  * and providing it in a format suitable for caching. This typically involves
  * managing memory allocation from pools and handling various I/O operations.
  *
- * @param <T> the type of loaded block data (e.g., RefCountedMemorySegment)
+ * @param <T> the type of loaded block data (e.g., RefCountedByteBuffer)
  * @opensearch.internal
  */
 public interface BlockLoader<T> {

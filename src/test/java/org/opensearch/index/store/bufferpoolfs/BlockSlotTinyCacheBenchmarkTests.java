@@ -7,6 +7,7 @@ package org.opensearch.index.store.bufferpoolfs;
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -20,7 +21,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
@@ -46,25 +47,25 @@ public class BlockSlotTinyCacheBenchmarkTests {
     /**
      * Mock BlockCache for testing
      */
-    static class MockBlockCache implements BlockCache<RefCountedMemorySegment> {
-        private final ConcurrentHashMap<Long, BlockCacheValue<RefCountedMemorySegment>> cache = new ConcurrentHashMap<>();
+    static class MockBlockCache implements BlockCache<RefCountedByteBuffer> {
+        private final ConcurrentHashMap<Long, BlockCacheValue<RefCountedByteBuffer>> cache = new ConcurrentHashMap<>();
         @SuppressWarnings("preview")
         private final Arena arena = Arena.ofShared();
         private final AtomicInteger generation = new AtomicInteger(0);
 
         @Override
-        public BlockCacheValue<RefCountedMemorySegment> get(org.opensearch.index.store.block_cache.BlockCacheKey key) {
+        public BlockCacheValue<RefCountedByteBuffer> get(org.opensearch.index.store.block_cache.BlockCacheKey key) {
             FileBlockCacheKey fileKey = (FileBlockCacheKey) key;
             return cache.computeIfAbsent(fileKey.fileOffset(), offset -> {
                 MemorySegment segment = arena.allocate(BLOCK_SIZE);
                 // Create with no-op releaser for benchmark
-                RefCountedMemorySegment refCounted = new RefCountedMemorySegment(segment, BLOCK_SIZE, seg -> {});
+                RefCountedByteBuffer refCounted = new RefCountedByteBuffer(ByteBuffer.allocateDirect(BLOCK_SIZE), BLOCK_SIZE);
                 return new MockBlockCacheValue(refCounted);
             });
         }
 
         @Override
-        public BlockCacheValue<RefCountedMemorySegment> getOrLoad(org.opensearch.index.store.block_cache.BlockCacheKey key)
+        public BlockCacheValue<RefCountedByteBuffer> getOrLoad(org.opensearch.index.store.block_cache.BlockCacheKey key)
             throws IOException {
             return get(key);
         }
@@ -75,7 +76,7 @@ public class BlockSlotTinyCacheBenchmarkTests {
         }
 
         @Override
-        public void put(org.opensearch.index.store.block_cache.BlockCacheKey key, BlockCacheValue<RefCountedMemorySegment> value) {
+        public void put(org.opensearch.index.store.block_cache.BlockCacheKey key, BlockCacheValue<RefCountedByteBuffer> value) {
             FileBlockCacheKey fileKey = (FileBlockCacheKey) key;
             cache.put(fileKey.fileOffset(), value);
         }
@@ -102,17 +103,17 @@ public class BlockSlotTinyCacheBenchmarkTests {
         }
 
         @Override
-        public Map<org.opensearch.index.store.block_cache.BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> loadForPrefetch(
+        public Map<org.opensearch.index.store.block_cache.BlockCacheKey, BlockCacheValue<RefCountedByteBuffer>> loadForPrefetch(
             Path filePath,
             long startOffset,
             long blockCount
         ) throws IOException {
-            Map<org.opensearch.index.store.block_cache.BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> result =
+            Map<org.opensearch.index.store.block_cache.BlockCacheKey, BlockCacheValue<RefCountedByteBuffer>> result =
                 new ConcurrentHashMap<>();
             for (long i = 0; i < blockCount; i++) {
                 long offset = startOffset + (i * BLOCK_SIZE);
                 FileBlockCacheKey key = new FileBlockCacheKey(filePath, offset);
-                BlockCacheValue<RefCountedMemorySegment> value = getOrLoad(key);
+                BlockCacheValue<RefCountedByteBuffer> value = getOrLoad(key);
                 result.put(key, value);
             }
             return result;
@@ -154,17 +155,17 @@ public class BlockSlotTinyCacheBenchmarkTests {
     }
 
     /**
-     * Mock BlockCacheValue for testing - delegates to RefCountedMemorySegment
+     * Mock BlockCacheValue for testing - delegates to RefCountedByteBuffer
      */
-    static class MockBlockCacheValue implements BlockCacheValue<RefCountedMemorySegment> {
-        private final RefCountedMemorySegment segment;
+    static class MockBlockCacheValue implements BlockCacheValue<RefCountedByteBuffer> {
+        private final RefCountedByteBuffer segment;
 
-        MockBlockCacheValue(RefCountedMemorySegment segment) {
+        MockBlockCacheValue(RefCountedByteBuffer segment) {
             this.segment = segment;
         }
 
         @Override
-        public RefCountedMemorySegment value() {
+        public RefCountedByteBuffer value() {
             return segment;
         }
 
@@ -310,7 +311,7 @@ public class BlockSlotTinyCacheBenchmarkTests {
                     OffsetGenerator generator = new OffsetGenerator(scenario.pattern, scenario.uniqueBlocks, threadSeed);
                     for (int i = 0; i < opsPerThread; i++) {
                         long offset = generator.nextOffset();
-                        BlockCacheValue<RefCountedMemorySegment> val = cache.acquireRefCountedValue(offset, null);
+                        BlockCacheValue<RefCountedByteBuffer> val = cache.acquireRefCountedValue(offset, null);
                         val.unpin();
                     }
                 } catch (Exception e) {

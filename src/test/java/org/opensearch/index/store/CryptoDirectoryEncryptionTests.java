@@ -35,7 +35,7 @@ import org.opensearch.common.action.ActionFuture;
 import org.opensearch.common.crypto.DataKeyPair;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
@@ -86,8 +86,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
     private static final int TEST_SHARD_ID = 0;
 
     // DirectIO-specific components
-    private Pool<RefCountedMemorySegment> memorySegmentPool;
-    private CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCache;
+    private Pool<RefCountedByteBuffer> memorySegmentPool;
+    private CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer> blockCache;
     private Worker readAheadWorker;
 
     /**
@@ -451,21 +451,21 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         Path dirA = tempDir.resolve("index-a");
 
         // Create per-directory blockLoader with keyResolverA
-        BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
+        BlockLoader<RefCountedByteBuffer> blockLoaderA = new CryptoDirectIOBlockLoader(
             memorySegmentPool,
             keyResolverA,
             encryptionMetadataCache
         );
 
         // Create per-directory cache and worker
-        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
+        Cache<BlockCacheKey, BlockCacheValue<RefCountedByteBuffer>> caffeineCache = Caffeine
             .newBuilder()
             .maximumSize(1000)
             .expireAfterAccess(Duration.ofMinutes(5))
             .recordStats()
             .build();
 
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
+        CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer> blockCacheA = new CaffeineBlockCache<>(
             caffeineCache,
             blockLoaderA,
             1000
@@ -529,21 +529,21 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         Path dirA = tempDir.resolve("index-a");
 
         // Create per-directory blockLoader with keyResolverA
-        BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
+        BlockLoader<RefCountedByteBuffer> blockLoaderA = new CryptoDirectIOBlockLoader(
             memorySegmentPool,
             keyResolverA,
             encryptionMetadataCache
         );
 
         // Create per-directory cache and worker
-        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
+        Cache<BlockCacheKey, BlockCacheValue<RefCountedByteBuffer>> caffeineCache = Caffeine
             .newBuilder()
             .maximumSize(1000)
             .expireAfterAccess(Duration.ofMinutes(5))
             .recordStats()
             .build();
 
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
+        CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer> blockCacheA = new CaffeineBlockCache<>(
             caffeineCache,
             blockLoaderA,
             1000
@@ -606,21 +606,21 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         Path dirA = tempDir.resolve("index-a");
 
         // Create per-directory blockLoader with keyResolverA
-        BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
+        BlockLoader<RefCountedByteBuffer> blockLoaderA = new CryptoDirectIOBlockLoader(
             memorySegmentPool,
             keyResolverA,
             encryptionMetadataCache
         );
 
         // Create per-directory cache and worker
-        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
+        Cache<BlockCacheKey, BlockCacheValue<RefCountedByteBuffer>> caffeineCache = Caffeine
             .newBuilder()
             .maximumSize(1000)
             .expireAfterAccess(Duration.ofMinutes(5))
             .recordStats()
             .build();
 
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
+        CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer> blockCacheA = new CaffeineBlockCache<>(
             caffeineCache,
             blockLoaderA,
             1000
@@ -684,21 +684,21 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         Path dirA = tempDir.resolve("index-a");
 
         // Create per-directory blockLoader with keyResolverA
-        BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
+        BlockLoader<RefCountedByteBuffer> blockLoaderA = new CryptoDirectIOBlockLoader(
             memorySegmentPool,
             keyResolverA,
             encryptionMetadataCache
         );
 
         // Create per-directory cache and worker
-        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
+        Cache<BlockCacheKey, BlockCacheValue<RefCountedByteBuffer>> caffeineCache = Caffeine
             .newBuilder()
             .maximumSize(1000)
             .expireAfterAccess(Duration.ofMinutes(5))
             .recordStats()
             .build();
 
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
+        CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer> blockCacheA = new CaffeineBlockCache<>(
             caffeineCache,
             blockLoaderA,
             1000

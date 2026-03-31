@@ -23,7 +23,7 @@ import org.apache.lucene.store.OutputStreamIndexOutput;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.CryptoDirectoryFactory;
 import org.opensearch.index.store.PanamaNativeAccess;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
@@ -72,8 +72,8 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         Path path,
         OutputStream os,
         byte[] key,
-        Pool<RefCountedMemorySegment> memorySegmentPool,
-        BlockCache<RefCountedMemorySegment> blockCache,
+        Pool<RefCountedByteBuffer> memorySegmentPool,
+        BlockCache<RefCountedByteBuffer> blockCache,
         Provider provider,
         EncryptionMetadataCache encryptionMetadataCache
     )
@@ -94,8 +94,8 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         private final byte[] buffer;
         private final Path path;
         private final String normalizedPath;
-        private final Pool<RefCountedMemorySegment> memorySegmentPool;
-        private final BlockCache<RefCountedMemorySegment> blockCache;
+        private final Pool<RefCountedByteBuffer> memorySegmentPool;
+        private final BlockCache<RefCountedByteBuffer> blockCache;
         private final long frameSize;
         private final long frameSizeMask;
 
@@ -121,8 +121,8 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             OutputStream os,
             Path path,
             byte[] key,
-            Pool<RefCountedMemorySegment> memorySegmentPool,
-            BlockCache<RefCountedMemorySegment> blockCache,
+            Pool<RefCountedByteBuffer> memorySegmentPool,
+            BlockCache<RefCountedByteBuffer> blockCache,
             Provider provider,
             EncryptionMetadataCache encryptionMetadataCache
         ) {
@@ -265,7 +265,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             // Cache fully-aligned full blocks immediately
             if (blockOffset == 0 && chunkLen == CACHE_BLOCK_SIZE) {
                 try {
-                    final RefCountedMemorySegment refSegment = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
+                    final RefCountedByteBuffer refSegment = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
                     final MemorySegment pooled = refSegment.segment();
                     final MemorySegment pooledSlice = pooled.asSlice(0, CACHE_BLOCK_SIZE);
                     // Cache plaintext data
@@ -435,7 +435,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
 
             // Safe to cache - this is definitely the file's final partial block
             try {
-                RefCountedMemorySegment refSegment = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
+                RefCountedByteBuffer refSegment = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
                 MemorySegment pooled = refSegment.segment().asSlice(0, CACHE_BLOCK_SIZE);
                 MemorySegment.copy(MemorySegment.ofArray(partialBlockBuffer), 0, pooled, 0, partialBlockLength);
 
