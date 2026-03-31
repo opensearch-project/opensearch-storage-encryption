@@ -57,6 +57,7 @@ public final class PoolBuilder {
         private final java.util.concurrent.ThreadPoolExecutor removalExecutor;
         private final ExecutorService readAheadExecutor;
         private final PrefetchTracker prefetchTracker;
+        private final ExecutorService prefetchExecutor;
 
         PoolResources(
             Pool<RefCountedMemorySegment> segmentPool,
@@ -67,7 +68,8 @@ public final class PoolBuilder {
             TelemetryThread telemetry,
             java.util.concurrent.ThreadPoolExecutor removalExecutor,
             ExecutorService readAheadExecutor,
-            PrefetchTracker prefetchTracker
+            PrefetchTracker prefetchTracker,
+            ExecutorService prefetchExecutor
         ) {
             this.segmentPool = segmentPool;
             this.blockCache = blockCache;
@@ -78,6 +80,7 @@ public final class PoolBuilder {
             this.removalExecutor = removalExecutor;
             this.readAheadExecutor = readAheadExecutor;
             this.prefetchTracker = prefetchTracker;
+            this.prefetchExecutor = prefetchExecutor;
         }
 
         /**
@@ -180,6 +183,17 @@ public final class PoolBuilder {
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     readAheadExecutor.shutdownNow();
+                }
+            }
+            if (prefetchExecutor != null) {
+                prefetchExecutor.shutdown();
+                try {
+                    if (!prefetchExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        prefetchExecutor.shutdownNow();
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    prefetchExecutor.shutdownNow();
                 }
             }
         }
@@ -346,7 +360,8 @@ public final class PoolBuilder {
             telemetry,
             removalExecutor,
             readAheadExecutor,
-            cacheWithExecutor.getPrefetchTracker()
+            cacheWithExecutor.getPrefetchTracker(),
+            prefetchExecutor
         );
     }
 }
