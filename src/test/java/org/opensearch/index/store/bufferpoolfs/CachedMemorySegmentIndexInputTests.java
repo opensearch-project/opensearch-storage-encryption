@@ -43,7 +43,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     private static final ValueLayout.OfFloat LAYOUT_LE_FLOAT = ValueLayout.JAVA_FLOAT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
 
     private BlockCache<RefCountedMemorySegment> mockCache;
-    private BlockSlotTinyCache mockTinyCache;
+    private L1BlockCache mockTinyCache;
     private ReadaheadManager mockReadaheadManager;
     private ReadaheadContext mockReadaheadContext;
     private Path testPath;
@@ -53,7 +53,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     public void setUp() throws Exception {
         super.setUp();
         mockCache = mock(BlockCache.class);
-        mockTinyCache = mock(BlockSlotTinyCache.class);
+        mockTinyCache = mock(L1BlockCache.class);
         mockReadaheadManager = mock(ReadaheadManager.class);
         mockReadaheadContext = mock(ReadaheadContext.class);
         testPath = Paths.get("/test/exhaustive.dat");
@@ -1735,6 +1735,53 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
 
         // Should not throw exception
         input.prefetch(0, BLOCK_SIZE);
+
+        input.close();
+    }
+
+    /**
+     * Tests that single-block prefetch is skipped when the block is already in L1 cache.
+     */
+    public void testPrefetchSkipsWhenBlockInL1Cache() throws IOException {
+        long fileLength = BLOCK_SIZE * 4;
+        when(mockTinyCache.contains(0L)).thenReturn(true);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+        input.prefetch(0, BLOCK_SIZE);
+
+        // loadMissingBlocks should NOT be called — L1 hit
+        verify(mockCache, never()).loadMissingBlocks(any(), anyLong(), anyLong());
+
+        input.close();
+    }
+
+    /**
+     * Tests that single-block prefetch proceeds when the block is NOT in L1 cache.
+     */
+    public void testPrefetchProceedsWhenBlockNotInL1Cache() throws IOException {
+        long fileLength = BLOCK_SIZE * 4;
+        when(mockTinyCache.contains(0L)).thenReturn(false);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+        input.prefetch(0, BLOCK_SIZE);
+
+        verify(mockCache, times(1)).loadMissingBlocks(eq(testPath), eq(0L), eq(1L));
+
+        input.close();
+    }
+
+    /**
+     * Tests that multi-block prefetch always proceeds regardless of L1 cache state.
+     */
+    public void testPrefetchMultiBlockBypassesL1Check() throws IOException {
+        long fileLength = BLOCK_SIZE * 4;
+        when(mockTinyCache.contains(anyLong())).thenReturn(true);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+        input.prefetch(0, BLOCK_SIZE * 3);
+
+        // Multi-block prefetch should always call loadMissingBlocks
+        verify(mockCache, times(1)).loadMissingBlocks(eq(testPath), eq(0L), eq(3L));
 
         input.close();
     }
