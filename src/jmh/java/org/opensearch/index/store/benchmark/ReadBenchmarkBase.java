@@ -158,7 +158,8 @@ public class ReadBenchmarkBase {
         BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
             sharedCache.getCache(),
             loader,
-            poolResources.getMaxCacheBlocks()
+            poolResources.getMaxCacheBlocks(),
+            null
         );
 
         this.bufferPoolDirectory = new BufferPoolDirectory(

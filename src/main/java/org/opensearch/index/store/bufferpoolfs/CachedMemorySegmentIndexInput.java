@@ -784,7 +784,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         final long endBlockOffset = (endFileOffset + CACHE_BLOCK_MASK) & ~CACHE_BLOCK_MASK;
         final long blockCount = (endBlockOffset - startBlockOffset) >>> CACHE_BLOCK_SIZE_POWER;
 
-        // Skip prefetch if all blocks are already in L1 cache
+        // Most prefetch will be for block size 1, do a quick look up
+        // TODO: tune this for large prefetch (e.g. vectors)
         if (blockCount == 1 && l1Cache.contains(startBlockOffset)) {
             return;
         }

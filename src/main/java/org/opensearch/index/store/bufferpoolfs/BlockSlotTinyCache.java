@@ -262,9 +262,7 @@ public class BlockSlotTinyCache implements L1BlockCache {
         final long blockIdx = blockOff >>> CACHE_BLOCK_SIZE_POWER;
         final int slotIdx = (int) ((blockIdx ^ (blockIdx >>> 17)) & SLOT_MASK);
         final long stamp = (long) STAMP_ARR.getAcquire(slotStamp, slotIdx);
-        return stamp != 0L
-            && (int) stamp == hashBlockIdx(blockIdx)
-            && slotBlockIdx[slotIdx] == blockIdx;
+        return stamp != 0L && (int) stamp == hashBlockIdx(blockIdx) && slotBlockIdx[slotIdx] == blockIdx;
     }
 
     @Override
