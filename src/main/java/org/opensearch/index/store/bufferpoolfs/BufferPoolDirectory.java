@@ -57,7 +57,7 @@ import org.opensearch.index.store.read_ahead.impl.ReadaheadManagerImpl;
  * <p>The directory uses {@link BufferIOWithCaching} for output operations which encrypts
  * data before writing to disk and caches plaintext blocks for read operations. Input
  * operations use {@link CachedMemorySegmentIndexInput} with a multi-level cache hierarchy
- * including {@link BlockSlotTinyCache} for L1 caching.
+ * including {@link RadixBlockTable} for L1 caching.
  *
  * <p>Note: Some file types (segments files and .si files) fall back to the parent
  * directory implementation to avoid compatibility issues.
@@ -76,6 +76,7 @@ public class BufferPoolDirectory extends FSDirectory {
     private final Path dirPath;
     private final byte[] masterKeyBytes;
     private final EncryptionMetadataCache encryptionMetadataCache;
+    private final RadixBlockTableRegistry radixBlockTableRegistry;
 
     /**
      * Creates a new CryptoDirectIODirectory with the specified components.
@@ -110,6 +111,11 @@ public class BufferPoolDirectory extends FSDirectory {
         this.dirPath = getDirectory();
         this.masterKeyBytes = keyResolver.getDataKey().getEncoded();
         this.encryptionMetadataCache = encryptionMetadataCache;
+        this.radixBlockTableRegistry = new RadixBlockTableRegistry();
+
+        // Wire L2 eviction → L1 cleanup so stale RadixBlockTable entries
+        // are removed immediately when Caffeine evicts a block.
+        blockCache.setEvictionListener(radixBlockTableRegistry::onEviction);
 
         // startCacheStatsTelemetry(); // uncomment for local testing
     }
@@ -131,7 +137,7 @@ public class BufferPoolDirectory extends FSDirectory {
 
             ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker, blockCache);
             ReadaheadContext readAheadContext = readAheadManager.register(file, contentLength);
-            BlockSlotTinyCache pinRegistry = new BlockSlotTinyCache(blockCache, file, contentLength);
+            RadixBlockTable<L1CacheEntry> radixBlockTable = radixBlockTableRegistry.acquire(file);
 
             return CachedMemorySegmentIndexInput
                 .newInstance(
@@ -141,7 +147,8 @@ public class BufferPoolDirectory extends FSDirectory {
                     blockCache,
                     readAheadManager,
                     readAheadContext,
-                    pinRegistry
+                    radixBlockTable,
+                    radixBlockTableRegistry
                 );
         } catch (Exception e) {
             CryptoMetricsService.getInstance().recordError(ErrorType.INDEX_INPUT_ERROR);
@@ -206,6 +213,9 @@ public class BufferPoolDirectory extends FSDirectory {
     public synchronized void close() throws IOException {
         readAheadworker.close();
         encryptionMetadataCache.invalidateDirectory();
+
+        // Clear all L1 RadixBlockTable entries for this directory
+        radixBlockTableRegistry.clear();
 
         // Invalidate all cache entries for this directory to prevent memory leaks
         // when the shard/index is closed or deleted

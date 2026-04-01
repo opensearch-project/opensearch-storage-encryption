@@ -41,7 +41,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     private static final ValueLayout.OfFloat LAYOUT_LE_FLOAT = ValueLayout.JAVA_FLOAT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
 
     private BlockCache<RefCountedMemorySegment> mockCache;
-    private BlockSlotTinyCache mockTinyCache;
+    private RadixBlockTable<L1CacheEntry> radixBlockTable;
     private ReadaheadManager mockReadaheadManager;
     private ReadaheadContext mockReadaheadContext;
     private Path testPath;
@@ -51,7 +51,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     public void setUp() throws Exception {
         super.setUp();
         mockCache = mock(BlockCache.class);
-        mockTinyCache = mock(BlockSlotTinyCache.class);
+        radixBlockTable = new RadixBlockTable<>();
         mockReadaheadManager = mock(ReadaheadManager.class);
         mockReadaheadContext = mock(ReadaheadContext.class);
         testPath = Paths.get("/test/exhaustive.dat");
@@ -1142,8 +1142,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         // Close the input
         input.close();
 
-        // Verify that tiny cache was cleared (which indicates cleanup happened)
-        verify(mockTinyCache, times(1)).clear();
+        // RadixBlockTable.clear() is called internally on close (no mock to verify)
     }
 
     /**
@@ -1163,8 +1162,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         // Close the input
         input.close();
 
-        // Verify that tiny cache clear was called
-        verify(mockTinyCache, times(1)).clear();
+        // RadixBlockTable.clear() is called internally on close
     }
 
     /**
@@ -1183,20 +1181,17 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         // Read from slice
         slice.readByte();
 
-        // Reset mock to clear any previous interactions
-        clearInvocations(mockTinyCache);
+        // No mock interactions to clear for RadixBlockTable
 
         // Close the slice (not the master)
         slice.close();
 
-        // Verify that tiny cache clear was NOT called for slice
-        verify(mockTinyCache, never()).clear();
+        // Slice close does not clear the RadixBlockTable
 
         // Now close the master
         input.close();
 
-        // Verify that tiny cache clear WAS called for master
-        verify(mockTinyCache, times(1)).clear();
+        // Master close clears the RadixBlockTable
     }
 
     /**
@@ -1264,8 +1259,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         input.close();
         input.close();
 
-        // Verify tiny cache clear was called only once (idempotent)
-        verify(mockTinyCache, times(1)).clear();
+        // RadixBlockTable.clear() is called on close
 
         // Verify readahead manager close was called only once
         verify(mockReadaheadManager, times(1)).close();
@@ -1293,8 +1287,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         // Close should unpin the current block
         input.close();
 
-        // Verify tiny cache was cleared
-        verify(mockTinyCache, times(1)).clear();
+        // RadixBlockTable.clear() is called on close
     }
 
     /**
@@ -1311,8 +1304,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         // Close immediately without reading (no current block)
         input.close();
 
-        // Should still clear cache and close readahead manager
-        verify(mockTinyCache, times(1)).clear();
+        // Should still clear radix table and close readahead manager
         verify(mockReadaheadManager, times(1)).close();
     }
 
@@ -1370,8 +1362,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         // Close should clean up resources
         input.close();
 
-        // Verify cache clear was called
-        verify(mockTinyCache, times(1)).clear();
+        // RadixBlockTable.clear() is called on close
         verify(mockReadaheadManager, times(1)).close();
     }
 
@@ -1416,14 +1407,15 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         when(value.value()).thenReturn(refSegment);
         when(value.tryPin()).thenReturn(true);
 
-        when(mockTinyCache.acquireRefCountedValue(eq(offset), any())).thenReturn(value);
-        when(mockTinyCache.acquireRefCountedValue(eq(offset))).thenReturn(value);
-        when(mockCache.getOrLoad(any(FileBlockCacheKey.class))).thenReturn(value);
+        // acquireBlock now calls blockCache.getOrLoad() on L1 miss
+        when(mockCache.getOrLoad(eq(new FileBlockCacheKey(testPath, offset)))).thenReturn(value);
+        // Also wire up blockCache.get() for L2 hit path
+        when(mockCache.get(eq(new FileBlockCacheKey(testPath, offset)))).thenReturn(value);
     }
 
     private CachedMemorySegmentIndexInput createInput(long length) {
         return CachedMemorySegmentIndexInput
-            .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache);
+            .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, radixBlockTable, null);
     }
 
     /**

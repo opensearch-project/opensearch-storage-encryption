@@ -6,6 +6,7 @@ package org.opensearch.index.store.bufferpoolfs;
 
 import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_MASK;
 import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE_POWER;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -13,6 +14,7 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
+import java.util.concurrent.locks.LockSupport;
 
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.IndexInput;
@@ -21,6 +23,7 @@ import org.apache.lucene.util.GroupVIntUtil;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
+import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
 
@@ -36,9 +39,14 @@ import org.opensearch.index.store.read_ahead.ReadaheadManager;
  * <li>Slice support with offset management</li>
  * </ul>
  * 
- * <p>The class uses a {@link BlockSlotTinyCache} for L1 caching and falls back to
- * the main {@link BlockCache} for cache misses. Memory segments are pinned during
- * access to prevent eviction races and unpinned when no longer needed.
+ * <p>The class uses a {@link RadixBlockTable} for L1 caching and falls back to
+ * the main {@link BlockCache} (Caffeine L2) for cache misses. Memory segments are
+ * pinned during access to prevent eviction races and unpinned when no longer needed.
+ *
+ * <p>The L1 cache provides zero-collision, lock-free lookups via two plain array reads.
+ * Each entry stores a publish-time generation snapshot ({@link L1CacheEntry}) to detect
+ * stale pointers after L2 eviction. On generation mismatch, the entry is treated as an
+ * L1 miss and the stale entry is cleaned up.
  * 
  * @opensearch.internal
  */
@@ -70,22 +78,27 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     // Cached offset from last getCacheBlockWithOffset call (avoid BlockAccess allocation)
     private int lastOffsetInBlock;
 
-    private final BlockSlotTinyCache blockSlotTinyCache;
+    private final RadixBlockTable<L1CacheEntry> radixBlockTable;
+    private final RadixBlockTableRegistry radixBlockTableRegistry; // non-null only for master instances
+
+    /** Maximum pin attempts before giving up (matches BlockSlotTinyCache behavior). */
+    private static final int MAX_PIN_ATTEMPTS = 10;
 
     // Safe because IndexInput instances are not thread-safe per Lucene contract -
     // each thread must use its own clone().
-    private final BlockSlotTinyCache.CacheHitHolder cacheHitHolder = new BlockSlotTinyCache.CacheHitHolder();
+    private boolean lastAccessWasCacheHit;
 
     /**
      * Creates a new CachedMemorySegmentIndexInput instance.
-     * 
+     *
      * @param resourceDescription description of the resource for debugging
      * @param path the file path being accessed
      * @param length the length of the file in bytes
      * @param blockCache the main block cache for storing memory segments
      * @param readaheadManager manager for read-ahead operations
      * @param readaheadContext context for read-ahead policy decisions
-     * @param blockSlotTinyCache L1 cache for recently accessed blocks
+     * @param radixBlockTable L1 cache for recently accessed blocks
+     * @param radixBlockTableRegistry registry for lifecycle management (release on close)
      * @return a new CachedMemorySegmentIndexInput instance
      */
     public static CachedMemorySegmentIndexInput newInstance(
@@ -95,7 +108,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         BlockCache<RefCountedMemorySegment> blockCache,
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
-        BlockSlotTinyCache blockSlotTinyCache
+        RadixBlockTable<L1CacheEntry> radixBlockTable,
+        RadixBlockTableRegistry radixBlockTableRegistry
     ) {
         CachedMemorySegmentIndexInput input = new CachedMemorySegmentIndexInput(
             resourceDescription,
@@ -106,7 +120,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             readaheadManager,
             readaheadContext,
             false,
-            blockSlotTinyCache
+            radixBlockTable,
+            radixBlockTableRegistry
         );
         try {
             input.seek(0L);
@@ -125,7 +140,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
         boolean isSlice,
-        BlockSlotTinyCache blockSlotTinyCache
+        RadixBlockTable<L1CacheEntry> radixBlockTable,
+        RadixBlockTableRegistry radixBlockTableRegistry
     ) {
         super(resourceDescription);
         this.path = path;
@@ -135,7 +151,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         this.readaheadManager = readaheadManager;
         this.readaheadContext = readaheadContext;
         this.isSlice = isSlice;
-        this.blockSlotTinyCache = blockSlotTinyCache;
+        this.radixBlockTable = radixBlockTable;
+        this.radixBlockTableRegistry = radixBlockTableRegistry;
     }
 
     void ensureOpen() {
@@ -180,14 +197,9 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             return currentBlock.value().segment();
         }
 
-        cacheHitHolder.reset();
+        lastAccessWasCacheHit = false;
 
-        // BlockSlotTinyCache returns already-pinned values
-        final BlockCacheValue<RefCountedMemorySegment> cacheValue = blockSlotTinyCache.acquireRefCountedValue(blockOffset, cacheHitHolder);
-
-        if (cacheValue == null) {
-            throw new IOException("Failed to acquire cache value for block at offset " + blockOffset);
-        }
+        final BlockCacheValue<RefCountedMemorySegment> cacheValue = acquireBlock(blockOffset);
 
         RefCountedMemorySegment pinnedBlock = cacheValue.value();
 
@@ -201,11 +213,79 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
         // Notify readahead manager of access pattern
         if (readaheadContext != null) {
-            readaheadContext.onAccess(blockOffset, cacheHitHolder.wasCacheHit());
+            readaheadContext.onAccess(blockOffset, lastAccessWasCacheHit);
         }
 
         lastOffsetInBlock = offsetInBlock;
         return pinnedBlock.segment();
+    }
+
+    /**
+     * Acquires a pinned block for the given block offset, checking L1 (RadixBlockTable)
+     * first, then falling back to L2 (Caffeine), then loading from disk.
+     *
+     * <p>L1 lookup is two plain array reads with no synchronization. On L1 miss or stale
+     * entry, falls through to L2 with retry logic for pin contention.
+     *
+     * @param blockOffset the block-aligned file offset
+     * @return a pinned BlockCacheValue (caller must unpin when done)
+     * @throws IOException if the block cannot be acquired after max attempts
+     */
+    private BlockCacheValue<RefCountedMemorySegment> acquireBlock(long blockOffset) throws IOException {
+        final long blockId = blockOffset >>> CACHE_BLOCK_SIZE_POWER;
+
+        // ---- L1 lookup: two plain array reads, no fences, no CAS ----
+        L1CacheEntry entry = radixBlockTable.get(blockId);
+        if (entry != null) {
+            if (entry.value.tryPin()) {
+                if (entry.value.value().getGeneration() == entry.publishGeneration) {
+                    lastAccessWasCacheHit = true;
+                    return entry.value;
+                }
+                entry.value.unpin(); // generation mismatch — segment was evicted and recycled
+            }
+            // Stale entry — clean up so future reads see a clean miss
+            radixBlockTable.remove(blockId);
+        }
+
+        // ---- L2 lookup + disk load with retry ----
+        final FileBlockCacheKey key = new FileBlockCacheKey(path, blockOffset);
+
+        for (int attempts = 0; attempts < MAX_PIN_ATTEMPTS; attempts++) {
+            // Try L2 hit
+            BlockCacheValue<RefCountedMemorySegment> v = blockCache.get(key);
+            if (v != null) {
+                final int gen = v.value().getGeneration();
+                if (v.tryPin()) {
+                    if (v.value().getGeneration() == gen) {
+                        radixBlockTable.put(blockId, new L1CacheEntry(v, gen));
+                        lastAccessWasCacheHit = true;
+                        return v;
+                    }
+                    v.unpin(); // pinned a recycled segment; treat as miss
+                }
+            }
+
+            // L2 miss — load from disk (deduped by Caffeine)
+            BlockCacheValue<RefCountedMemorySegment> loaded = blockCache.getOrLoad(key);
+            if (loaded != null) {
+                final int gen = loaded.value().getGeneration();
+                if (loaded.tryPin()) {
+                    if (loaded.value().getGeneration() == gen) {
+                        radixBlockTable.put(blockId, new L1CacheEntry(loaded, gen));
+                        lastAccessWasCacheHit = false;
+                        return loaded;
+                    }
+                    loaded.unpin();
+                }
+            }
+
+            if (attempts < MAX_PIN_ATTEMPTS - 1) {
+                LockSupport.parkNanos(50_000L << attempts);
+            }
+        }
+
+        throw new IOException("Unable to pin memory segment for block offset " + blockOffset + " after " + MAX_PIN_ATTEMPTS + " attempts");
     }
 
     /**
@@ -754,7 +834,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             readaheadManager,
             readaheadContext,
             true,
-            blockSlotTinyCache
+            radixBlockTable,
+            null // slices share the table but don't own a registry ref
         );
 
         try {
@@ -786,15 +867,19 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             // Master instance cleanup
             assert !isSlice : "Master instance should not be marked as slice";
 
-            if (blockSlotTinyCache != null) {
-                blockSlotTinyCache.clear();
+            if (radixBlockTableRegistry != null) {
+                // Release our ref in the registry; when refCount reaches 0
+                // the table is cleared and removed from the registry.
+                radixBlockTableRegistry.release(path);
+            } else if (radixBlockTable != null) {
+                radixBlockTable.clear();
             }
 
             readaheadManager.close();
         } else {
             // Slice instance cleanup
             assert isSlice : "Slice instance should be marked as slice";
-            // Slices share cache and readahead manager, so don't close them
+            // Slices share cache, readahead manager, and radix table, so don't close them
         }
     }
 }

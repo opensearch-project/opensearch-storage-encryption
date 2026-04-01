@@ -44,7 +44,7 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
     private static final ValueLayout.OfInt LAYOUT_LE_INT = ValueLayout.JAVA_INT_UNALIGNED.withOrder(java.nio.ByteOrder.LITTLE_ENDIAN);
 
     private BlockCache<RefCountedMemorySegment> mockCache;
-    private BlockSlotTinyCache mockTinyCache;
+    private RadixBlockTable<L1CacheEntry> radixBlockTable;
     private ReadaheadManager mockReadaheadManager;
     private ReadaheadContext mockReadaheadContext;
     private Path testPath;
@@ -54,7 +54,7 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
     public void setUp() throws Exception {
         super.setUp();
         mockCache = mock(BlockCache.class);
-        mockTinyCache = mock(BlockSlotTinyCache.class);
+        radixBlockTable = new RadixBlockTable<>();
         mockReadaheadManager = mock(ReadaheadManager.class);
         mockReadaheadContext = mock(ReadaheadContext.class);
         testPath = Paths.get("/test/concurrent.dat");
@@ -454,13 +454,12 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
         when(value.value()).thenReturn(refSegment);
         when(value.tryPin()).thenReturn(true);
 
-        when(mockTinyCache.acquireRefCountedValue(eq(offset), any())).thenReturn(value);
-        when(mockTinyCache.acquireRefCountedValue(eq(offset))).thenReturn(value);
-        when(mockCache.getOrLoad(any(FileBlockCacheKey.class))).thenReturn(value);
+        when(mockCache.getOrLoad(eq(new FileBlockCacheKey(testPath, offset)))).thenReturn(value);
+        when(mockCache.get(eq(new FileBlockCacheKey(testPath, offset)))).thenReturn(value);
     }
 
     private CachedMemorySegmentIndexInput createInput(long length) {
         return CachedMemorySegmentIndexInput
-            .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache);
+            .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, radixBlockTable, null);
     }
 }
