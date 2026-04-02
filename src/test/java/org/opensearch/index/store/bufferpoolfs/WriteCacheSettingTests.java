@@ -36,7 +36,6 @@ import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.pool.Pool;
 import org.opensearch.index.store.pool.PoolBuilder;
 import org.opensearch.index.store.read_ahead.Worker;
-import org.opensearch.index.store.bufferpoolfs.RadixBlockTableRegistry;
 import org.opensearch.test.OpenSearchTestCase;
 
 import com.carrotsearch.randomizedtesting.annotations.ThreadLeakFilters;
