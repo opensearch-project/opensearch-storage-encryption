@@ -35,6 +35,7 @@ import org.opensearch.index.shard.IndexEventListener;
 import org.opensearch.index.store.action.GetIndexCountForKeyAction;
 import org.opensearch.index.store.action.TransportGetIndexCountForKeyAction;
 import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.block_loader.FileChannelCache;
 import org.opensearch.index.store.key.MasterKeyHealthMonitor;
 import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
@@ -145,7 +146,9 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                 CryptoDirectoryFactory.WRITE_CACHE_ENABLED_SETTING,
                 PoolSizeCalculator.NODE_POOL_SIZE_PERCENTAGE_SETTING,
                 PoolSizeCalculator.NODE_CACHE_TO_POOL_RATIO_SETTING,
-                PoolSizeCalculator.NODE_WARMUP_PERCENTAGE_SETTING
+                PoolSizeCalculator.NODE_WARMUP_PERCENTAGE_SETTING,
+                PoolSizeCalculator.NODE_MAX_FILE_CHANNELS_SETTING,
+                PoolSizeCalculator.NODE_FD_CACHE_EXPIRE_SECONDS_SETTING
             );
         return settings;
     }
@@ -291,6 +294,14 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                     if (cache != null && nodeEnvironment != null) {
                         for (Path indexPath : nodeEnvironment.indexPaths(index)) {
                             cache.invalidateByPathPrefix(indexPath);
+                        }
+                    }
+
+                    // Invalidate FD cache entries for all files in the deleted index
+                    FileChannelCache fdCache = CryptoDirectoryFactory.getSharedFileChannelCache();
+                    if (fdCache != null && nodeEnvironment != null) {
+                        for (Path indexPath : nodeEnvironment.indexPaths(index)) {
+                            fdCache.invalidateByPathPrefix(indexPath);
                         }
                     }
 

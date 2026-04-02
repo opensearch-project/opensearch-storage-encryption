@@ -18,6 +18,8 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheBuilder;
+import org.opensearch.index.store.block_loader.DirectIOReaderUtil;
+import org.opensearch.index.store.block_loader.FileChannelCache;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.index.store.read_ahead.impl.QueuingWorker;
 import org.opensearch.index.store.read_ahead.impl.ReadAheadSizingPolicy;
@@ -53,6 +55,7 @@ public final class PoolBuilder {
         private final TelemetryThread telemetry;
         private final java.util.concurrent.ThreadPoolExecutor removalExecutor;
         private final ExecutorService readAheadExecutor;
+        private final FileChannelCache fileChannelCache;
 
         PoolResources(
             Pool<RefCountedMemorySegment> segmentPool,
@@ -62,7 +65,8 @@ public final class PoolBuilder {
             Worker sharedReadaheadWorker,
             TelemetryThread telemetry,
             java.util.concurrent.ThreadPoolExecutor removalExecutor,
-            ExecutorService readAheadExecutor
+            ExecutorService readAheadExecutor,
+            FileChannelCache fileChannelCache
         ) {
             this.segmentPool = segmentPool;
             this.blockCache = blockCache;
@@ -72,6 +76,7 @@ public final class PoolBuilder {
             this.telemetry = telemetry;
             this.removalExecutor = removalExecutor;
             this.readAheadExecutor = readAheadExecutor;
+            this.fileChannelCache = fileChannelCache;
         }
 
         /**
@@ -131,10 +136,23 @@ public final class PoolBuilder {
         }
 
         /**
+         * Returns the shared FileChannel cache.
+         * Node-level cache of FileChannels bounded by max open FDs.
+         *
+         * @return the file channel cache
+         */
+        public FileChannelCache getFileChannelCache() {
+            return fileChannelCache;
+        }
+
+        /**
          * Closes the shared pool resources, stops the telemetry thread, and shuts down executors.
          */
         @Override
         public void close() {
+            if (fileChannelCache != null) {
+                fileChannelCache.close();
+            }
             if (telemetry != null) {
                 telemetry.close();
             }
@@ -177,10 +195,16 @@ public final class PoolBuilder {
         private final Thread thread;
         private final Pool<RefCountedMemorySegment> pool;
         private final BlockCache<RefCountedMemorySegment> blockCache;
+        private final FileChannelCache fileChannelCache;
 
-        TelemetryThread(Pool<RefCountedMemorySegment> pool, BlockCache<RefCountedMemorySegment> blockCache) {
+        TelemetryThread(
+            Pool<RefCountedMemorySegment> pool,
+            BlockCache<RefCountedMemorySegment> blockCache,
+            FileChannelCache fileChannelCache
+        ) {
             this.pool = pool;
             this.blockCache = blockCache;
+            this.fileChannelCache = fileChannelCache;
             this.thread = new Thread(this::run);
             this.thread.setDaemon(true);
             this.thread.setName("DirectIOBufferPoolStatsLogger");
@@ -205,6 +229,9 @@ public final class PoolBuilder {
             try {
                 pool.recordStats();
                 blockCache.recordStats();
+                if (fileChannelCache != null) {
+                    fileChannelCache.recordStats();
+                }
             } catch (Exception e) {
                 LOGGER.warn("Failed to log cache/pool stats", e);
             }
@@ -288,8 +315,21 @@ public final class PoolBuilder {
         Worker sharedReadaheadWorker = new QueuingWorker(readAheadQueueSize, readAheadExecutor);
         LOGGER.info("Created shared read-ahead worker: queueSize={} executorThreads={}", readAheadQueueSize, threads);
 
+        // Create node-level FileChannel cache with O_DIRECT support
+        int maxFileChannels = PoolSizeCalculator.NODE_MAX_FILE_CHANNELS_SETTING.get(settings);
+        long fdCacheExpireSeconds = PoolSizeCalculator.NODE_FD_CACHE_EXPIRE_SECONDS_SETTING.get(settings);
+        java.nio.file.OpenOption directOpenOption;
+        try {
+            directOpenOption = DirectIOReaderUtil.getDirectOpenOption();
+        } catch (UnsupportedOperationException e) {
+            LOGGER.warn("Direct I/O not available, FileChannelCache will use buffered I/O");
+            directOpenOption = null;
+        }
+        FileChannelCache fileChannelCache = new FileChannelCache(maxFileChannels, fdCacheExpireSeconds, directOpenOption);
+        LOGGER.info("Created shared FileChannel cache: maxOpenFDs={}, expireAfterAccessSeconds={}", maxFileChannels, fdCacheExpireSeconds);
+
         // Start telemetry
-        TelemetryThread telemetry = new TelemetryThread(segmentPool, blockCache);
+        TelemetryThread telemetry = new TelemetryThread(segmentPool, blockCache, fileChannelCache);
 
         return new PoolResources(
             segmentPool,
@@ -299,7 +339,8 @@ public final class PoolBuilder {
             sharedReadaheadWorker,
             telemetry,
             removalExecutor,
-            readAheadExecutor
+            readAheadExecutor,
+            fileChannelCache
         );
     }
 }
