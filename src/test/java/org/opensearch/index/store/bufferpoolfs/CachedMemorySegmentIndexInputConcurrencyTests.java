@@ -44,7 +44,7 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
     private static final ValueLayout.OfInt LAYOUT_LE_INT = ValueLayout.JAVA_INT_UNALIGNED.withOrder(java.nio.ByteOrder.LITTLE_ENDIAN);
 
     private BlockCache<RefCountedMemorySegment> mockCache;
-    private BlockSlotTinyCache mockTinyCache;
+    private L1BlockCache mockTinyCache;
     private ReadaheadManager mockReadaheadManager;
     private ReadaheadContext mockReadaheadContext;
     private Path testPath;
@@ -54,7 +54,7 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
     public void setUp() throws Exception {
         super.setUp();
         mockCache = mock(BlockCache.class);
-        mockTinyCache = mock(BlockSlotTinyCache.class);
+        mockTinyCache = mock(L1BlockCache.class);
         mockReadaheadManager = mock(ReadaheadManager.class);
         mockReadaheadContext = mock(ReadaheadContext.class);
         testPath = Paths.get("/test/concurrent.dat");
@@ -463,4 +463,5 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
         return CachedMemorySegmentIndexInput
             .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache);
     }
+
 }

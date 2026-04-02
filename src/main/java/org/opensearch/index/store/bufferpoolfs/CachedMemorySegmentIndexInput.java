@@ -6,6 +6,7 @@ package org.opensearch.index.store.bufferpoolfs;
 
 import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_MASK;
 import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE_POWER;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -14,6 +15,8 @@ import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
@@ -44,6 +47,8 @@ import org.opensearch.index.store.read_ahead.ReadaheadManager;
  */
 @SuppressWarnings("preview")
 public class CachedMemorySegmentIndexInput extends IndexInput implements RandomAccessInput {
+    private static final Logger LOGGER = LogManager.getLogger(CachedMemorySegmentIndexInput.class);
+
     static final ValueLayout.OfByte LAYOUT_BYTE = ValueLayout.JAVA_BYTE;
     static final ValueLayout.OfShort LAYOUT_LE_SHORT = ValueLayout.JAVA_SHORT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
     static final ValueLayout.OfInt LAYOUT_LE_INT = ValueLayout.JAVA_INT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
@@ -70,7 +75,11 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     // Cached offset from last getCacheBlockWithOffset call (avoid BlockAccess allocation)
     private int lastOffsetInBlock;
 
-    private final BlockSlotTinyCache blockSlotTinyCache;
+    private final L1BlockCache l1Cache;
+
+    public L1BlockCache getL1Cache() {
+        return l1Cache;
+    }
 
     // Safe because IndexInput instances are not thread-safe per Lucene contract -
     // each thread must use its own clone().
@@ -85,7 +94,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
      * @param blockCache the main block cache for storing memory segments
      * @param readaheadManager manager for read-ahead operations
      * @param readaheadContext context for read-ahead policy decisions
-     * @param blockSlotTinyCache L1 cache for recently accessed blocks
+     * @param l1Cache L1 cache for recently accessed blocks
      * @return a new CachedMemorySegmentIndexInput instance
      */
     public static CachedMemorySegmentIndexInput newInstance(
@@ -95,7 +104,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         BlockCache<RefCountedMemorySegment> blockCache,
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
-        BlockSlotTinyCache blockSlotTinyCache
+        L1BlockCache l1Cache
     ) {
         CachedMemorySegmentIndexInput input = new CachedMemorySegmentIndexInput(
             resourceDescription,
@@ -106,7 +115,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             readaheadManager,
             readaheadContext,
             false,
-            blockSlotTinyCache
+            l1Cache
         );
         try {
             input.seek(0L);
@@ -125,7 +134,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
         boolean isSlice,
-        BlockSlotTinyCache blockSlotTinyCache
+        L1BlockCache l1Cache
     ) {
         super(resourceDescription);
         this.path = path;
@@ -135,7 +144,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         this.readaheadManager = readaheadManager;
         this.readaheadContext = readaheadContext;
         this.isSlice = isSlice;
-        this.blockSlotTinyCache = blockSlotTinyCache;
+        this.l1Cache = l1Cache;
     }
 
     void ensureOpen() {
@@ -188,8 +197,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     private MemorySegment acquireCacheBlockOnMiss(long blockOffset) throws IOException {
         cacheHitHolder.reset();
 
-        // BlockSlotTinyCache returns already-pinned values
-        final BlockCacheValue<RefCountedMemorySegment> cacheValue = blockSlotTinyCache.acquireRefCountedValue(blockOffset, cacheHitHolder);
+        // L1BlockCache returns already-pinned values
+        final BlockCacheValue<RefCountedMemorySegment> cacheValue = l1Cache.acquireRefCountedValue(blockOffset, cacheHitHolder);
 
         if (cacheValue == null) {
             throw new IOException("Failed to acquire cache value for block at offset " + blockOffset);
@@ -291,7 +300,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
                 // Partial block
                 final int toRead = Math.min(remaining, avail);
                 MemorySegment.copy(seg, LAYOUT_BYTE, offInBlock, b, bufferOffset, toRead);
-
                 remaining -= toRead;
                 bufferOffset += toRead;
                 currentPos += toRead;
@@ -759,7 +767,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             readaheadManager,
             readaheadContext,
             true,
-            blockSlotTinyCache
+            l1Cache
         );
 
         try {
@@ -769,6 +777,25 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         }
 
         return slice;
+    }
+
+    @Override
+    public void prefetch(long offset, long length) throws IOException {
+        ensureOpen();
+
+        final long startFileOffset = absoluteBaseOffset + offset;
+        final long startBlockOffset = startFileOffset & ~CACHE_BLOCK_MASK;
+        final long endFileOffset = absoluteBaseOffset + offset + length;
+        final long endBlockOffset = (endFileOffset + CACHE_BLOCK_MASK) & ~CACHE_BLOCK_MASK;
+        final long blockCount = (endBlockOffset - startBlockOffset) >>> CACHE_BLOCK_SIZE_POWER;
+
+        // Most prefetch will be for block size 1, do a quick look up
+        // TODO: tune this for large prefetch (e.g. vectors)
+        if (blockCount == 1 && l1Cache.contains(startBlockOffset)) {
+            return;
+        }
+
+        blockCache.loadMissingBlocks(path, startBlockOffset, blockCount);
     }
 
     @Override
@@ -791,8 +818,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             // Master instance cleanup
             assert !isSlice : "Master instance should not be marked as slice";
 
-            if (blockSlotTinyCache != null) {
-                blockSlotTinyCache.clear();
+            if (l1Cache != null) {
+                l1Cache.clear();
             }
 
             readaheadManager.close();

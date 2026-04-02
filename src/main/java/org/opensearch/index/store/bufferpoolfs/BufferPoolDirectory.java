@@ -78,6 +78,16 @@ public class BufferPoolDirectory extends FSDirectory {
     private final EncryptionMetadataCache encryptionMetadataCache;
 
     /**
+     * Factory for creating L1 block caches. Default creates BlockSlotTinyCache.
+     */
+    @FunctionalInterface
+    public interface L1BlockCacheFactory {
+        L1BlockCache create(BlockCache<RefCountedMemorySegment> cache, Path path, long fileLength);
+    }
+
+    private final L1BlockCacheFactory l1Factory;
+
+    /**
      * Creates a new CryptoDirectIODirectory with the specified components.
      *
      * @param path the directory path
@@ -102,6 +112,33 @@ public class BufferPoolDirectory extends FSDirectory {
         EncryptionMetadataCache encryptionMetadataCache
     )
         throws IOException {
+        this(
+            path,
+            lockFactory,
+            provider,
+            keyResolver,
+            memorySegmentPool,
+            blockCache,
+            blockLoader,
+            worker,
+            encryptionMetadataCache,
+            BlockSlotTinyCache::new
+        );
+    }
+
+    public BufferPoolDirectory(
+        Path path,
+        LockFactory lockFactory,
+        Provider provider,
+        KeyResolver keyResolver,
+        Pool<RefCountedMemorySegment> memorySegmentPool,
+        BlockCache<RefCountedMemorySegment> blockCache,
+        BlockLoader<RefCountedMemorySegment> blockLoader,
+        Worker worker,
+        EncryptionMetadataCache encryptionMetadataCache,
+        L1BlockCacheFactory l1Factory
+    )
+        throws IOException {
         super(path, lockFactory);
         this.memorySegmentPool = memorySegmentPool;
         this.blockCache = blockCache;
@@ -110,6 +147,7 @@ public class BufferPoolDirectory extends FSDirectory {
         this.dirPath = getDirectory();
         this.masterKeyBytes = keyResolver.getDataKey().getEncoded();
         this.encryptionMetadataCache = encryptionMetadataCache;
+        this.l1Factory = l1Factory;
 
         // startCacheStatsTelemetry(); // uncomment for local testing
     }
@@ -131,7 +169,7 @@ public class BufferPoolDirectory extends FSDirectory {
 
             ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker, blockCache);
             ReadaheadContext readAheadContext = readAheadManager.register(file, contentLength);
-            BlockSlotTinyCache pinRegistry = new BlockSlotTinyCache(blockCache, file, contentLength);
+            L1BlockCache l1Cache = l1Factory.create(blockCache, file, contentLength);
 
             return CachedMemorySegmentIndexInput
                 .newInstance(
@@ -141,7 +179,7 @@ public class BufferPoolDirectory extends FSDirectory {
                     blockCache,
                     readAheadManager,
                     readAheadContext,
-                    pinRegistry
+                    l1Cache
                 );
         } catch (Exception e) {
             CryptoMetricsService.getInstance().recordError(ErrorType.INDEX_INPUT_ERROR);

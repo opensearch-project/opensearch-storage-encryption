@@ -107,7 +107,8 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
         BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
             sharedCache.getCache(),
             loader,
-            poolResources.getMaxCacheBlocks()
+            poolResources.getMaxCacheBlocks(),
+            poolResources.getPrefetchTracker()
         );
 
         this.bufferPoolDirectory = new BufferPoolDirectory(

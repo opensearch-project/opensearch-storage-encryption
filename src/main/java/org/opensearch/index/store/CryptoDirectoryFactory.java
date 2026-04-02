@@ -50,6 +50,7 @@ import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 import org.opensearch.index.store.pool.PoolBuilder;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.plugins.IndexStorePlugin;
+import org.opensearch.threadpool.ThreadPool;
 
 /**
  * Factory for creating encrypted filesystem directories with support for various storage types.
@@ -86,6 +87,17 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     private static volatile boolean writeCacheEnabled = true;
 
     /**
+     * Controls whether prefetch is enabled for bufferpool directories.
+     */
+    public static final Setting<Boolean> PREFETCH_ENABLED_SETTING = Setting
+        .boolSetting("node.store.crypto.prefetch.enabled", true, Property.NodeScope, Property.Dynamic);
+
+    /**
+     * Current value of the prefetch enabled setting, updated dynamically via cluster settings.
+     */
+    private static volatile boolean prefetchEnabled = true;
+
+    /**
      * Shared pool resources including pool, cache, and telemetry.
      * Lazily initialized on first cryptofs shard creation and shared across all CryptoBufferPoolFSDirectory instances.
      * This prevents resource allocation on dedicated master nodes which never create shards.
@@ -96,6 +108,11 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * Node settings used for lazy pool initialization.
      */
     private static volatile Settings nodeSettings;
+
+    /**
+     * ThreadPool used for prefetch operations.
+     */
+    private static volatile ThreadPool threadPool;
 
     /**
      * Lock for thread-safe initialization of shared resources.
@@ -514,7 +531,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
             sharedCaffeineCache.getCache(),
             loader,
-            resources.getMaxCacheBlocks()
+            resources.getMaxCacheBlocks(),
+            resources.getPrefetchTracker()
         );
 
         // Use the shared node-wide read-ahead worker
@@ -543,6 +561,11 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     public static void setNodeSettings(Settings settings) {
         nodeSettings = settings;
         writeCacheEnabled = WRITE_CACHE_ENABLED_SETTING.get(settings);
+        prefetchEnabled = PREFETCH_ENABLED_SETTING.get(settings);
+    }
+
+    public static void setThreadPool(ThreadPool tp) {
+        threadPool = tp;
     }
 
     /**
@@ -561,6 +584,10 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                 LOGGER.info("Updating write_cache_enabled to {}", value);
                 writeCacheEnabled = value;
             });
+            service.getClusterSettings().addSettingsUpdateConsumer(PREFETCH_ENABLED_SETTING, value -> {
+                LOGGER.info("Updating prefetch.enabled to {}", value);
+                prefetchEnabled = value;
+            });
         }
     }
 
@@ -572,6 +599,16 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      */
     public static boolean isWriteCacheEnabled() {
         return writeCacheEnabled;
+    }
+
+    /**
+     * Returns whether prefetch (readahead) is currently enabled.
+     * This is read by the read path to decide whether to perform async prefetching.
+     *
+     * @return true if prefetch is enabled
+     */
+    public static boolean isPrefetchEnabled() {
+        return prefetchEnabled;
     }
 
     /**
@@ -592,7 +629,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                         throw new IllegalStateException("Node settings must be set before initializing pool resources");
                     }
                     LOGGER.info("Lazily initializing shared pool resources on first cryptofs shard creation");
-                    poolResources = PoolBuilder.build(nodeSettings);
+                    poolResources = PoolBuilder.build(nodeSettings, threadPool);
                 }
             }
         }

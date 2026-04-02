@@ -125,7 +125,8 @@ public class CachedMemorySegmentIndexInputFromDirectoryTests extends BaseIndexIn
         BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
             sharedCaffeineCache.getCache(),
             loader,
-            poolResources.getMaxCacheBlocks()
+            poolResources.getMaxCacheBlocks(),
+            poolResources.getPrefetchTracker()
         );
 
         this.bufferPoolDirectory = new BufferPoolDirectory(

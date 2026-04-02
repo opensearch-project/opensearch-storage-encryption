@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.nio.file.Path;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.LockSupport;
 
 import org.opensearch.index.store.block.RefCountedMemorySegment;
@@ -70,7 +71,7 @@ import org.opensearch.index.store.block_cache.FileBlockCacheKey;
  * we avoid tight coupling of generation with pin -- they serve different purposes.
  *
  */
-public class BlockSlotTinyCache {
+public class BlockSlotTinyCache implements L1BlockCache {
 
     public static final class CacheHitHolder {
         private boolean wasCacheHit;
@@ -90,6 +91,10 @@ public class BlockSlotTinyCache {
 
     private static final int SLOT_COUNT = 32;
     private static final int SLOT_MASK = SLOT_COUNT - 1;
+
+    private final LongAdder l1Hits = new LongAdder();
+    private final LongAdder l2Hits = new LongAdder();
+    private final LongAdder misses = new LongAdder();
 
     // VarHandle for acquire/release element access on long[]
     private static final VarHandle STAMP_ARR = MethodHandles.arrayElementVarHandle(long[].class);
@@ -146,10 +151,12 @@ public class BlockSlotTinyCache {
         }
     }
 
+    @Override
     public BlockCacheValue<RefCountedMemorySegment> acquireRefCountedValue(long blockOff) throws IOException {
         return acquireRefCountedValue(blockOff, null);
     }
 
+    @Override
     public BlockCacheValue<RefCountedMemorySegment> acquireRefCountedValue(long blockOff, CacheHitHolder hitHolder) throws IOException {
 
         final long blockIdx = blockOff >>> CACHE_BLOCK_SIZE_POWER;
@@ -170,6 +177,7 @@ public class BlockSlotTinyCache {
                             if (v.value().getGeneration() == expectedGen) {
                                 if (hitHolder != null)
                                     hitHolder.setWasCacheHit(true);
+                                l1Hits.increment();
                                 return v;
                             }
                             v.unpin();
@@ -179,7 +187,7 @@ public class BlockSlotTinyCache {
             }
         }
 
-        final int maxAttempts = 10;
+        final int maxAttempts = 10; // TODO: isn't that alot of attempts, why 10?
 
         FileBlockCacheKey key = slotKeys[slotIdx];
         if (key == null || key.fileOffset() != blockOff) {
@@ -197,6 +205,7 @@ public class BlockSlotTinyCache {
                         publishToL1(slotIdx, blockIdx, v, expectedGen);
                         if (hitHolder != null)
                             hitHolder.setWasCacheHit(true);
+                        l2Hits.increment();
                         return v;
                     }
                     v.unpin(); // pinned recycled object; treat as miss
@@ -212,6 +221,7 @@ public class BlockSlotTinyCache {
                         publishToL1(slotIdx, blockIdx, loaded, expectedGen);
                         if (hitHolder != null)
                             hitHolder.setWasCacheHit(false);
+                        misses.increment();
                         return loaded;
                     }
                     loaded.unpin();
@@ -220,6 +230,7 @@ public class BlockSlotTinyCache {
 
             if (attempts < maxAttempts - 1) {
                 LockSupport.parkNanos(50_000L << attempts);
+                // TODO: add metrics on this
             }
         }
 
@@ -246,6 +257,15 @@ public class BlockSlotTinyCache {
         return (int) (blockIdx ^ (blockIdx >>> 32));
     }
 
+    @Override
+    public boolean contains(long blockOff) {
+        final long blockIdx = blockOff >>> CACHE_BLOCK_SIZE_POWER;
+        final int slotIdx = (int) ((blockIdx ^ (blockIdx >>> 17)) & SLOT_MASK);
+        final long stamp = (long) STAMP_ARR.getAcquire(slotStamp, slotIdx);
+        return stamp != 0L && (int) stamp == hashBlockIdx(blockIdx) && slotBlockIdx[slotIdx] == blockIdx;
+    }
+
+    @Override
     public void clear() {
         for (int i = 0; i < SLOT_COUNT; i++) {
             slotBlockIdx[i] = -1;
@@ -254,5 +274,28 @@ public class BlockSlotTinyCache {
             slotStamp[i] = 0L;
             slotKeys[i] = null;
         }
+    }
+
+    @Override
+    public String stats() {
+        long l1 = l1Hits.sum(), l2 = l2Hits.sum(), m = misses.sum();
+        long total = l1 + l2 + m;
+        return String
+            .format(
+                "TinyCache[l1Hits=%d, l2Hits=%d, misses=%d, total=%d, l1Rate=%.2f%%, l2Rate=%.2f%%]",
+                l1,
+                l2,
+                m,
+                total,
+                total == 0 ? 0 : l1 * 100.0 / total,
+                total == 0 ? 0 : l2 * 100.0 / total
+            );
+    }
+
+    @Override
+    public void resetStats() {
+        l1Hits.reset();
+        l2Hits.reset();
+        misses.reset();
     }
 }

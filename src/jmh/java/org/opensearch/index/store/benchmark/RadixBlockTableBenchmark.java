@@ -149,7 +149,7 @@ public class RadixBlockTableBenchmark {
                 .maximumSize(numBlocks * 2L)
                 .recordStats()
                 .build();
-            caffeineCache = new CaffeineBlockCache<>(rawCache, null, numBlocks * 2L);
+            caffeineCache = new CaffeineBlockCache<>(rawCache, null, numBlocks * 2L, null);
             for (int i = 0; i < numBlocks; i++) {
                 caffeineCache.put(hitKeys[i], new StubBlockCacheValue(byteBuffers[i]));
             }

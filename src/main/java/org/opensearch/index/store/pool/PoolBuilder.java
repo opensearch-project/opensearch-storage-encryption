@@ -15,12 +15,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.index.store.CryptoDirectoryPlugin;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheBuilder;
+import org.opensearch.index.store.block_cache.PrefetchTracker;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.index.store.read_ahead.impl.QueuingWorker;
 import org.opensearch.index.store.read_ahead.impl.ReadAheadSizingPolicy;
+import org.opensearch.threadpool.ThreadPool;
 
 /**
  * Builder for creating shared pool and cache resources with proper lifecycle management.
@@ -53,6 +56,8 @@ public final class PoolBuilder {
         private final TelemetryThread telemetry;
         private final java.util.concurrent.ThreadPoolExecutor removalExecutor;
         private final ExecutorService readAheadExecutor;
+        private final PrefetchTracker prefetchTracker;
+        private final ExecutorService prefetchExecutor;
 
         PoolResources(
             Pool<RefCountedMemorySegment> segmentPool,
@@ -62,7 +67,9 @@ public final class PoolBuilder {
             Worker sharedReadaheadWorker,
             TelemetryThread telemetry,
             java.util.concurrent.ThreadPoolExecutor removalExecutor,
-            ExecutorService readAheadExecutor
+            ExecutorService readAheadExecutor,
+            PrefetchTracker prefetchTracker,
+            ExecutorService prefetchExecutor
         ) {
             this.segmentPool = segmentPool;
             this.blockCache = blockCache;
@@ -72,6 +79,8 @@ public final class PoolBuilder {
             this.telemetry = telemetry;
             this.removalExecutor = removalExecutor;
             this.readAheadExecutor = readAheadExecutor;
+            this.prefetchTracker = prefetchTracker;
+            this.prefetchExecutor = prefetchExecutor;
         }
 
         /**
@@ -131,6 +140,15 @@ public final class PoolBuilder {
         }
 
         /**
+         * Returns the shared prefetch tracker for deduplication and stats.
+         *
+         * @return the prefetch tracker
+         */
+        public PrefetchTracker getPrefetchTracker() {
+            return prefetchTracker;
+        }
+
+        /**
          * Closes the shared pool resources, stops the telemetry thread, and shuts down executors.
          */
         @Override
@@ -165,6 +183,17 @@ public final class PoolBuilder {
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     readAheadExecutor.shutdownNow();
+                }
+            }
+            if (prefetchExecutor != null) {
+                prefetchExecutor.shutdown();
+                try {
+                    if (!prefetchExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        prefetchExecutor.shutdownNow();
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    prefetchExecutor.shutdownNow();
                 }
             }
         }
@@ -205,6 +234,7 @@ public final class PoolBuilder {
             try {
                 pool.recordStats();
                 blockCache.recordStats();
+
             } catch (Exception e) {
                 LOGGER.warn("Failed to log cache/pool stats", e);
             }
@@ -224,10 +254,37 @@ public final class PoolBuilder {
     /**
      * Initialized the MemorySegmentPool and BlockCache.
      *
+     * @param settings   the node settings for configuration
+     * @param threadPool
+     * @return SharedPoolResources containing the initialized pool and cache
+     */
+    public static PoolResources build(Settings settings, ThreadPool threadPool) {
+        int prefetchThreads = CryptoDirectoryPlugin.PREFETCH_THREAD_COUNT_SETTING.get(settings);
+        if (prefetchThreads == -1) {
+            prefetchThreads = Runtime.getRuntime().availableProcessors() * 4;
+        }
+        int prefetchQueueSize = CryptoDirectoryPlugin.PREFETCH_QUEUE_SIZE_SETTING.get(settings);
+        if (prefetchQueueSize == -1) {
+            prefetchQueueSize = prefetchThreads * 1000;
+        }
+        LOGGER.info("Prefetch ForkJoinPool: threads={}, maxInflight={}", prefetchThreads, prefetchQueueSize);
+        ExecutorService prefetchExecutor = new java.util.concurrent.ForkJoinPool(prefetchThreads);
+        return build(settings, prefetchExecutor, prefetchQueueSize);
+    }
+
+    /**
+     * Overload for contexts without a ThreadPool (tests, benchmarks).
+     * Creates a simple cached thread pool for prefetch tracking.
+     *
      * @param settings the node settings for configuration
      * @return SharedPoolResources containing the initialized pool and cache
      */
     public static PoolResources build(Settings settings) {
+        ExecutorService prefetchExecutor = new java.util.concurrent.ForkJoinPool();
+        return build(settings, prefetchExecutor, 10_000);
+    }
+
+    private static PoolResources build(Settings settings, ExecutorService prefetchExecutor, int maxInflight) {
         long reservedPoolSizeInBytes = PoolSizeCalculator.calculatePoolSize(settings);
 
         reservedPoolSizeInBytes = (reservedPoolSizeInBytes / CACHE_BLOCK_SIZE) * CACHE_BLOCK_SIZE;
@@ -264,9 +321,11 @@ public final class PoolBuilder {
         int readAheadQueueSize = ReadAheadSizingPolicy.calculateQueueSize(maxCacheBlocks);
         LOGGER.info("Calculated read-ahead queue size={} (cache={} blocks)", readAheadQueueSize, maxCacheBlocks);
 
+        PrefetchTracker prefetchTracker = new PrefetchTracker(prefetchExecutor, maxInflight);
+
         // Initialize shared cache with removal listener and get its executor
         BlockCacheBuilder.CacheWithExecutor<RefCountedMemorySegment, RefCountedMemorySegment> cacheWithExecutor = BlockCacheBuilder
-            .build(CACHE_INITIAL_SIZE, maxCacheBlocks);
+            .build(CACHE_INITIAL_SIZE, maxCacheBlocks, prefetchTracker);
         BlockCache<RefCountedMemorySegment> blockCache = cacheWithExecutor.getCache();
         java.util.concurrent.ThreadPoolExecutor removalExecutor = cacheWithExecutor.getExecutor();
         LOGGER.info("Creating shared block cache with blocks={}", maxCacheBlocks);
@@ -275,6 +334,7 @@ public final class PoolBuilder {
         int threads = ReadAheadSizingPolicy.calculateWorkerThreads(readAheadQueueSize);
 
         AtomicInteger threadId = new AtomicInteger();
+        // TODO: why not use OS's threadpool
         ExecutorService readAheadExecutor = Executors.newFixedThreadPool(threads, r -> {
             Thread t = new Thread(r, "readahead-worker-" + threadId.incrementAndGet());
             t.setDaemon(true);
@@ -299,7 +359,9 @@ public final class PoolBuilder {
             sharedReadaheadWorker,
             telemetry,
             removalExecutor,
-            readAheadExecutor
+            readAheadExecutor,
+            cacheWithExecutor.getPrefetchTracker(),
+            prefetchExecutor
         );
     }
 }
