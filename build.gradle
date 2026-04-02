@@ -181,9 +181,15 @@ forbiddenApisJmh.enabled = false
 // We only need the jmh {} config block below to customize behavior.
 
 // ---- JCStress configuration ----
+// When triggered via ./gradlew test, jcstress runs in 'quick' mode (fast sanity check).
+// When run explicitly via ./gradlew jcstress, it uses 'default' mode (thorough).
+// Override with: ./gradlew jcstress -Pjcstress.mode=stress
+def isExplicitJcstress = gradle.startParameter.taskNames.any { it.toLowerCase().contains('jcstress') }
+def jcstressMode = project.findProperty('jcstress.mode') ?: (isExplicitJcstress ? 'default' : 'quick')
+
 jcstress {
     jcstressDependency 'org.openjdk.jcstress:jcstress-core:0.16'
-    mode = 'default'
+    mode = jcstressMode
     verbose = true
 }
 

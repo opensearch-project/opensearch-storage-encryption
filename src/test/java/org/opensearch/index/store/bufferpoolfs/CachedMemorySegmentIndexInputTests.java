@@ -1419,6 +1419,52 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     }
 
     /**
+     * Tests that consecutive reads within the same block reuse the cached block
+     * (fast path — currentBlock hit, no L2 lookup needed after first read).
+     */
+    public void testFastPathReusesCurrentBlock() throws IOException {
+        long fileLength = BLOCK_SIZE * 2;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 0xAB);
+        setupOneBlock(block0);
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+        // First read triggers slow path — acquires from L1/L2
+        byte b1 = input.readByte();
+        assertEquals((byte) 0xAB, b1);
+        // Subsequent reads within same block reuse currentBlock (fast path)
+        byte b2 = input.readByte();
+        assertEquals((byte) 0xAB, b2);
+        byte b3 = input.readByte();
+        assertEquals((byte) 0xAB, b3);
+        // All reads returned correct data from block 0 — fast path reused currentBlock
+        input.close();
+    }
+
+    /**
+     * Tests that reading across a block boundary triggers the slow path
+     * (acquires new block from L1/L2 for the new block offset).
+     */
+    public void testSlowPathOnBlockTransition() throws IOException {
+        long fileLength = BLOCK_SIZE * 2;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 0x11);
+        MemorySegment block1 = createBlockWithPattern(1, (byte) 0x22);
+        setupTwoBlocks(block0, block1);
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+        // Read from block 0
+        byte b0 = input.readByte();
+        assertEquals((byte) 0x11, b0);
+        // Seek to block 1 — triggers slow path (different block offset)
+        input.seek(BLOCK_SIZE);
+        byte b1 = input.readByte();
+        assertEquals((byte) 0x22, b1);
+        // Read more from block 1 — should reuse currentBlock (fast path)
+        byte b2 = input.readByte();
+        assertEquals((byte) 0x22, b2);
+        byte b3 = input.readByte();
+        assertEquals((byte) 0x22, b3);
+        input.close();
+    }
+
+    /**
      * Test for the bug that caused negative file offsets in production.
      *
      * The old MultiSegmentImpl implementation would double-count offsets when creating slices,

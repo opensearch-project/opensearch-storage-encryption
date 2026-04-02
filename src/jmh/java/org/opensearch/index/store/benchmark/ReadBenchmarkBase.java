@@ -148,7 +148,12 @@ public class ReadBenchmarkBase {
 
         EncryptionMetadataCache encMetaCache = EncryptionMetadataCacheRegistry.getOrCreateCache(indexUuid, shardId, indexName);
 
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(segmentPool, keyResolver, encMetaCache);
+        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(
+            segmentPool,
+            keyResolver,
+            encMetaCache,
+            poolResources.getFileChannelCache()
+        );
         Worker worker = poolResources.getSharedReadaheadWorker();
 
         @SuppressWarnings("unchecked")
@@ -170,7 +175,8 @@ public class ReadBenchmarkBase {
             directoryCache,
             loader,
             worker,
-            encMetaCache
+            encMetaCache,
+            poolResources.getFileChannelCache()
         );
 
         // Write test files through bufferpool write path

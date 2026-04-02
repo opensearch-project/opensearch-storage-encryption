@@ -99,7 +99,7 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
                             long offset = blockNum * BLOCK_SIZE + (i % 100);
 
                             if (offset < fileLength) {
-                                byte value = input.readByte(offset);
+                                byte value = input.clone().readByte(offset);
                                 byte expected = (byte) (blockNum + 1);
 
                                 if (value != expected) {

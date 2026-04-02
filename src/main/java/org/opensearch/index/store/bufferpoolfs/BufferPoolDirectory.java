@@ -30,6 +30,7 @@ import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.block_loader.BlockLoader;
+import org.opensearch.index.store.block_loader.FileChannelCache;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.footer.EncryptionFooter;
 import org.opensearch.index.store.footer.EncryptionMetadataTrailer;
@@ -76,6 +77,7 @@ public class BufferPoolDirectory extends FSDirectory {
     private final Path dirPath;
     private final byte[] masterKeyBytes;
     private final EncryptionMetadataCache encryptionMetadataCache;
+    private final FileChannelCache fileChannelCache;
     private final RadixBlockTableRegistry radixBlockTableRegistry;
 
     /**
@@ -100,7 +102,8 @@ public class BufferPoolDirectory extends FSDirectory {
         BlockCache<RefCountedMemorySegment> blockCache,
         BlockLoader<RefCountedMemorySegment> blockLoader,
         Worker worker,
-        EncryptionMetadataCache encryptionMetadataCache
+        EncryptionMetadataCache encryptionMetadataCache,
+        FileChannelCache fileChannelCache
     )
         throws IOException {
         super(path, lockFactory);
@@ -111,6 +114,7 @@ public class BufferPoolDirectory extends FSDirectory {
         this.dirPath = getDirectory();
         this.masterKeyBytes = keyResolver.getDataKey().getEncoded();
         this.encryptionMetadataCache = encryptionMetadataCache;
+        this.fileChannelCache = fileChannelCache;
         this.radixBlockTableRegistry = new RadixBlockTableRegistry();
 
         // Wire L2 eviction → L1 cleanup so stale RadixBlockTable entries
@@ -222,6 +226,15 @@ public class BufferPoolDirectory extends FSDirectory {
         if (blockCache != null) {
             blockCache.invalidateByPathPrefix(dirPath);
         }
+
+        // Invalidate all FD cache entries for files in this directory.
+        // Idle channels close immediately; in-flight channels close when I/O finishes.
+        if (fileChannelCache != null) {
+            fileChannelCache.invalidateByPathPrefix(dirPath);
+        }
+
+        // Mark directory as closed so ensureOpen() throws AlreadyClosedException
+        super.close();
     }
 
     @Override
@@ -250,6 +263,11 @@ public class BufferPoolDirectory extends FSDirectory {
         }
         super.deleteFile(name);
         encryptionMetadataCache.invalidateFile(EncryptionMetadataCache.normalizePath(file));
+
+        // Invalidate the FD cache entry for the deleted file
+        if (fileChannelCache != null) {
+            fileChannelCache.invalidate(file.toAbsolutePath().normalize().toString());
+        }
     }
 
     /**

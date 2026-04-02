@@ -21,16 +21,19 @@ public class CryptoMetricsService {
     private final MetricsRegistry metricsRegistry;
     private final Histogram poolStatsHistogram;
     private final Histogram cacheStatsHistogram;
+    private final Histogram fdCacheStatsHistogram;
     private final Counter errorCounter;
 
     // Metric names
     private static final String POOL_STATS_NAME = "crypto.pool.stats";
     private static final String CACHE_STATS_NAME = "crypto.cache.stats";
+    private static final String FD_CACHE_STATS_NAME = "crypto.fd_cache.stats";
     private static final String ERROR_COUNTER_NAME = "crypto.error.total";
 
     // Metric descriptions
     private static final String POOL_STATS_DESC = "Crypto Pool statistics";
     private static final String CACHE_STATS_DESC = "Crypto Cache statistics";
+    private static final String FD_CACHE_STATS_DESC = "FileChannel cache statistics";
     private static final String ERROR_COUNTER_DESC = "Total crypto operation errors";
 
     // Units
@@ -53,6 +56,7 @@ public class CryptoMetricsService {
         this.errorCounter = createCounter(ERROR_COUNTER_NAME, ERROR_COUNTER_DESC, COUNT_UNIT);
         this.poolStatsHistogram = createHistogram(POOL_STATS_NAME, POOL_STATS_DESC, COUNT_UNIT);
         this.cacheStatsHistogram = createHistogram(CACHE_STATS_NAME, CACHE_STATS_DESC, COUNT_UNIT);
+        this.fdCacheStatsHistogram = createHistogram(FD_CACHE_STATS_NAME, FD_CACHE_STATS_DESC, COUNT_UNIT);
     }
 
     /**
@@ -118,6 +122,25 @@ public class CryptoMetricsService {
         cacheStatsHistogram.record(loads, Tags.create().addTag(STAT_TYPE_TAG, "loads"));
         cacheStatsHistogram.record(evictions, Tags.create().addTag(STAT_TYPE_TAG, "evictions"));
         cacheStatsHistogram.record(avgLoadTimeMs, Tags.create().addTag(STAT_TYPE_TAG, "avg_load_time"));
+    }
+
+    /**
+     * Records FileChannel cache statistics.
+     * @param size current number of cached channels
+     * @param hits hit count
+     * @param misses miss count
+     * @param hitRate hit rate percentage (0-100)
+     * @param evictions eviction count
+     */
+    public void recordFdCacheStats(long size, long hits, long misses, double hitRate, long evictions) {
+        if (fdCacheStatsHistogram == null)
+            return;
+
+        fdCacheStatsHistogram.record(size, Tags.create().addTag(STAT_TYPE_TAG, "size"));
+        fdCacheStatsHistogram.record(hits, Tags.create().addTag(STAT_TYPE_TAG, "hits"));
+        fdCacheStatsHistogram.record(misses, Tags.create().addTag(STAT_TYPE_TAG, "misses"));
+        fdCacheStatsHistogram.record(hitRate, Tags.create().addTag(STAT_TYPE_TAG, "hit_rate"));
+        fdCacheStatsHistogram.record(evictions, Tags.create().addTag(STAT_TYPE_TAG, "evictions"));
     }
 
     /**

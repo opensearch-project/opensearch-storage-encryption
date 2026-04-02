@@ -60,6 +60,18 @@ public class StaticConfigs {
     public static final long CACHE_BLOCK_MASK = CACHE_BLOCK_SIZE - 1;
 
     /**
+     * Default maximum number of cached FileChannels in the node-level FileChannelCache.
+     */
+    public static final int DEFAULT_MAX_FILE_CHANNELS = 256;
+
+    /**
+     * Default expiry time in seconds for idle FileChannels in the FileChannelCache.
+     * Channels not accessed within this duration are evicted. 300s (5 min) balances
+     * FD reuse for active shards with timely cleanup for idle ones.
+     */
+    public static final long DEFAULT_FD_CACHE_EXPIRE_AFTER_ACCESS_SECONDS = 300;
+
+    /**
      * Returns the correct Direct I/O alignment for the filesystem containing the given path.
      *
      * <p>Direct I/O requires buffers and offsets to be aligned to the filesystem's logical
