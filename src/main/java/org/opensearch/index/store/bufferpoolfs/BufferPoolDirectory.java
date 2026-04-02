@@ -103,7 +103,8 @@ public class BufferPoolDirectory extends FSDirectory {
         BlockLoader<RefCountedMemorySegment> blockLoader,
         Worker worker,
         EncryptionMetadataCache encryptionMetadataCache,
-        FileChannelCache fileChannelCache
+        FileChannelCache fileChannelCache,
+        RadixBlockTableRegistry radixBlockTableRegistry
     )
         throws IOException {
         super(path, lockFactory);
@@ -115,11 +116,7 @@ public class BufferPoolDirectory extends FSDirectory {
         this.masterKeyBytes = keyResolver.getDataKey().getEncoded();
         this.encryptionMetadataCache = encryptionMetadataCache;
         this.fileChannelCache = fileChannelCache;
-        this.radixBlockTableRegistry = new RadixBlockTableRegistry();
-
-        // Wire L2 eviction → L1 cleanup so stale RadixBlockTable entries
-        // are removed immediately when Caffeine evicts a block.
-        blockCache.setEvictionListener(radixBlockTableRegistry::onEviction);
+        this.radixBlockTableRegistry = radixBlockTableRegistry;
 
         // startCacheStatsTelemetry(); // uncomment for local testing
     }
