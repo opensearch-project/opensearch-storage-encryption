@@ -48,7 +48,8 @@ public class RadixBlockTableRegistry {
     /**
      * Acquires a RadixBlockTable for the given file path. If a table already exists
      * for this path, increments the reference count and returns it. Otherwise creates
-     * a new table.
+     * a new table. Ensures one RadixBlockTable exists per file and
+     * tracks how many openers are sharing it
      *
      * @param path the normalized absolute file path
      * @return the RadixBlockTable for this file
@@ -67,7 +68,8 @@ public class RadixBlockTableRegistry {
     /**
      * Releases a reference to the RadixBlockTable for the given file path.
      * When the reference count reaches 0, the table is cleared and removed
-     * from the registry.
+     * from the registry. Used when master IndexInput closes
+     * The table is only destroyed when the last opener closes.
      *
      * @param path the normalized absolute file path
      */

@@ -233,7 +233,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
      */
     private BlockCacheValue<RefCountedMemorySegment> acquireBlock(long blockOffset) throws IOException {
         final long blockId = blockOffset >>> CACHE_BLOCK_SIZE_POWER;
-
         // ---- L1 lookup: two plain array reads, no fences, no CAS ----
         L1CacheEntry entry = radixBlockTable.get(blockId);
         if (entry != null) {
@@ -247,10 +246,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             // Stale entry — clean up so future reads see a clean miss
             radixBlockTable.remove(blockId);
         }
-
         // ---- L2 lookup + disk load with retry ----
         final FileBlockCacheKey key = new FileBlockCacheKey(path, blockOffset);
-
         for (int attempts = 0; attempts < MAX_PIN_ATTEMPTS; attempts++) {
             // Try L2 hit
             BlockCacheValue<RefCountedMemorySegment> v = blockCache.get(key);
@@ -265,7 +262,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
                     v.unpin(); // pinned a recycled segment; treat as miss
                 }
             }
-
             // L2 miss — load from disk (deduped by Caffeine)
             BlockCacheValue<RefCountedMemorySegment> loaded = blockCache.getOrLoad(key);
             if (loaded != null) {
@@ -279,12 +275,10 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
                     loaded.unpin();
                 }
             }
-
             if (attempts < MAX_PIN_ATTEMPTS - 1) {
                 LockSupport.parkNanos(50_000L << attempts);
             }
         }
-
         throw new IOException("Unable to pin memory segment for block offset " + blockOffset + " after " + MAX_PIN_ATTEMPTS + " attempts");
     }
 
