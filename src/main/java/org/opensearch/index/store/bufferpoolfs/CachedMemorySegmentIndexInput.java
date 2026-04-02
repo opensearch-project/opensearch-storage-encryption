@@ -196,7 +196,14 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             lastOffsetInBlock = offsetInBlock;
             return currentBlock.value().segment();
         }
+        return acquireCacheBlockOnMiss(blockOffset, offsetInBlock);
+    }
 
+    /**
+     * Slow path for cache block acquisition — separated to keep the fast path
+     * small enough for JIT inlining.
+     */
+    private MemorySegment acquireCacheBlockOnMiss(long blockOffset, int offsetInBlock) throws IOException {
         lastAccessWasCacheHit = false;
 
         final BlockCacheValue<RefCountedMemorySegment> cacheValue = acquireBlock(blockOffset);
