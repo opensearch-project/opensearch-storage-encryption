@@ -460,6 +460,9 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         int[] splits = { 1, 2, 3, 5, 6, 7 };
 
         for (int bytesInFirstBlock : splits) {
+            // Clear L1 so stale entries from previous iteration don't interfere
+            radixBlockTable.clear();
+
             long fileLength = BLOCK_SIZE * 2;
             MemorySegment block0 = arena.allocate(BLOCK_SIZE);
             MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -1587,5 +1590,83 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
 
         slice.close();
         input.close();
+    }
+
+    /**
+     * Tests that sequential reads across multiple blocks populate the L1 RadixBlockTable,
+     * and subsequent reads of the same blocks are served from L1 without hitting L2.
+     */
+    public void testSequentialReadsPopulateL1AndSubsequentReadsHitL1() throws IOException {
+        long fileLength = BLOCK_SIZE * 3;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 0xAA);
+        MemorySegment block1 = createBlockWithPattern(1, (byte) 0xBB);
+        MemorySegment block2 = createBlockWithPattern(2, (byte) 0xCC);
+        setupBlock(0, block0);
+        setupBlock(BLOCK_SIZE, block1);
+        setupBlock(BLOCK_SIZE * 2, block2);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+
+        // First pass: sequential read across all 3 blocks — populates L1
+        assertEquals((byte) 0xAA, input.readByte());
+        input.seek(BLOCK_SIZE);
+        assertEquals((byte) 0xBB, input.readByte());
+        input.seek(BLOCK_SIZE * 2);
+        assertEquals((byte) 0xCC, input.readByte());
+
+        // Verify L1 is populated for all 3 blocks
+        assertNotNull("Block 0 should be in L1", radixBlockTable.get(0));
+        assertNotNull("Block 1 should be in L1", radixBlockTable.get(1));
+        assertNotNull("Block 2 should be in L1", radixBlockTable.get(2));
+
+        // Clear L2 mock invocations to track only the second pass
+        clearInvocations(mockCache);
+
+        // Second pass: re-read all 3 blocks — should hit L1, NOT call L2
+        input.seek(0);
+        assertEquals((byte) 0xAA, input.readByte());
+        input.seek(BLOCK_SIZE);
+        assertEquals((byte) 0xBB, input.readByte());
+        input.seek(BLOCK_SIZE * 2);
+        assertEquals((byte) 0xCC, input.readByte());
+
+        // L2 should NOT have been called — all reads served from L1
+        verify(mockCache, never()).get(any());
+        verify(mockCache, never()).getOrLoad(any());
+
+        input.close();
+    }
+
+    /**
+     * Tests that RadixBlockTable is cleared when the master IndexInput is closed.
+     */
+    public void testRadixBlockTableClearedOnClose() throws IOException {
+        long fileLength = BLOCK_SIZE * 2;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 0x11);
+        MemorySegment block1 = createBlockWithPattern(1, (byte) 0x22);
+        setupTwoBlocks(block0, block1);
+
+        // Use registry so close() calls release() which clears the table
+        RadixBlockTableRegistry registry = new RadixBlockTableRegistry();
+        RadixBlockTable<L1CacheEntry> registeredTable = registry.acquire(testPath);
+
+        CachedMemorySegmentIndexInput input = CachedMemorySegmentIndexInput
+            .newInstance("test", testPath, fileLength, mockCache, mockReadaheadManager, mockReadaheadContext, registeredTable, registry);
+
+        // Read from both blocks to populate L1
+        input.readByte();
+        input.seek(BLOCK_SIZE);
+        input.readByte();
+
+        // Verify L1 has entries
+        assertNotNull("Block 0 should be in L1 before close", registeredTable.get(0));
+        assertNotNull("Block 1 should be in L1 before close", registeredTable.get(1));
+
+        // Close the master input — should call registry.release() which clears the table
+        input.close();
+
+        // Verify L1 is cleared
+        assertNull("Block 0 should be null after close", registeredTable.get(0));
+        assertNull("Block 1 should be null after close", registeredTable.get(1));
     }
 }
