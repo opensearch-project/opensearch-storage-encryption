@@ -870,8 +870,6 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
                 // Release our ref in the registry; when refCount reaches 0
                 // the table is cleared and removed from the registry.
                 radixBlockTableRegistry.release(path);
-            } else if (radixBlockTable != null) {
-                radixBlockTable.clear();
             }
 
             readaheadManager.close();
