@@ -215,14 +215,17 @@ public class BufferPoolDirectory extends FSDirectory {
         readAheadworker.close();
         encryptionMetadataCache.invalidateDirectory();
 
-        // Clear all L1 RadixBlockTable entries for this directory
-        radixBlockTableRegistry.clear();
-
         // Invalidate all cache entries for this directory to prevent memory leaks
         // when the shard/index is closed or deleted
         if (blockCache != null) {
             blockCache.invalidateByPathPrefix(dirPath);
         }
+        // Note: L1 RadixBlockTable entries for this directory's files are cleaned up
+        // via two mechanisms:
+        // 1. The blockCache.invalidateByPathPrefix above triggers Caffeine evictions,
+        //    which fire the eviction listener → registry.onEviction() → L1 slots nulled
+        // 2. Master IndexInput.close() calls registry.release(path) for each file,
+        //    which clears and removes the table when refCount reaches 0
 
         // Invalidate all FD cache entries for files in this directory.
         // Idle channels close immediately; in-flight channels close when I/O finishes.
