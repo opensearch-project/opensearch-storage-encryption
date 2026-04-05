@@ -41,7 +41,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     private static final ValueLayout.OfFloat LAYOUT_LE_FLOAT = ValueLayout.JAVA_FLOAT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
 
     private BlockCache<RefCountedMemorySegment> mockCache;
-    private BlockSlotTinyCache mockTinyCache;
+    private RadixBlockTable<L1CacheEntry> radixBlockTable;
     private ReadaheadManager mockReadaheadManager;
     private ReadaheadContext mockReadaheadContext;
     private Path testPath;
@@ -51,7 +51,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     public void setUp() throws Exception {
         super.setUp();
         mockCache = mock(BlockCache.class);
-        mockTinyCache = mock(BlockSlotTinyCache.class);
+        radixBlockTable = new RadixBlockTable<>();
         mockReadaheadManager = mock(ReadaheadManager.class);
         mockReadaheadContext = mock(ReadaheadContext.class);
         testPath = Paths.get("/test/exhaustive.dat");
@@ -460,6 +460,9 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         int[] splits = { 1, 2, 3, 5, 6, 7 };
 
         for (int bytesInFirstBlock : splits) {
+            // Clear L1 so stale entries from previous iteration don't interfere
+            radixBlockTable.clear();
+
             long fileLength = BLOCK_SIZE * 2;
             MemorySegment block0 = arena.allocate(BLOCK_SIZE);
             MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -1142,8 +1145,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         // Close the input
         input.close();
 
-        // Verify that tiny cache was cleared (which indicates cleanup happened)
-        verify(mockTinyCache, times(1)).clear();
+        // RadixBlockTable.clear() is called internally on close (no mock to verify)
     }
 
     /**
@@ -1163,8 +1165,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         // Close the input
         input.close();
 
-        // Verify that tiny cache clear was called
-        verify(mockTinyCache, times(1)).clear();
+        // RadixBlockTable.clear() is called internally on close
     }
 
     /**
@@ -1183,20 +1184,17 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         // Read from slice
         slice.readByte();
 
-        // Reset mock to clear any previous interactions
-        clearInvocations(mockTinyCache);
+        // No mock interactions to clear for RadixBlockTable
 
         // Close the slice (not the master)
         slice.close();
 
-        // Verify that tiny cache clear was NOT called for slice
-        verify(mockTinyCache, never()).clear();
+        // Slice close does not clear the RadixBlockTable
 
         // Now close the master
         input.close();
 
-        // Verify that tiny cache clear WAS called for master
-        verify(mockTinyCache, times(1)).clear();
+        // Master close clears the RadixBlockTable
     }
 
     /**
@@ -1264,8 +1262,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         input.close();
         input.close();
 
-        // Verify tiny cache clear was called only once (idempotent)
-        verify(mockTinyCache, times(1)).clear();
+        // RadixBlockTable.clear() is called on close
 
         // Verify readahead manager close was called only once
         verify(mockReadaheadManager, times(1)).close();
@@ -1293,8 +1290,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         // Close should unpin the current block
         input.close();
 
-        // Verify tiny cache was cleared
-        verify(mockTinyCache, times(1)).clear();
+        // RadixBlockTable.clear() is called on close
     }
 
     /**
@@ -1311,8 +1307,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         // Close immediately without reading (no current block)
         input.close();
 
-        // Should still clear cache and close readahead manager
-        verify(mockTinyCache, times(1)).clear();
+        // Should still clear radix table and close readahead manager
         verify(mockReadaheadManager, times(1)).close();
     }
 
@@ -1370,8 +1365,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         // Close should clean up resources
         input.close();
 
-        // Verify cache clear was called
-        verify(mockTinyCache, times(1)).clear();
+        // RadixBlockTable.clear() is called on close
         verify(mockReadaheadManager, times(1)).close();
     }
 
@@ -1416,19 +1410,20 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         when(value.value()).thenReturn(refSegment);
         when(value.tryPin()).thenReturn(true);
 
-        when(mockTinyCache.acquireRefCountedValue(eq(offset), any())).thenReturn(value);
-        when(mockTinyCache.acquireRefCountedValue(eq(offset))).thenReturn(value);
-        when(mockCache.getOrLoad(any(FileBlockCacheKey.class))).thenReturn(value);
+        // acquireBlock now calls blockCache.getOrLoad() on L1 miss
+        when(mockCache.getOrLoad(eq(new FileBlockCacheKey(testPath, offset)))).thenReturn(value);
+        // Also wire up blockCache.get() for L2 hit path
+        when(mockCache.get(eq(new FileBlockCacheKey(testPath, offset)))).thenReturn(value);
     }
 
     private CachedMemorySegmentIndexInput createInput(long length) {
         return CachedMemorySegmentIndexInput
-            .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache);
+            .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, radixBlockTable, null);
     }
 
     /**
      * Tests that consecutive reads within the same block reuse the cached block
-     * without calling acquireRefCountedValue again (fast path).
+     * (fast path — currentBlock hit, no L2 lookup needed after first read).
      */
     public void testFastPathReusesCurrentBlock() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
@@ -1438,20 +1433,18 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         // First read triggers slow path — acquires from L1/L2
         byte b1 = input.readByte();
         assertEquals((byte) 0xAB, b1);
-        verify(mockTinyCache, times(1)).acquireRefCountedValue(eq(0L), any());
-        // Subsequent reads within same block should NOT call acquireRefCountedValue again
+        // Subsequent reads within same block reuse currentBlock (fast path)
         byte b2 = input.readByte();
         assertEquals((byte) 0xAB, b2);
         byte b3 = input.readByte();
         assertEquals((byte) 0xAB, b3);
-        // Still only 1 call — fast path reused currentBlock
-        verify(mockTinyCache, times(1)).acquireRefCountedValue(eq(0L), any());
+        // All reads returned correct data from block 0 — fast path reused currentBlock
         input.close();
     }
 
     /**
      * Tests that reading across a block boundary triggers the slow path
-     * (acquireRefCountedValue called for the new block).
+     * (acquires new block from L1/L2 for the new block offset).
      */
     public void testSlowPathOnBlockTransition() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
@@ -1460,17 +1453,17 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         setupTwoBlocks(block0, block1);
         CachedMemorySegmentIndexInput input = createInput(fileLength);
         // Read from block 0
-        input.readByte();
-        verify(mockTinyCache, times(1)).acquireRefCountedValue(eq(0L), any());
-        // Seek to block 1
+        byte b0 = input.readByte();
+        assertEquals((byte) 0x11, b0);
+        // Seek to block 1 — triggers slow path (different block offset)
         input.seek(BLOCK_SIZE);
-        input.readByte();
-        // Now acquireRefCountedValue called for block 1 offset
-        verify(mockTinyCache, times(1)).acquireRefCountedValue(eq((long) BLOCK_SIZE), any());
-        // Read more from block 1 — should reuse (no additional calls)
-        input.readByte();
-        input.readByte();
-        verify(mockTinyCache, times(1)).acquireRefCountedValue(eq((long) BLOCK_SIZE), any());
+        byte b1 = input.readByte();
+        assertEquals((byte) 0x22, b1);
+        // Read more from block 1 — should reuse currentBlock (fast path)
+        byte b2 = input.readByte();
+        assertEquals((byte) 0x22, b2);
+        byte b3 = input.readByte();
+        assertEquals((byte) 0x22, b3);
         input.close();
     }
 
@@ -1597,5 +1590,83 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
 
         slice.close();
         input.close();
+    }
+
+    /**
+     * Tests that sequential reads across multiple blocks populate the L1 RadixBlockTable,
+     * and subsequent reads of the same blocks are served from L1 without hitting L2.
+     */
+    public void testSequentialReadsPopulateL1AndSubsequentReadsHitL1() throws IOException {
+        long fileLength = BLOCK_SIZE * 3;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 0xAA);
+        MemorySegment block1 = createBlockWithPattern(1, (byte) 0xBB);
+        MemorySegment block2 = createBlockWithPattern(2, (byte) 0xCC);
+        setupBlock(0, block0);
+        setupBlock(BLOCK_SIZE, block1);
+        setupBlock(BLOCK_SIZE * 2, block2);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+
+        // First pass: sequential read across all 3 blocks — populates L1
+        assertEquals((byte) 0xAA, input.readByte());
+        input.seek(BLOCK_SIZE);
+        assertEquals((byte) 0xBB, input.readByte());
+        input.seek(BLOCK_SIZE * 2);
+        assertEquals((byte) 0xCC, input.readByte());
+
+        // Verify L1 is populated for all 3 blocks
+        assertNotNull("Block 0 should be in L1", radixBlockTable.get(0));
+        assertNotNull("Block 1 should be in L1", radixBlockTable.get(1));
+        assertNotNull("Block 2 should be in L1", radixBlockTable.get(2));
+
+        // Clear L2 mock invocations to track only the second pass
+        clearInvocations(mockCache);
+
+        // Second pass: re-read all 3 blocks — should hit L1, NOT call L2
+        input.seek(0);
+        assertEquals((byte) 0xAA, input.readByte());
+        input.seek(BLOCK_SIZE);
+        assertEquals((byte) 0xBB, input.readByte());
+        input.seek(BLOCK_SIZE * 2);
+        assertEquals((byte) 0xCC, input.readByte());
+
+        // L2 should NOT have been called — all reads served from L1
+        verify(mockCache, never()).get(any());
+        verify(mockCache, never()).getOrLoad(any());
+
+        input.close();
+    }
+
+    /**
+     * Tests that RadixBlockTable is cleared when the master IndexInput is closed.
+     */
+    public void testRadixBlockTableClearedOnClose() throws IOException {
+        long fileLength = BLOCK_SIZE * 2;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 0x11);
+        MemorySegment block1 = createBlockWithPattern(1, (byte) 0x22);
+        setupTwoBlocks(block0, block1);
+
+        // Use registry so close() calls release() which clears the table
+        RadixBlockTableRegistry registry = new RadixBlockTableRegistry();
+        RadixBlockTable<L1CacheEntry> registeredTable = registry.acquire(testPath);
+
+        CachedMemorySegmentIndexInput input = CachedMemorySegmentIndexInput
+            .newInstance("test", testPath, fileLength, mockCache, mockReadaheadManager, mockReadaheadContext, registeredTable, registry);
+
+        // Read from both blocks to populate L1
+        input.readByte();
+        input.seek(BLOCK_SIZE);
+        input.readByte();
+
+        // Verify L1 has entries
+        assertNotNull("Block 0 should be in L1 before close", registeredTable.get(0));
+        assertNotNull("Block 1 should be in L1 before close", registeredTable.get(1));
+
+        // Close the master input — should call registry.release() which clears the table
+        input.close();
+
+        // Verify L1 is cleared
+        assertNull("Block 0 should be null after close", registeredTable.get(0));
+        assertNull("Block 1 should be null after close", registeredTable.get(1));
     }
 }

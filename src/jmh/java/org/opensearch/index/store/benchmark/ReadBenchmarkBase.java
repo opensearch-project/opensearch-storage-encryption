@@ -31,6 +31,7 @@ import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
+import org.opensearch.index.store.bufferpoolfs.RadixBlockTableRegistry;
 import org.opensearch.index.store.bufferpoolfs.StaticConfigs;
 import org.opensearch.index.store.bufferpoolfs.TestKeyResolver;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
@@ -176,7 +177,8 @@ public class ReadBenchmarkBase {
             loader,
             worker,
             encMetaCache,
-            poolResources.getFileChannelCache()
+            poolResources.getFileChannelCache(),
+            new RadixBlockTableRegistry()
         );
 
         // Write test files through bufferpool write path

@@ -11,6 +11,7 @@ import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -41,6 +42,13 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     private final BlockLoader<V> blockLoader;
 
     /**
+     * Shared reference to the eviction listener, set by {@link #setEvictionListener}.
+     * Read by the Caffeine removal listener (lambda in BlockCacheBuilder) to notify
+     * L1 caches when blocks are evicted.
+     */
+    private final AtomicReference<EvictionListener> evictionListenerRef;
+
+    /**
      * Constructs a new CaffeineBlockCache with the specified cache and block loader.
      *
      * @param cache the underlying Caffeine cache instance
@@ -48,8 +56,31 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      * @param maxBlocks the maximum number of blocks to cache (currently unused but kept for API compatibility)
      */
     public CaffeineBlockCache(Cache<BlockCacheKey, BlockCacheValue<T>> cache, BlockLoader<V> blockLoader, long maxBlocks) {
+        this(cache, blockLoader, maxBlocks, new AtomicReference<>());
+    }
+
+    /**
+     * Constructs a new CaffeineBlockCache with eviction listener support.
+     *
+     * @param cache the underlying Caffeine cache instance
+     * @param blockLoader the loader used to load blocks when cache misses occur
+     * @param maxBlocks the maximum number of blocks to cache
+     * @param evictionListenerRef shared reference read by the Caffeine removal listener
+     */
+    public CaffeineBlockCache(
+        Cache<BlockCacheKey, BlockCacheValue<T>> cache,
+        BlockLoader<V> blockLoader,
+        long maxBlocks,
+        AtomicReference<EvictionListener> evictionListenerRef
+    ) {
         this.blockLoader = blockLoader;
         this.cache = cache;
+        this.evictionListenerRef = evictionListenerRef;
+    }
+
+    @Override
+    public void setEvictionListener(EvictionListener listener) {
+        evictionListenerRef.set(listener);
     }
 
     @Override

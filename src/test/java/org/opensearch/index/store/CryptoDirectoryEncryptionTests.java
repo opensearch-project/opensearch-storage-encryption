@@ -42,6 +42,7 @@ import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
+import org.opensearch.index.store.bufferpoolfs.RadixBlockTableRegistry;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.key.DefaultKeyResolver;
 import org.opensearch.index.store.key.KeyResolver;
@@ -497,7 +498,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 blockLoaderA,
                 readAheadWorkerA,
                 encryptionMetadataCache,
-                fileChannelCache
+                fileChannelCache,
+                new RadixBlockTableRegistry()
             )
         ) {
             // Write data
@@ -577,7 +579,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 blockLoaderA,
                 readAheadWorkerA,
                 encryptionMetadataCache,
-                fileChannelCache
+                fileChannelCache,
+                new RadixBlockTableRegistry()
             )
         ) {
             // Write data
@@ -656,7 +659,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 blockLoaderA,
                 readAheadWorkerA,
                 encryptionMetadataCache,
-                fileChannelCache
+                fileChannelCache,
+                new RadixBlockTableRegistry()
             )
         ) {
             // Write data
@@ -736,7 +740,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 blockLoaderA,
                 readAheadWorkerA,
                 encryptionMetadataCache,
-                fileChannelCache
+                fileChannelCache,
+                new RadixBlockTableRegistry()
             )
         ) {
             // Write data

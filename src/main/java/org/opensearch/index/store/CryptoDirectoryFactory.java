@@ -38,6 +38,7 @@ import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.block_loader.FileChannelCache;
 import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
+import org.opensearch.index.store.bufferpoolfs.RadixBlockTableRegistry;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.cipher.EncryptionMetadataCacheRegistry;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
@@ -92,6 +93,12 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * This prevents resource allocation on dedicated master nodes which never create shards.
      */
     private static volatile PoolBuilder.PoolResources poolResources;
+
+    /**
+     * Shared node-level RadixBlockTable registry for L1 cache lifecycle management.
+     * One registry serves all directories — the ConcurrentHashMap keys by file path.
+     */
+    private static volatile RadixBlockTableRegistry sharedRadixBlockTableRegistry;
 
     /**
      * Node settings used for lazy pool initialization.
@@ -519,6 +526,18 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             resources.getMaxCacheBlocks()
         );
 
+        // Initialize shared RadixBlockTableRegistry once and wire eviction listener
+        // to the shared Caffeine cache. All directories share one registry because
+        // the ConcurrentHashMap keys by absolute file path — no conflicts across directories.
+        if (sharedRadixBlockTableRegistry == null) {
+            synchronized (CryptoDirectoryFactory.class) {
+                if (sharedRadixBlockTableRegistry == null) {
+                    sharedRadixBlockTableRegistry = new RadixBlockTableRegistry();
+                    sharedCaffeineCache.setEvictionListener(sharedRadixBlockTableRegistry::onEviction);
+                }
+            }
+        }
+
         // Use the shared node-wide read-ahead worker
         // All shards/directories share a single queue and executor pool for better resource utilization
         Worker readaheadWorker = resources.getSharedReadaheadWorker();
@@ -533,7 +552,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             loader,
             readaheadWorker,
             encryptionMetadataCache,
-            resources.getFileChannelCache()
+            resources.getFileChannelCache(),
+            sharedRadixBlockTableRegistry
         );
     }
 

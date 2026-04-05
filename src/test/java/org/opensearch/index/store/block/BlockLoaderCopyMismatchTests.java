@@ -31,6 +31,7 @@ import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
+import org.opensearch.index.store.bufferpoolfs.RadixBlockTableRegistry;
 import org.opensearch.index.store.bufferpoolfs.TestKeyResolver;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.cipher.EncryptionMetadataCacheRegistry;
@@ -125,7 +126,8 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
             loader,
             worker,
             encryptionMetadataCache,
-            poolResources.getFileChannelCache()
+            poolResources.getFileChannelCache(),
+            new RadixBlockTableRegistry()
         );
     }
 

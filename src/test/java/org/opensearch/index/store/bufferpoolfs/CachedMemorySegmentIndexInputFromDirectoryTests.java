@@ -143,7 +143,8 @@ public class CachedMemorySegmentIndexInputFromDirectoryTests extends BaseIndexIn
             loader,
             worker,
             encryptionMetadataCache,
-            poolResources.getFileChannelCache()
+            poolResources.getFileChannelCache(),
+            new RadixBlockTableRegistry()
         );
     }
 
