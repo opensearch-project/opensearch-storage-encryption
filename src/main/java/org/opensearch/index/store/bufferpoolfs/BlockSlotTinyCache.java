@@ -191,30 +191,34 @@ public class BlockSlotTinyCache {
             // 1) Prefer hit
             BlockCacheValue<RefCountedMemorySegment> v = cache.get(key);
             if (v != null) {
-                final int expectedGen = v.value().getGeneration();
                 if (v.tryPin()) {
-                    if (v.value().getGeneration() == expectedGen) {
-                        publishToL1(slotIdx, blockIdx, v, expectedGen);
+                    // After pinning, verify the cache still owns this value.
+                    // This closes the TOCTOU window: if the segment was evicted and recycled
+                    // between cache.get() and tryPin(), the cache will no longer map this key
+                    // to the same object.
+                    if (cache.get(key) == v) {
+                        final int gen = v.value().getGeneration();
+                        publishToL1(slotIdx, blockIdx, v, gen);
                         if (hitHolder != null)
                             hitHolder.setWasCacheHit(true);
                         return v;
                     }
-                    v.unpin(); // pinned recycled object; treat as miss
+                    v.unpin(); // pinned a stale/recycled object; treat as miss
                 }
             }
 
             // 2) Load path (deduped by caffeine get())
+            // getOrLoad atomically loads and inserts into cache (Caffeine's get-with-loader
+            // holds a per-key lock). The returned value is guaranteed to be the current
+            // mapping at the time of return. Pin prevents recycling, so data is safe.
             BlockCacheValue<RefCountedMemorySegment> loaded = cache.getOrLoad(key);
             if (loaded != null) {
-                final int expectedGen = loaded.value().getGeneration();
                 if (loaded.tryPin()) {
-                    if (loaded.value().getGeneration() == expectedGen) {
-                        publishToL1(slotIdx, blockIdx, loaded, expectedGen);
-                        if (hitHolder != null)
-                            hitHolder.setWasCacheHit(false);
-                        return loaded;
-                    }
-                    loaded.unpin();
+                    final int gen = loaded.value().getGeneration();
+                    publishToL1(slotIdx, blockIdx, loaded, gen);
+                    if (hitHolder != null)
+                        hitHolder.setWasCacheHit(false);
+                    return loaded;
                 }
             }
 
