@@ -51,7 +51,9 @@ public class BlockSlotTinyCacheIntegrationTests extends OpenSearchTestCase {
         testPath = Paths.get("/test/file.dat");
 
         // Create a simulated cache with pool and eviction
-        simulatedCache = new SimulatedBlockCache(arena, 10); // Pool of 10 segments
+        // Pool size must accommodate all concurrent block accesses (4 threads × 5 blocks = 20)
+        // plus headroom to avoid thrashing evictions during post-pin verification
+        simulatedCache = new SimulatedBlockCache(arena, 30); // Pool of 30 segments
 
         // Create tiny cache on top of simulated cache
         tinyCache = new BlockSlotTinyCache(simulatedCache, testPath, FILE_SIZE);
