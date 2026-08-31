@@ -70,10 +70,6 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
     @Override
     public IndexInput openInput(String name, IOContext context) throws IOException {
         try {
-            if (name.contains("segments_") || name.endsWith(".si")) {
-                return super.openInput(name, context);
-            }
-
             ensureOpen();
             ensureCanRead(name);
             Path path = getDirectory().resolve(name);
@@ -105,10 +101,6 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
     @Override
     public IndexOutput createOutput(String name, IOContext context) throws IOException {
         try {
-            if (name.contains("segments_") || name.endsWith(".si")) {
-                return super.createOutput(name, context);
-            }
-
             ensureOpen();
             Path path = directory.resolve(name);
 
@@ -132,10 +124,6 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
 
     @Override
     public IndexOutput createTempOutput(String prefix, String suffix, IOContext context) throws IOException {
-        if (prefix.contains("segments_") || prefix.endsWith(".si")) {
-            return super.createTempOutput(prefix, suffix, context);
-        }
-
         ensureOpen();
         String name = getTempFileName(prefix, suffix, nextTempFileCounter.getAndIncrement());
         Path path = directory.resolve(name);
@@ -155,10 +143,6 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
 
     @Override
     public long fileLength(String name) throws IOException {
-        if (name.contains("segments_") || name.endsWith(".si")) {
-            return super.fileLength(name);
-        }
-
         Path path = dirPath.resolve(name);
         long fileSize = super.fileLength(name);
 

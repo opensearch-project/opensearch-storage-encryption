@@ -249,6 +249,37 @@ public class HybridCryptoDirectoryTests {
     }
 
     @Test
+    public void testOpenInputRoutesToNIOWithEncryptionForSiFiles() throws Exception {
+        // .si is in nioExtensions → routes to NIO (CryptoNIOFSDirectory)
+        // With bypass removed, NIO path now encrypts .si files
+        HybridCryptoDirectory hybridDir = new HybridCryptoDirectory(
+            lockFactory,
+            bufferPoolDirectory,
+            provider,
+            keyResolver,
+            encryptionMetadataCache,
+            nioExtensions
+        );
+
+        try {
+            // Write a .si file through the encrypted NIO path
+            IndexOutput output = hybridDir.createOutput("test.si", IOContext.DEFAULT);
+            output.writeByte((byte) 42);
+            output.close();
+
+            // Read it back — should go through encrypted NIO, not buffer pool
+            IndexInput input = hybridDir.openInput("test.si", IOContext.DEFAULT);
+            assertNotNull(input);
+            assertEquals((byte) 42, input.readByte());
+            input.close();
+
+            verify(bufferPoolDirectory, never()).openInput(eq("test.si"), any(IOContext.class));
+        } finally {
+            hybridDir.close();
+        }
+    }
+
+    @Test
     public void testUnknownExtensionRoutesToDirectIO() throws Exception {
         try (
             HybridCryptoDirectory hybridDir = new HybridCryptoDirectory(
