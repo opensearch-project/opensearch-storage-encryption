@@ -22,18 +22,15 @@ import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.key.KeyResolver;
 
 /**
- * A FileChannel wrapper that provides transparent AES-GCM encryption/decryption
- * for translog files using 8KB authenticated chunks.
+ * A FileChannel wrapper that provides transparent AES-CTR encryption/decryption
+ * for translog files.
  *
  * This implementation delegates chunking logic to TranslogChunkManager while
  * handling FileChannel lifecycle and position tracking.
  *
  * File Format:
  * [TranslogHeader - Unencrypted]
- * [Chunk 0: ≤8KB encrypted + 16B auth tag]
- * [Chunk 1: ≤8KB encrypted + 16B auth tag]
- * ...
- * [Last Chunk: ≤8KB encrypted + 16B auth tag]
+ * [Operations - AES-256-CTR, same length as plaintext, keystream position = file offset]
  *
  * @opensearch.internal
  */
@@ -267,7 +264,7 @@ public class CryptoFileChannelWrapper extends FileChannel {
     protected void implCloseChannel() throws IOException {
         if (!closed) {
             closed = true;
-            chunkManager.close(); // Finalize last block
+            chunkManager.close();
             delegate.close();
         }
     }

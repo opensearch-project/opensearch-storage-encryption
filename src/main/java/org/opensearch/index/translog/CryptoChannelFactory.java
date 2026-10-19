@@ -16,10 +16,10 @@ import org.opensearch.index.store.key.KeyResolver;
 
 /**
  * A ChannelFactory implementation that creates FileChannels with transparent
- * AES-GCM encryption/decryption for translog files.
+ * AES-CTR encryption/decryption for translog files.
  *
  * This factory determines whether to apply encryption based on the file extension:
- * - .tlog files: Encrypted using AES-GCM with 8KB authenticated chunks
+ * - .tlog files: Encrypted using AES-256-CTR keyed by file offset (see TranslogChunkManager)
  * - .ckp files: Not encrypted (checkpoint metadata)
  *
  * Updated to use unified KeyResolver (same as index files) for consistent

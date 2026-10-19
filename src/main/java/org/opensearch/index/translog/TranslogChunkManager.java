@@ -4,108 +4,79 @@
  */
 package org.opensearch.index.translog;
 
-import static org.opensearch.index.store.cipher.AesCipherFactory.computeOffsetIVForAesGcmEncrypted;
-
 import java.io.IOException;
-import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
-import java.nio.channels.NonReadableChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.security.Key;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
+import java.util.Arrays;
+
+import javax.crypto.Cipher;
+import javax.crypto.spec.IvParameterSpec;
 
 import org.apache.lucene.codecs.CodecUtil;
 import org.opensearch.common.SuppressForbidden;
-import org.opensearch.index.store.cipher.AesGcmCipherFactory;
-import org.opensearch.index.store.cipher.OpenSslNativeCipher;
 import org.opensearch.index.store.key.HkdfKeyDerivation;
 import org.opensearch.index.store.key.KeyResolver;
 
 /**
- * Manages 8KB encrypted chunks for translog files using AES-GCM authentication.
- * Handles chunk positioning, encryption, decryption, and I/O operations.
+ * Encrypts translog ({@code .tlog}) files with AES-256-CTR keyed by file offset.
  *
- * This class separates chunking logic from FileChannel delegation, making the code
- * more maintainable and testable.
+ * <p>The {@link TranslogHeader} stays plaintext. Every byte after it, at file offset {@code p}, is
+ * XORed with the keystream for counter block {@code (p - headerSize) / 16} under a 64-bit nonce that
+ * is unique to this file (derived from the shard key, the translog UUID and the file name, so every
+ * translog generation gets its own nonce). Ciphertext is the same length as plaintext, so the logical
+ * offsets OpenSearch uses are the physical offsets, and any byte range decrypts independently: bytes
+ * appended a moment ago (realtime get during live indexing) and the tail of a file whose writer died
+ * without closing it (translog replay, peer recovery) are always readable.
+ *
+ * <p>This replaces an AES-GCM 8KB-chunk format that wrote each chunk's authentication tag only when
+ * the chunk filled or the channel closed, so reading the still-open chunk always failed
+ * authentication, and that used one GCM nonce for every chunk of a translog.
+ *
+ * <p>Invariant: an offset of a given file is only ever written with the same plaintext (translog
+ * files are append-only). Rewriting an offset with different bytes would reuse keystream.
+ * Integrity is not cryptographically enforced; corruption is detected by the translog's per-operation
+ * checksums.
  *
  * @opensearch.internal
  */
-@SuppressForbidden(reason = "Channel operations required for chunk-based encryption")
-@SuppressWarnings("preview")
+@SuppressForbidden(reason = "Channel operations required for translog encryption")
 public class TranslogChunkManager {
 
-    // GCM chunk constants
-    /** Size of each data chunk in bytes (8KB). */
-    public static final int GCM_CHUNK_SIZE = 8192;
+    private static final String TRANSFORMATION = "AES/CTR/NoPadding";
+    private static final int AES_BLOCK_SIZE = 16;
+    private static final int NONCE_SIZE = 8;
+    private static final String NONCE_CONTEXT = "translog-ctr-nonce-v1";
+    private static final int TRANSFER_BUFFER_SIZE = 8192;
 
-    /** Size of GCM authentication tag in bytes (16 bytes). */
-    public static final int GCM_TAG_SIZE = AesGcmCipherFactory.GCM_TAG_LENGTH;
-
-    /** Total size of chunk plus authentication tag in bytes (8208 bytes maximum). */
-    public static final int CHUNK_WITH_TAG_SIZE = GCM_CHUNK_SIZE + GCM_TAG_SIZE;
-
-    // Thread-local buffer pool for reducing allocations
-    private static final ThreadLocal<ByteBuffer> CHUNK_BUFFER_POOL = ThreadLocal
-        .withInitial(() -> ByteBuffer.allocate(CHUNK_WITH_TAG_SIZE));
-    private static final ThreadLocal<ByteBuffer> TRANSFER_BUFFER_POOL = ThreadLocal.withInitial(() -> ByteBuffer.allocate(GCM_CHUNK_SIZE));
-    private static final ThreadLocal<byte[]> TEMP_ARRAY_POOL = ThreadLocal.withInitial(() -> new byte[GCM_CHUNK_SIZE]);
+    private static final ThreadLocal<Cipher> CIPHER = ThreadLocal.withInitial(() -> {
+        try {
+            return Cipher.getInstance(TRANSFORMATION);
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("AES/CTR is unavailable", e);
+        }
+    });
+    private static final ThreadLocal<ByteBuffer> TRANSFER_BUFFER_POOL = ThreadLocal
+        .withInitial(() -> ByteBuffer.allocate(TRANSFER_BUFFER_SIZE));
 
     private final FileChannel delegate;
     private final KeyResolver keyResolver;
     private final Path filePath;
-    private final String translogUUID;
-
-    // Header size - calculated exactly using TranslogHeader.headerSizeInBytes()
     private final int actualHeaderSize;
-
-    // Base IV derived using HKDF for deterministic translog encryption
-    private final byte[] baseIV;
-
-    // Streaming cipher state for write operations
-    private MemorySegment currentCipher;
-    private long currentBlockNumber = 0;
-    private int currentBlockBytesWritten = 0;
-    private static final int BLOCK_SIZE_SHIFT = 13;
-    private static final int BLOCK_SIZE = 1 << BLOCK_SIZE_SHIFT; // 8KB blocks
-    private long fileWritePosition = 0;
+    private final byte[] nonce;
 
     /**
-     * Helper class for chunk position mapping
-     */
-    public static class ChunkInfo {
-        /** The chunk index (0, 1, 2, ...). */
-        public final int chunkIndex;
-
-        /** The byte position within the 8KB chunk. */
-        public final int offsetInChunk;
-
-        /** The actual file position where the chunk starts on disk. */
-        public final long diskPosition;
-
-        /**
-         * Constructs a new ChunkInfo with the specified chunk coordinates.
-         *
-         * @param chunkIndex the chunk index (0, 1, 2, ...)
-         * @param offsetInChunk the byte position within the 8KB chunk
-         * @param diskPosition the actual file position where the chunk starts on disk
-         */
-        public ChunkInfo(int chunkIndex, int offsetInChunk, long diskPosition) {
-            this.chunkIndex = chunkIndex;
-            this.offsetInChunk = offsetInChunk;
-            this.diskPosition = diskPosition;
-        }
-    }
-
-    /**
-     * Creates a new TranslogChunkManager for managing encrypted chunks.
+     * Creates a new TranslogChunkManager.
      *
      * @param delegate the underlying FileChannel for actual I/O operations
      * @param keyResolver the key resolver for encryption operations
-     * @param filePath the file path (used for logging and debugging)
-     * @param translogUUID the translog UUID for exact header size calculation
+     * @param filePath the translog file path; its name scopes the per-file nonce
+     * @param translogUUID the translog UUID, for the header size and the per-file nonce
      */
     public TranslogChunkManager(FileChannel delegate, KeyResolver keyResolver, Path filePath, String translogUUID) {
         if (translogUUID == null) {
@@ -114,19 +85,36 @@ public class TranslogChunkManager {
         this.delegate = delegate;
         this.keyResolver = keyResolver;
         this.filePath = filePath;
-        this.translogUUID = translogUUID;
-        // Non-translog files (.ckp) don't need encryption anyway
-        this.actualHeaderSize = filePath.getFileName().toString().endsWith(".tlog") ? calculateTranslogHeaderSize(translogUUID) : 0;
-
-        // Derive base IV using HKDF instead of random IV from KeyResolver
-        this.baseIV = HkdfKeyDerivation.deriveTranslogBaseIV(keyResolver.getDataKey().getEncoded(), translogUUID);
+        String fileName = filePath.getFileName().toString();
+        this.actualHeaderSize = fileName.endsWith(".tlog") ? calculateTranslogHeaderSize(translogUUID) : 0;
+        this.nonce = deriveFileNonce(keyResolver.getDataKey().getEncoded(), translogUUID, fileName);
     }
 
     /**
-     * Determines the exact header size using local calculation to avoid cross-classloader access.
-     * This replicates the exact same logic as TranslogHeader.headerSizeInBytes() method.
+     * Derives this file's 64-bit CTR nonce from the shard key, the translog UUID and the file name.
      *
-     * @return the calculated header size in bytes
+     * @param key the shard data key
+     * @param translogUUID the translog UUID
+     * @param fileName the translog file name (encodes the generation)
+     * @return the 8-byte nonce
+     */
+    static byte[] deriveFileNonce(byte[] key, String translogUUID, String fileName) {
+        try {
+            MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
+            sha256.update(translogUUID.getBytes(StandardCharsets.UTF_8));
+            sha256.update((byte) 0);
+            sha256.update(fileName.getBytes(StandardCharsets.UTF_8));
+            byte[] fileId = Arrays.copyOf(sha256.digest(), 16);
+            return HkdfKeyDerivation.deriveKey(key, fileId, NONCE_CONTEXT, NONCE_SIZE);
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("Failed to derive translog nonce", e);
+        }
+    }
+
+    /**
+     * Returns the size of the plaintext translog header.
+     *
+     * @return the header size in bytes
      */
     public int determineHeaderSize() {
         return actualHeaderSize;
@@ -134,252 +122,117 @@ public class TranslogChunkManager {
 
     /**
      * Local implementation of TranslogHeader.headerSizeInBytes() to avoid cross-classloader access issues.
-     * This replicates the exact same calculation as the original method.
      *
      * @param translogUUID the translog UUID used for calculating the UUID field size in the header
-     * @return the calculated header size in bytes including codec header, UUID field, and version-specific fields
+     * @return the header size in bytes including codec header, UUID field, and version-specific fields
      */
     private static int calculateTranslogHeaderSize(String translogUUID) {
         int uuidLength = translogUUID.getBytes(StandardCharsets.UTF_8).length;
-
-        // Calculate header size using official TranslogHeader constants
         int size = CodecUtil.headerLength(TranslogHeader.TRANSLOG_CODEC); // Lucene codec header
         size += Integer.BYTES + uuidLength; // uuid length field + uuid bytes
-
         if (TranslogHeader.CURRENT_VERSION >= TranslogHeader.VERSION_PRIMARY_TERM) {
             size += Long.BYTES;    // primary term
             size += Integer.BYTES; // checksum
         }
-
         return size;
     }
 
-    /**
-     * Maps a file position to chunk information including chunk index and offset within chunk.
-     *
-     * @param filePosition the logical file position to map to chunk coordinates
-     * @return chunk information containing index, offset, and disk position
-     */
-    public ChunkInfo getChunkInfo(long filePosition) {
-        long dataPosition = filePosition - determineHeaderSize();
-        int chunkIndex = (int) (dataPosition / GCM_CHUNK_SIZE);
-        int offsetInChunk = (int) (dataPosition % GCM_CHUNK_SIZE);
-        long diskPosition = determineHeaderSize() + ((long) chunkIndex * CHUNK_WITH_TAG_SIZE);
-        return new ChunkInfo(chunkIndex, offsetInChunk, diskPosition);
-    }
-
-    /**
-     * Checks if we can read a chunk at the given disk position.
-     * Returns false for write-only channels or if chunk doesn't exist.
-     *
-     * @param diskPosition the disk position where the chunk should be located
-     * @return true if the chunk exists and can be read, false otherwise
-     */
-    public boolean canReadChunk(long diskPosition) {
-        try {
-            // Check if position is beyond current file size (new chunk)
-            if (diskPosition >= delegate.size()) {
-                return false;
-            }
-
-            // Test if channel is readable by attempting a zero-byte read
-            ByteBuffer testBuffer = ByteBuffer.allocate(0);
-            delegate.read(testBuffer, diskPosition);
-            return true;
-
-        } catch (NonReadableChannelException | IOException e) {
-            // Channel is write-only
-            return false;
+    /** XORs {@code len} bytes of {@code data} in place with the keystream for file offset {@code filePosition}. */
+    private void applyKeystream(byte[] data, int off, int len, long filePosition) throws IOException {
+        long dataOffset = filePosition - actualHeaderSize;
+        byte[] iv = new byte[AES_BLOCK_SIZE];
+        System.arraycopy(nonce, 0, iv, 0, NONCE_SIZE);
+        long counter = dataOffset / AES_BLOCK_SIZE;
+        for (int i = 0; i < Long.BYTES; i++) {
+            iv[AES_BLOCK_SIZE - 1 - i] = (byte) (counter >>> (8 * i));
         }
-        // Other read errors - assume can't read
-
-    }
-
-    /**
-     * Reads and decrypts a complete chunk from disk.
-     * Returns empty array if chunk doesn't exist or channel is write-only.
-     *
-     * @param chunkIndex the index of the chunk to read and decrypt
-     * @return the decrypted chunk data, or empty array if chunk doesn't exist
-     * @throws IOException if reading or decryption fails
-     */
-    public byte[] readAndDecryptChunk(int chunkIndex) throws IOException {
+        int skip = (int) (dataOffset % AES_BLOCK_SIZE);
         try {
-            // Calculate disk position for this chunk
-            long diskPosition = determineHeaderSize() + ((long) chunkIndex * CHUNK_WITH_TAG_SIZE);
-
-            // Check if position is beyond current file size (new chunk)
-            if (diskPosition >= delegate.size()) {
-                return new byte[0];
+            Cipher cipher = CIPHER.get();
+            cipher.init(Cipher.ENCRYPT_MODE, keyResolver.getDataKey(), new IvParameterSpec(iv));
+            if (skip > 0) {
+                cipher.update(new byte[skip]); // advance into the first counter block
             }
-
-            // Read encrypted chunk + tag from disk using pooled buffer
-            ByteBuffer buffer = CHUNK_BUFFER_POOL.get();
-            buffer.clear();
-            int bytesRead = delegate.read(buffer, diskPosition);
-
-            if (bytesRead <= GCM_TAG_SIZE) {
-                return new byte[0]; // Empty or invalid chunk
+            int processed = cipher.update(data, off, len, data, off);
+            if (processed != len) {
+                throw new IOException("AES/CTR processed " + processed + " of " + len + " bytes for file:" + filePath);
             }
-
-            // Extract encrypted data with tag
-            byte[] encryptedWithTag = new byte[bytesRead];
-            buffer.flip();
-            buffer.get(encryptedWithTag);
-
-            // Use existing key management
-            Key key = keyResolver.getDataKey();
-
-            long chunkOffset = (long) chunkIndex * GCM_CHUNK_SIZE;
-            byte[] chunkIV = computeOffsetIVForAesGcmEncrypted(baseIV, chunkOffset);
-
-            // Use existing GCM decryption with authentication
-            byte[] decrypted = AesGcmCipherFactory.decryptWithTag(key, chunkIV, encryptedWithTag);
-            return decrypted;
-
-        } catch (NonReadableChannelException e) {
-            // Channel is write-only
-            return new byte[0];
-        } catch (IOException | AesGcmCipherFactory.JavaCryptoException e) {
-            throw new IOException("Failed to decrypt chunk " + chunkIndex, e);
+        } catch (GeneralSecurityException e) {
+            throw new IOException("Failed to apply translog keystream at offset:" + filePosition + " file:" + filePath, e);
         }
     }
 
     /**
-     * Encrypts and writes a complete chunk to disk.
-     *
-     * @param chunkIndex the index of the chunk to encrypt and write
-     * @param plainData the plain data to encrypt and write to the chunk
-     * @throws IOException if encryption or writing fails
-     */
-    public void encryptAndWriteChunk(int chunkIndex, byte[] plainData) throws IOException {
-        try {
-            // Use existing key management
-            Key key = keyResolver.getDataKey();
-
-            long chunkOffset = (long) chunkIndex * GCM_CHUNK_SIZE;
-            byte[] chunkIV = computeOffsetIVForAesGcmEncrypted(baseIV, chunkOffset);
-
-            // Use existing GCM encryption (includes authentication tag)
-            byte[] encryptedWithTag = AesGcmCipherFactory.encryptWithTag(key, chunkIV, plainData, plainData.length);
-
-            // Write to disk at chunk position
-            long diskPosition = determineHeaderSize() + ((long) chunkIndex * CHUNK_WITH_TAG_SIZE);
-            ByteBuffer buffer = ByteBuffer.wrap(encryptedWithTag);
-            delegate.write(buffer, diskPosition);
-
-        } catch (IOException | AesGcmCipherFactory.JavaCryptoException e) {
-            throw new IOException("Failed to encrypt chunk " + chunkIndex + " in file " + filePath, e);
-        }
-    }
-
-    /**
-     * Reads data from encrypted chunks at the specified position.
-     * This method handles chunk boundary crossing and decryption.
+     * Reads and decrypts bytes at {@code position}. Header bytes are returned as stored.
      *
      * @param dst the buffer to read data into
      * @param position the file position to read from
-     * @return the number of bytes read
-     * @throws IOException if reading fails
+     * @return the number of bytes read, or -1 at end of file
+     * @throws IOException if reading or decryption fails
      */
     public int readFromChunks(ByteBuffer dst, long position) throws IOException {
         if (dst.remaining() == 0) {
             return 0;
         }
-
-        int headerSize = determineHeaderSize();
-
-        // Header reads remain unchanged
-        if (position < headerSize) {
-            return delegate.read(dst, position);
+        if (position < actualHeaderSize) {
+            ByteBuffer headerPart = dst.duplicate();
+            headerPart.limit(headerPart.position() + (int) Math.min(dst.remaining(), actualHeaderSize - position));
+            int read = delegate.read(headerPart, position);
+            if (read > 0) {
+                dst.position(dst.position() + read);
+            }
+            return read;
         }
-
-        // Chunk-based reading for encrypted data
-        ChunkInfo chunkInfo = getChunkInfo(position);
-
-        // Read and decrypt the needed chunk
-        byte[] decryptedChunk = readAndDecryptChunk(chunkInfo.chunkIndex);
-
-        // Extract requested data from decrypted chunk
-        int available = Math.max(0, decryptedChunk.length - chunkInfo.offsetInChunk);
-        int toRead = Math.min(dst.remaining(), available);
-
-        if (toRead > 0) {
-            dst.put(decryptedChunk, chunkInfo.offsetInChunk, toRead);
+        byte[] buf = new byte[dst.remaining()];
+        ByteBuffer in = ByteBuffer.wrap(buf);
+        int total = 0;
+        while (in.hasRemaining()) {
+            int read = delegate.read(in, position + total);
+            if (read <= 0) {
+                break;
+            }
+            total += read;
         }
-
-        return toRead;
+        if (total == 0) {
+            return position >= delegate.size() ? -1 : 0;
+        }
+        applyKeystream(buf, 0, total, position);
+        dst.put(buf, 0, total);
+        return total;
     }
 
     /**
-     * Writes data using streaming cipher with auto block management.
-     * Handles block boundaries by finalizing cipher and writing tag inline.
+     * Encrypts and writes bytes at {@code position}. Header bytes are written as given.
      *
      * @param src the buffer containing data to write
      * @param position the file position to write to
      * @return the number of bytes written
-     * @throws IOException if writing fails
+     * @throws IOException if encryption or writing fails
      */
     public int writeToChunks(ByteBuffer src, long position) throws IOException {
         if (src.remaining() == 0) {
             return 0;
         }
-
-        int headerSize = determineHeaderSize();
-
-        // Header writes remain unchanged
-        if (position < headerSize) {
-            return delegate.write(src, position);
+        if (position < actualHeaderSize) {
+            ByteBuffer headerPart = src.duplicate();
+            headerPart.limit(headerPart.position() + (int) Math.min(src.remaining(), actualHeaderSize - position));
+            int written = delegate.write(headerPart, position);
+            src.position(src.position() + written);
+            return written;
         }
-
-        if (fileWritePosition == 0) {
-            fileWritePosition = headerSize;
+        byte[] buf = new byte[src.remaining()];
+        src.get(buf);
+        applyKeystream(buf, 0, buf.length, position);
+        ByteBuffer out = ByteBuffer.wrap(buf);
+        int written = 0;
+        while (out.hasRemaining()) {
+            written += delegate.write(out, position + written);
         }
-
-        int totalWritten = 0;
-
-        // Initialize new cipher
-        if (currentCipher == null) {
-            initializeBlockCipher(currentBlockNumber++);
-        }
-
-        while (src.hasRemaining()) {
-            // Finalize cipher when block is full and initialize new cipher
-            if (currentCipher != null && currentBlockBytesWritten >= BLOCK_SIZE) {
-                finalizeCurrentBlock();
-                initializeBlockCipher(currentBlockNumber++);
-            }
-
-            // Write what fits in current block
-            int toWrite = Math.min(src.remaining(), BLOCK_SIZE - currentBlockBytesWritten);
-
-            // Use pooled array to avoid allocation
-            byte[] plainData = TEMP_ARRAY_POOL.get();
-            src.get(plainData, 0, toWrite);
-
-            // Stream encrypt using current cipher (no tag yet)
-            byte[] encrypted;
-            try {
-                encrypted = OpenSslNativeCipher.encryptUpdate(currentCipher, java.util.Arrays.copyOf(plainData, toWrite));
-            } catch (Throwable e) {
-                OpenSslNativeCipher.freeCipherContext(currentCipher);
-                throw new IOException("Failed to encrypt translog data at offset:" + fileWritePosition + " file:" + filePath, e);
-            }
-
-            // Write encrypted data immediately at tracked position
-            int written = delegate.write(ByteBuffer.wrap(encrypted), fileWritePosition);
-            fileWritePosition += written;
-
-            currentBlockBytesWritten += toWrite;
-            totalWritten += toWrite;
-        }
-
-        return totalWritten;
+        return written;
     }
 
     /**
-     * Transfers data from encrypted chunks to a target channel.
-     * This method decrypts data during transfer.
+     * Transfers decrypted bytes from this file to a target channel.
      *
      * @param position the starting position in the source
      * @param count the number of bytes to transfer
@@ -389,36 +242,26 @@ public class TranslogChunkManager {
      */
     public long transferFromChunks(long position, long count, WritableByteChannel target) throws IOException {
         long transferred = 0;
-        long remaining = count;
         ByteBuffer buffer = TRANSFER_BUFFER_POOL.get();
-        buffer.clear();
-
-        while (remaining > 0 && transferred < count) {
+        while (transferred < count) {
             buffer.clear();
-            int toRead = (int) Math.min(buffer.remaining(), remaining);
-            buffer.limit(toRead);
-
+            buffer.limit((int) Math.min(buffer.capacity(), count - transferred));
             int bytesRead = readFromChunks(buffer, position + transferred);
             if (bytesRead <= 0) {
                 break;
             }
-
             buffer.flip();
             int bytesWritten = target.write(buffer);
             transferred += bytesWritten;
-            remaining -= bytesWritten;
-
             if (bytesWritten < bytesRead) {
                 break;
             }
         }
-
         return transferred;
     }
 
     /**
-     * Transfers data from a source channel to encrypted chunks.
-     * This method encrypts data during transfer.
+     * Transfers bytes from a source channel into this file, encrypting them.
      *
      * @param src the source channel to read from
      * @param position the starting position in the target
@@ -428,76 +271,27 @@ public class TranslogChunkManager {
      */
     public long transferToChunks(ReadableByteChannel src, long position, long count) throws IOException {
         long transferred = 0;
-        long remaining = count;
         ByteBuffer buffer = TRANSFER_BUFFER_POOL.get();
-        buffer.clear();
-
-        while (remaining > 0 && transferred < count) {
+        while (transferred < count) {
             buffer.clear();
-            int toRead = (int) Math.min(buffer.remaining(), remaining);
-            buffer.limit(toRead);
-
+            buffer.limit((int) Math.min(buffer.capacity(), count - transferred));
             int bytesRead = src.read(buffer);
             if (bytesRead <= 0) {
                 break;
             }
-
             buffer.flip();
             int bytesWritten = writeToChunks(buffer, position + transferred);
             transferred += bytesWritten;
-            remaining -= bytesWritten;
-
             if (bytesWritten < bytesRead) {
                 break;
             }
         }
-
         return transferred;
     }
 
     /**
-     * Initialize GCM cipher for a new block
+     * No-op: CTR has no per-chunk state to finalize, so every written byte is already durable and
+     * readable. Kept for callers that finalize the channel before upload.
      */
-    private void initializeBlockCipher(long blockNumber) throws IOException {
-        Key key = keyResolver.getDataKey();
-        long offset = blockNumber << BLOCK_SIZE_SHIFT;
-
-        try {
-            this.currentCipher = OpenSslNativeCipher.initGCMCipher(key.getEncoded(), baseIV, offset);
-        } catch (Throwable e) {
-            throw new IOException("Failed to initialize cipher for blockNumber:" + blockNumber + " for file:" + filePath, e);
-        }
-
-        this.currentBlockNumber = blockNumber;
-        this.currentBlockBytesWritten = 0;
-    }
-
-    /**
-     * Finalize current block and write tag inline
-     */
-    private void finalizeCurrentBlock() throws IOException {
-        if (currentCipher == null) {
-            return;
-        }
-        byte[] tag;
-        try {
-            tag = OpenSslNativeCipher.finalizeAndGetTag(currentCipher);
-        } catch (Throwable e) {
-            throw new IOException("Failed to finalize cipher for file:" + filePath, e);
-        } finally {
-            currentCipher = null;
-        }
-        int written = delegate.write(ByteBuffer.wrap(tag), fileWritePosition);
-        fileWritePosition += written;
-    }
-
-    /**
-     * Close and finalize last block
-     */
-    public void close() throws IOException {
-        if (currentCipher != null) {
-            finalizeCurrentBlock();
-            currentCipher = null;
-        }
-    }
+    public void close() {}
 }
