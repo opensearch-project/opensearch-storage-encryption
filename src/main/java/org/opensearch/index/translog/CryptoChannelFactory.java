@@ -12,14 +12,15 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.index.store.key.KeyResolver;
 
 /**
  * A ChannelFactory implementation that creates FileChannels with transparent
- * AES-CTR encryption/decryption for translog files.
+ * AES-GCM encryption/decryption for translog files.
  *
  * This factory determines whether to apply encryption based on the file extension:
- * - .tlog files: Encrypted using AES-256-CTR keyed by file offset (see TranslogChunkManager)
+ * - .tlog files: Encrypted as sealed AES-256-GCM frames (see TranslogChunkManager)
  * - .ckp files: Not encrypted (checkpoint metadata)
  *
  * Updated to use unified KeyResolver (same as index files) for consistent
@@ -59,7 +60,13 @@ public class CryptoChannelFactory implements ChannelFactory {
         }
 
         Set<OpenOption> optionsSet = Set.of(options);
-        CryptoFileChannelWrapper wrapper = new CryptoFileChannelWrapper(baseChannel, keyResolver, path, optionsSet, translogUUID);
+        CryptoFileChannelWrapper wrapper;
+        try {
+            wrapper = new CryptoFileChannelWrapper(baseChannel, keyResolver, path, optionsSet, translogUUID);
+        } catch (IOException | RuntimeException e) {
+            IOUtils.closeWhileHandlingException(baseChannel);
+            throw e;
+        }
 
         // Track wrapper by path for later finalization
         wrappers.put(path, wrapper);

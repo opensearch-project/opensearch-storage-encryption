@@ -14,6 +14,7 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -22,15 +23,16 @@ import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.key.KeyResolver;
 
 /**
- * A FileChannel wrapper that provides transparent AES-CTR encryption/decryption
+ * A FileChannel wrapper that provides transparent AES-GCM encryption/decryption
  * for translog files.
  *
- * This implementation delegates chunking logic to TranslogChunkManager while
- * handling FileChannel lifecycle and position tracking.
+ * This implementation delegates the frame format to TranslogChunkManager while
+ * handling FileChannel lifecycle and position tracking. Positions and sizes are
+ * logical (plaintext) offsets; the on-disk file is larger by the frame overhead.
  *
  * File Format:
  * [TranslogHeader - Unencrypted]
- * [Operations - AES-256-CTR, same length as plaintext, keystream position = file offset]
+ * [Format header][Frames - AES-256-GCM, each sealed with its own tag]
  *
  * @opensearch.internal
  */
@@ -56,10 +58,25 @@ public class CryptoFileChannelWrapper extends FileChannel {
      */
     public CryptoFileChannelWrapper(FileChannel delegate, KeyResolver keyResolver, Path path, Set<OpenOption> options, String translogUUID)
         throws IOException {
+        this(delegate, keyResolver, path, options, translogUUID, TranslogChunkManager.DEFAULT_MAX_FRAME_SIZE);
+    }
+
+    /**
+     * Creates a new CryptoFileChannelWrapper with the given maximum frame size for a new file.
+     */
+    CryptoFileChannelWrapper(
+        FileChannel delegate,
+        KeyResolver keyResolver,
+        Path path,
+        Set<OpenOption> options,
+        String translogUUID,
+        int newFileMaxFrameSize
+    )
+        throws IOException {
         this.delegate = delegate;
         this.filePath = path;
-        this.chunkManager = new TranslogChunkManager(delegate, keyResolver, path, translogUUID);
-        this.position = new AtomicLong(delegate.position());
+        this.chunkManager = new TranslogChunkManager(delegate, keyResolver, path, translogUUID, newFileMaxFrameSize);
+        this.position = new AtomicLong(options.contains(StandardOpenOption.APPEND) ? chunkManager.logicalSize() : 0);
         this.positionLock = new ReentrantReadWriteLock();
     }
 
@@ -194,7 +211,6 @@ public class CryptoFileChannelWrapper extends FileChannel {
     @Override
     public FileChannel position(long newPosition) throws IOException {
         ensureOpen();
-        delegate.position(newPosition);
         position.set(newPosition);
         return this;
     }
@@ -202,13 +218,13 @@ public class CryptoFileChannelWrapper extends FileChannel {
     @Override
     public long size() throws IOException {
         ensureOpen();
-        return delegate.size();
+        return chunkManager.logicalSize();
     }
 
     @Override
     public FileChannel truncate(long size) throws IOException {
         ensureOpen();
-        delegate.truncate(size);
+        chunkManager.truncate(size);
         long currentPosition = position.get();
         if (currentPosition > size) {
             position.set(size);
@@ -277,7 +293,7 @@ public class CryptoFileChannelWrapper extends FileChannel {
 
     /**
      * Gets the TranslogChunkManager for this channel.
-     * This allows access to finalize the cipher before upload.
+     * Frames are sealed as they are written, so there is nothing to finalize before upload.
      *
      * @return the TranslogChunkManager instance
      */
