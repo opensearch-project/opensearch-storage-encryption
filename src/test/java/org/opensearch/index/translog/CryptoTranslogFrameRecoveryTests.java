@@ -5,10 +5,12 @@
 package org.opensearch.index.translog;
 
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.Key;
 import java.util.ArrayList;
 import java.util.List;
@@ -140,6 +142,62 @@ public class CryptoTranslogFrameRecoveryTests extends OpenSearchTestCase {
                 String raw = new String(Files.readAllBytes(file), StandardCharsets.ISO_8859_1);
                 assertFalse("plaintext in " + file.getFileName(), raw.contains(MARKER));
             }
+        }
+    }
+
+    public void testRecoveryAfterTornFrameWritesNewGeneration() throws IOException {
+        List<byte[]> sources = new ArrayList<>();
+        CryptoTranslog translog = openTranslog();
+        try {
+            for (int i = 0; i < 100; i++) {
+                byte[] src = source(i);
+                sources.add(src);
+                translog.add(new Translog.Index("id" + i, i, PRIMARY_TERM, src));
+            }
+            translog.sync();
+            Translog.Location last = null;
+            for (int i = 100; i < 120; i++) {
+                byte[] src = source(i);
+                sources.add(src);
+                last = translog.add(new Translog.Index("id" + i, i, PRIMARY_TERM, src));
+            }
+            // A realtime read writes the buffered ops to the file without a checkpoint, so they lie beyond it.
+            assertOp(translog.readOperation(last), 119, sources.get(119));
+
+            // Crash part way through the last frame: cut its tag off.
+            Path torn = translogDir.resolve(Translog.getFilename(last.generation));
+            long tornSize = Files.size(torn) - randomIntBetween(1, TranslogChunkManager.GCM_TAG_SIZE);
+            try (FileChannel raw = FileChannel.open(torn, StandardOpenOption.WRITE)) {
+                raw.truncate(tornSize);
+            }
+
+            try (CryptoTranslog recovered = openTranslog()) {
+                // Every synced op comes back.
+                List<Translog.Operation> ops = new ArrayList<>();
+                try (Translog.Snapshot snapshot = recovered.newSnapshot()) {
+                    Translog.Operation op;
+                    while ((op = snapshot.next()) != null) {
+                        ops.add(op);
+                    }
+                }
+                assertTrue("recovered " + ops.size() + " ops", ops.size() >= 100);
+                ops.sort((a, b) -> Long.compare(a.seqNo(), b.seqNo()));
+                for (int i = 0; i < ops.size(); i++) {
+                    assertOp(ops.get(i), i, sources.get(i));
+                }
+
+                // New ops go to a new generation; the torn file is never appended to.
+                assertTrue(recovered.currentFileGeneration() > last.generation);
+                for (int i = 200; i < 210; i++) {
+                    byte[] src = source(i);
+                    Translog.Location location = recovered.add(new Translog.Index("id" + i, i, PRIMARY_TERM, src));
+                    assertOp(recovered.readOperation(location), i, src);
+                }
+                recovered.sync();
+                assertEquals(tornSize, Files.size(torn));
+            }
+        } finally {
+            IOUtils.closeWhileHandlingException(translog);
         }
     }
 }

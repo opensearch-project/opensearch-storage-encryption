@@ -22,9 +22,11 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.crypto.spec.SecretKeySpec;
 
+import org.apache.lucene.tests.mockfile.FilterFileChannel;
 import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.test.OpenSearchTestCase;
 
@@ -325,12 +327,72 @@ public class TranslogFrameEncryptionTests extends OpenSearchTestCase {
         }
     }
 
+    public void testAppendAfterTornFrameIsRejected() throws IOException {
+        Written w;
+        try (CryptoFileChannelWrapper writer = open(path, WRITE)) {
+            w = writeSizes(writer, 1000, 1000, 1000);
+        }
+        long frame2 = w.headerSize + FORMAT_HEADER_SIZE + 2L * (FRAME_OVERHEAD + 1000);
+        long tornSize = frame2 + randomIntBetween(1, FRAME_OVERHEAD + 999);
+        try (FileChannel raw = FileChannel.open(path, StandardOpenOption.WRITE)) {
+            raw.truncate(tornSize);
+        }
+        // Reopened for writing: a new frame would get index 2, the index (and nonce) of the torn frame.
+        try (CryptoFileChannelWrapper writer = open(path, WRITE)) {
+            assertEquals(w.headerSize + 2000, writer.size());
+            IOException e = expectThrows(IOException.class, () -> writeFully(writer, randomBytes(100), w.headerSize + 2000));
+            assertTrue(e.getMessage(), e.getMessage().contains("incomplete frame"));
+            assertArrayEquals(w.ops.get(1), readFully(writer, w.offsets.get(1), 1000));
+        }
+        assertEquals("the torn file is not modified", tornSize, Files.size(path));
+    }
+
+    public void testAppendAfterTornFormatHeaderIsRejected() throws IOException {
+        int headerSize;
+        try (FileChannel plain = FileChannel.open(path, WRITE)) {
+            headerSize = writeHeader(plain);
+            plain.write(ByteBuffer.wrap(randomBytes(randomIntBetween(1, FORMAT_HEADER_SIZE - 1))), headerSize);
+        }
+        try (CryptoFileChannelWrapper writer = open(path, WRITE)) {
+            assertEquals(headerSize, writer.size());
+            expectThrows(IOException.class, () -> writeFully(writer, randomBytes(100), headerSize));
+        }
+    }
+
+    public void testFailedFrameWriteBlocksLaterWrites() throws IOException {
+        AtomicBoolean failNextWrite = new AtomicBoolean();
+        FileChannel failing = new FilterFileChannel(FileChannel.open(path, WRITE)) {
+            @Override
+            public int write(ByteBuffer src, long position) throws IOException {
+                if (failNextWrite.getAndSet(false)) {
+                    // Half the frame reaches the disk, then the write fails (for example, the disk is full).
+                    ByteBuffer half = src.duplicate();
+                    half.limit(half.position() + half.remaining() / 2);
+                    super.write(half, position);
+                    throw new IOException("simulated write failure");
+                }
+                return super.write(src, position);
+            }
+        };
+        try (CryptoFileChannelWrapper writer = new CryptoFileChannelWrapper(failing, keyResolver, path, WRITE, TRANSLOG_UUID)) {
+            Written w = writeSizes(writer, 1000);
+            failNextWrite.set(true);
+            expectThrows(IOException.class, () -> writeFully(writer, randomBytes(1000), w.end));
+            // Retrying would seal different bytes under the failed frame's index and nonce.
+            IOException e = expectThrows(IOException.class, () -> writeFully(writer, randomBytes(1000), w.end));
+            assertTrue(e.getMessage(), e.getMessage().contains("incomplete frame"));
+            assertArrayEquals(w.ops.get(0), readFully(writer, w.offsets.get(0), 1000));
+        }
+    }
+
     public void testReaderSeesFramesAppendedByWriter() throws IOException {
         try (CryptoFileChannelWrapper writer = open(path, WRITE)) {
             Written w = writeSizes(writer, 500);
             try (CryptoFileChannelWrapper reader = open(path, READ)) {
                 assertEquals(w.end, reader.size());
                 append(writer, w, randomBytes(700));
+                // size() sees the new frame before any read past the old end.
+                assertEquals(w.end, reader.size());
                 assertArrayEquals(w.ops.get(1), readFully(reader, w.offsets.get(1), 700));
             }
         }

@@ -46,7 +46,10 @@ import org.opensearch.index.store.key.KeyResolver;
  * <p>OpenSearch addresses the file by logical (plaintext) offsets. Frame start offsets are kept in
  * memory, and rebuilt on open by scanning the frame length headers. The scan stops at the first
  * incomplete or invalid frame. A frame torn by a crash lies beyond the last checkpoint, because
- * TranslogWriter forces the channel before it writes a checkpoint, so it is never read.
+ * TranslogWriter forces the channel before it writes a checkpoint, so it is never read. A channel
+ * that finds such a frame, or whose own frame write fails part way, rejects every later write:
+ * the next frame would reuse the partial frame's index and nonce. OpenSearch never appends to such
+ * a file; recovery reads it and writes new operations to a new generation.
  *
  * <p>The maximum frame size is stored in the format header, so a file is always read with the size
  * it was written with.
@@ -107,6 +110,10 @@ public class TranslogChunkManager {
     private int maxFrameSize;
     private long logicalEnd;
     private long physicalEnd;
+    // Set when the file has bytes after its last complete frame (a write torn by a crash) or a frame
+    // write failed part way. Appending would then seal a new frame under the index, and so the nonce,
+    // of the partial one, so every later write is rejected. Reads of complete frames are unaffected.
+    private boolean appendsBlocked;
 
     private volatile DecryptedFrame lastDecrypted;
 
@@ -201,11 +208,16 @@ public class TranslogChunkManager {
     }
 
     /**
-     * Returns the logical (plaintext) size of the file: the header plus every complete frame.
+     * Returns the logical (plaintext) size of the file: the header plus every complete frame,
+     * including frames appended by another channel since this one last looked.
      *
      * @return the logical size in bytes
+     * @throws IOException if the file size cannot be read or new frames cannot be indexed
      */
-    public synchronized long logicalSize() {
+    public synchronized long logicalSize() throws IOException {
+        if (delegate.size() != physicalEnd) {
+            indexNewFrames();
+        }
         return logicalEnd;
     }
 
@@ -220,13 +232,20 @@ public class TranslogChunkManager {
 
     /**
      * Indexes frames appended since the last scan (by this or another channel). Reads only the frame
-     * length headers; nothing is decrypted.
+     * length headers; nothing is decrypted. Bytes left after the last complete frame block appends.
      */
     private void indexNewFrames() throws IOException {
         long fileSize = delegate.size();
+        scanFrames(fileSize);
+        if (physicalEnd < fileSize) {
+            appendsBlocked = true;
+        }
+    }
+
+    private void scanFrames(long fileSize) throws IOException {
         if (!formatHeaderPresent) {
             if (fileSize < actualHeaderSize + FORMAT_HEADER_SIZE) {
-                // Header only (or a header torn by a crash): no frames yet.
+                // Header only (or a header or format header torn by a crash): no frames yet.
                 logicalEnd = physicalEnd = Math.min(fileSize, actualHeaderSize);
                 return;
             }
@@ -413,6 +432,15 @@ public class TranslogChunkManager {
         if (src.remaining() == 0) {
             return 0;
         }
+        if (appendsBlocked) {
+            throw new IOException(
+                "Cannot append to translog file:"
+                    + filePath
+                    + ": it has an incomplete frame after logical offset "
+                    + logicalEnd
+                    + " (a torn or failed write); appending would reuse that frame's nonce"
+            );
+        }
         if (position < actualHeaderSize) {
             if (formatHeaderPresent) {
                 throw new IOException("Cannot rewrite the header of translog file:" + filePath);
@@ -429,16 +457,17 @@ public class TranslogChunkManager {
                 "Encrypted translog files are append-only: write at " + position + ", logical end " + logicalEnd + " in file:" + filePath
             );
         }
-        if (!formatHeaderPresent) {
-            ByteBuffer format = ByteBuffer.allocate(FORMAT_HEADER_SIZE);
-            format.putInt(FORMAT_MAGIC).putInt(FORMAT_VERSION).putInt(newFileMaxFrameSize).flip();
-            writePhysical(format, actualHeaderSize);
-            maxFrameSize = newFileMaxFrameSize;
-            formatHeaderPresent = true;
-            physicalEnd = actualHeaderSize + FORMAT_HEADER_SIZE;
-        }
         int total = 0;
+        boolean completed = false;
         try {
+            if (!formatHeaderPresent) {
+                ByteBuffer format = ByteBuffer.allocate(FORMAT_HEADER_SIZE);
+                format.putInt(FORMAT_MAGIC).putInt(FORMAT_VERSION).putInt(newFileMaxFrameSize).flip();
+                writePhysical(format, actualHeaderSize);
+                maxFrameSize = newFileMaxFrameSize;
+                formatHeaderPresent = true;
+                physicalEnd = actualHeaderSize + FORMAT_HEADER_SIZE;
+            }
             Cipher cipher = CIPHER.get();
             while (src.hasRemaining()) {
                 int length = Math.min(src.remaining(), maxFrameSize);
@@ -452,8 +481,14 @@ public class TranslogChunkManager {
                 addFrame(length);
                 total += length;
             }
+            completed = true;
         } catch (GeneralSecurityException e) {
             throw new IOException("Failed to seal translog frame " + frameCount + " in file:" + filePath, e);
+        } finally {
+            if (completed == false) {
+                // Part of a frame may be on disk; never write another frame under its index.
+                appendsBlocked = true;
+            }
         }
         return total;
     }
