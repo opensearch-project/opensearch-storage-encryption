@@ -35,47 +35,24 @@ import org.opensearch.index.store.metrics.CryptoMetricsService;
  */
 @SuppressWarnings("preview")
 @SuppressForbidden(reason = "Uses Panama FFI for native memory allocation")
-public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoCloseable {
+public class MemorySegmentPool extends AbstractPool<RefCountedMemorySegment> {
 
     private static final Logger LOGGER = LogManager.getLogger(MemorySegmentPool.class);
 
     private final ReentrantLock lock = new ReentrantLock();
     private final Condition notEmpty = lock.newCondition();
     private final Deque<RefCountedMemorySegment> freeList = new ArrayDeque<>();
-
-    private final int segmentSize;
-    private final int maxSegments;
-    private final long totalMemory;
     private final boolean requiresZeroing;
 
-    private volatile boolean closed = false;
     private int allocatedSegments = 0;
     private volatile int cachedFreeListSize = 0;
 
-    /**
-     * Creates a pool with lazy allocation and memory zeroing enabled for security.
-     *
-     * @param totalMemory total memory in bytes (must be a multiple of segmentSize)
-     * @param segmentSize size of each memory segment in bytes
-     */
     public MemorySegmentPool(long totalMemory, int segmentSize) {
         this(totalMemory, segmentSize, true);
     }
 
-    /**
-     * Creates a pool with configurable allocation strategy and zeroing behavior.
-     *
-     * @param totalMemory total memory in bytes (must be a multiple of segmentSize)
-     * @param segmentSize size of each memory segment in bytes
-     * @param requiresZeroing if true, memory is zeroed on release for security
-     */
     public MemorySegmentPool(long totalMemory, int segmentSize, boolean requiresZeroing) {
-        if (totalMemory % segmentSize != 0) {
-            throw new IllegalArgumentException("Total memory must be a multiple of segment size");
-        }
-        this.totalMemory = totalMemory;
-        this.segmentSize = segmentSize;
-        this.maxSegments = (int) (totalMemory / segmentSize);
+        super(totalMemory, segmentSize);
         this.requiresZeroing = requiresZeroing;
     }
 
@@ -231,11 +208,6 @@ public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoClo
     }
 
     @Override
-    public long totalMemory() {
-        return totalMemory;
-    }
-
-    @Override
     public long availableMemory() {
         int free = cachedFreeListSize;
         int allocated = allocatedSegments;
@@ -260,16 +232,6 @@ public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoClo
         }
     }
 
-    @Override
-    public int pooledSegmentSize() {
-        return segmentSize;
-    }
-
-    /**
-     * Returns current pool statistics.
-     *
-     * @return pool statistics snapshot
-     */
     public PoolStats getStats() {
         return new PoolStats(maxSegments, allocatedSegments, freeList.size(), maxSegments - allocatedSegments);
     }
@@ -314,11 +276,6 @@ public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoClo
         } finally {
             lock.unlock();
         }
-    }
-
-    @Override
-    public boolean isClosed() {
-        return closed;
     }
 
     @Override

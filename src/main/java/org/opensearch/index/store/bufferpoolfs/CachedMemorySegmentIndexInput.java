@@ -70,7 +70,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     // Cached offset from last getCacheBlockWithOffset call (avoid BlockAccess allocation)
     private int lastOffsetInBlock;
 
-    private final BlockSlotTinyCache blockSlotTinyCache;
+    private final BlockSlotTinyCache<RefCountedMemorySegment> blockSlotTinyCache;
 
     // Safe because IndexInput instances are not thread-safe per Lucene contract -
     // each thread must use its own clone().
@@ -95,7 +95,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         BlockCache<RefCountedMemorySegment> blockCache,
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
-        BlockSlotTinyCache blockSlotTinyCache
+        BlockSlotTinyCache<RefCountedMemorySegment> blockSlotTinyCache
     ) {
         CachedMemorySegmentIndexInput input = new CachedMemorySegmentIndexInput(
             resourceDescription,
@@ -125,7 +125,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
         boolean isSlice,
-        BlockSlotTinyCache blockSlotTinyCache
+        BlockSlotTinyCache<RefCountedMemorySegment> blockSlotTinyCache
     ) {
         super(resourceDescription);
         this.path = path;
