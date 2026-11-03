@@ -11,7 +11,6 @@ import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.concurrent.locks.LockSupport;
 
-import lombok.val;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
@@ -50,7 +49,7 @@ public class BlockSlotTinyCache {
         }
     }
 
-    private record SlotEntry(long blockIdx, BlockCacheValue<RefCountedMemorySegment>val, int gen) {
+    private record SlotEntry(long blockIdx, BlockCacheValue<RefCountedMemorySegment> val, int gen) {
     }
 
     private static final int SLOT_COUNT = 32;
