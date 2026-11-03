@@ -12,15 +12,20 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.security.Key;
 import java.security.Provider;
 import java.security.Security;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.concurrent.ConcurrentMap;
 
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSLockFactory;
+import org.apache.lucene.store.FilterDirectory;
 import org.apache.lucene.store.NIOFSDirectory;
 import org.junit.After;
 import org.junit.Before;
@@ -363,5 +368,45 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
         } catch (KeyCacheException e) {
             assertTrue(e.getMessage().contains("Error encountered for index"));
         }
+    }
+
+    public void testKeyFileIsWrittenDurablyAndAtomically() throws Exception {
+        List<String> ops = new ArrayList<>();
+        Directory recording = new FilterDirectory(directory) {
+            @Override
+            public void sync(Collection<String> names) throws IOException {
+                ops.add("sync " + names);
+                super.sync(names);
+            }
+
+            @Override
+            public void rename(String source, String dest) throws IOException {
+                ops.add("rename " + source + " -> " + dest);
+                super.rename(source, dest);
+            }
+
+            @Override
+            public void syncMetaData() throws IOException {
+                ops.add("syncMetaData");
+                super.syncMetaData();
+            }
+        };
+        byte[] encryptedKey = new byte[32];
+        when(mockKeyProvider.generateDataPair()).thenReturn(new DataKeyPair(new byte[32], encryptedKey));
+        when(mockKeyProvider.decryptKey(any())).thenReturn(new byte[32]);
+
+        new DefaultKeyResolver(TEST_INDEX_UUID, "test-index", recording, provider, mockKeyProvider, TEST_SHARD_ID);
+
+        // The key is written to a temp file, fsynced, renamed into place, then the rename is fsynced
+        assertEquals(ops.toString(), 3, ops.size());
+        String tempName = ops.get(0).substring("sync [".length(), ops.get(0).length() - 1);
+        assertTrue(tempName, tempName.startsWith("keyfile") && tempName.endsWith(".tmp"));
+        assertEquals("rename " + tempName + " -> keyfile", ops.get(1));
+        assertEquals("syncMetaData", ops.get(2));
+
+        for (String file : directory.listAll()) {
+            assertFalse("leftover temp file: " + file, file.endsWith(".tmp"));
+        }
+        assertEquals(Integer.BYTES + encryptedKey.length, directory.fileLength("keyfile"));
     }
 }
