@@ -258,7 +258,8 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             int blockOffset,
             int chunkLen
         ) {
-            if (!CryptoDirectoryFactory.isWriteCacheEnabled()) {
+            // No pool in ByteBuffer mode: the write cache is not used.
+            if (!CryptoDirectoryFactory.isWriteCacheEnabled() || memorySegmentPool == null) {
                 return;
             }
 
@@ -400,7 +401,8 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         }
 
         private void cacheFinalPartialBlock() {
-            if (!CryptoDirectoryFactory.isWriteCacheEnabled()) {
+            // No pool in ByteBuffer mode: the write cache is not used.
+            if (!CryptoDirectoryFactory.isWriteCacheEnabled() || memorySegmentPool == null) {
                 return;
             }
             if (partialBlockLength == 0 || lastCachedBlockOffset < 0 || streamOffset <= 0) {

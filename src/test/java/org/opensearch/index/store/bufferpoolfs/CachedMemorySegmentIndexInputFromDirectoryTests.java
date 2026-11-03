@@ -97,14 +97,21 @@ public class CachedMemorySegmentIndexInputFromDirectoryTests extends BaseIndexIn
         super.setUp();
         // Save and disable write-through cache so reads go through the BlockLoader (Direct I/O)
         originalWriteCacheEnabled = CryptoDirectoryFactory.isWriteCacheEnabled();
-        CryptoDirectoryFactory.setNodeSettings(Settings.builder().put("node.store.crypto.write_cache_enabled", false).build());
+        CryptoDirectoryFactory
+            .setNodeSettings(
+                Settings
+                    .builder()
+                    .put("node.store.crypto.write_cache_enabled", false)
+                    .put("node.store.crypto.byte_buffer_mode_enabled", false)
+                    .build()
+            );
         // Simulate FS block size (4 KB) smaller than cache block size (8 KB)
         PanamaNativeAccess.setFileSystemBlockSizeOverride(4096);
         Path path = createTempDir();
         Provider provider = Security.getProvider(DEFAULT_CRYPTO_PROVIDER);
         MasterKeyProvider keyProvider = DummyKeyProvider.create();
         this.poolResources = PoolBuilder.build(createNodeSettings());
-        Pool<RefCountedMemorySegment> segmentPool = poolResources.getSegmentPool();
+        Pool<RefCountedMemorySegment> segmentPool = (Pool<RefCountedMemorySegment>) poolResources.getPool();
 
         String indexUuid = randomAlphaOfLength(10);
         String indexName = randomAlphaOfLength(10);
@@ -119,7 +126,8 @@ public class CachedMemorySegmentIndexInputFromDirectoryTests extends BaseIndexIn
             segmentPool,
             keyResolver,
             encryptionMetadataCache,
-            poolResources.getFileChannelCache()
+            poolResources.getFileChannelCache(),
+            false
         );
 
         Worker worker = poolResources.getSharedReadaheadWorker();
@@ -127,8 +135,9 @@ public class CachedMemorySegmentIndexInputFromDirectoryTests extends BaseIndexIn
         CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> sharedCaffeineCache =
             (CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment>) poolResources.getBlockCache();
 
-        BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
-            sharedCaffeineCache.getCache(),
+        @SuppressWarnings({ "unchecked", "rawtypes" })
+        BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache(
+            poolResources.getSharedCaffeineCache(),
             loader,
             poolResources.getMaxCacheBlocks()
         );
@@ -140,10 +149,10 @@ public class CachedMemorySegmentIndexInputFromDirectoryTests extends BaseIndexIn
             keyResolver,
             segmentPool,
             directoryCache,
-            loader,
             worker,
             encryptionMetadataCache,
-            poolResources.getFileChannelCache()
+            poolResources.getFileChannelCache(),
+            false
         );
     }
 
