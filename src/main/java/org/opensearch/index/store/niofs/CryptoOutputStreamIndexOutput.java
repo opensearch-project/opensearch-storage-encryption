@@ -168,7 +168,6 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
                 int frameNumber = (int) (streamOffset >>> frameSizePower);
                 if (frameNumber != currentFrameNumber) {
                     finalizeCurrentFrame();
-                    totalFrames = Math.max(totalFrames, frameNumber + 1);
                     initializeFrameCipher(frameNumber, streamOffset & frameSizeMask);
                 }
 
@@ -266,6 +265,7 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
             try {
                 byte[] tag = OpenSslNativeCipher.finalizeAndGetTag(currentCipher);
                 footer.addGcmTag(tag);
+                totalFrames++;
                 currentCipher = null;
             } catch (Throwable t) {
                 throw new RuntimeException("Failed to finalize frame " + currentFrameNumber, t);

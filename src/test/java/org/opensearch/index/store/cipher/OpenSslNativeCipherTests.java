@@ -69,4 +69,35 @@ public class OpenSslNativeCipherTests extends OpenSearchTestCase {
             OpenSslNativeCipher.finalizeAndGetTag(ctx);
         }
     }
+
+    public void testEncryptUpdateRejectsPartlyOverlappingRanges() throws Throwable {
+        MemorySegment ctx = OpenSslNativeCipher.initGCMCipher(randomByteArrayOfLength(32), randomByteArrayOfLength(16), 0);
+        try {
+            byte[] buf = new byte[64];
+            expectThrows(IllegalArgumentException.class, () -> OpenSslNativeCipher.encryptUpdate(ctx, buf, 0, buf, 8, 32));
+            expectThrows(IllegalArgumentException.class, () -> OpenSslNativeCipher.encryptUpdate(ctx, buf, 8, buf, 0, 32));
+        } finally {
+            OpenSslNativeCipher.finalizeAndGetTag(ctx);
+        }
+    }
+
+    /** In-place encryption (same array, same offset) is allowed and gives the same result as separate arrays. */
+    public void testEncryptUpdateInPlace() throws Throwable {
+        byte[] key = randomByteArrayOfLength(32);
+        byte[] iv = randomByteArrayOfLength(16);
+        byte[] plaintext = randomByteArrayOfLength(randomIntBetween(1, 2 * OpenSslNativeCipher.MAX_HEAP_UPDATE_SIZE));
+
+        MemorySegment separate = OpenSslNativeCipher.initGCMCipher(key, iv, 0);
+        byte[] expected = new byte[plaintext.length];
+        OpenSslNativeCipher.encryptUpdate(separate, plaintext, 0, expected, 0, plaintext.length);
+        byte[] expectedTag = OpenSslNativeCipher.finalizeAndGetTag(separate);
+
+        MemorySegment inPlace = OpenSslNativeCipher.initGCMCipher(key, iv, 0);
+        byte[] buf = plaintext.clone();
+        OpenSslNativeCipher.encryptUpdate(inPlace, buf, 0, buf, 0, buf.length);
+        byte[] tag = OpenSslNativeCipher.finalizeAndGetTag(inPlace);
+
+        assertArrayEquals(expected, buf);
+        assertArrayEquals(expectedTag, tag);
+    }
 }

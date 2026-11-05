@@ -352,7 +352,8 @@ public final class OpenSslNativeCipher {
      * ciphertext per byte of plaintext on update, so {@code out} must have {@code length} bytes free.
      *
      * <p>The arrays are passed to OpenSSL directly (no native staging buffer, no allocation). Input is fed
-     * in pieces of at most {@link #MAX_HEAP_UPDATE_SIZE} bytes.
+     * in pieces of at most {@link #MAX_HEAP_UPDATE_SIZE} bytes. {@code in} and {@code out} may be the same
+     * range (in-place encryption); otherwise the two ranges must not overlap.
      *
      * @param ctx       the GCM context from {@link #initGCMCipher(byte[], byte[], long)}
      * @param in        plaintext
@@ -360,11 +361,16 @@ public final class OpenSslNativeCipher {
      * @param out       destination for the ciphertext
      * @param outOffset start of the ciphertext in {@code out}
      * @param length    number of bytes to encrypt
+     * @throws IllegalArgumentException if the input and output ranges partly overlap
      * @throws Throwable if OpenSSL reports an error
      */
     public static void encryptUpdate(MemorySegment ctx, byte[] in, int inOffset, byte[] out, int outOffset, int length) throws Throwable {
         Objects.checkFromIndexSize(inOffset, length, in.length);
         Objects.checkFromIndexSize(outOffset, length, out.length);
+        if (in == out && inOffset != outOffset && inOffset < outOffset + length && outOffset < inOffset + length) {
+            // OpenSSL allows in-place encryption (same start) but requires distinct ranges to be disjoint.
+            throw new IllegalArgumentException("Input and output ranges overlap without starting at the same offset");
+        }
         MemorySegment inSeg = MemorySegment.ofArray(in);
         MemorySegment outSeg = MemorySegment.ofArray(out);
         int[] outLen = new int[1];
