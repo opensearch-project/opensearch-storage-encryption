@@ -7,6 +7,7 @@ package org.opensearch.index.store;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.security.Provider;
 import java.security.Security;
 import java.util.HashSet;
@@ -18,6 +19,7 @@ import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.LockFactory;
+import org.apache.lucene.util.IOUtils;
 import org.opensearch.cluster.metadata.CryptoMetadata;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.SuppressForbidden;
@@ -365,11 +367,18 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             return;
         }
 
-        // Copy keyfile from source to target
+        // Copy keyfile from source to target: copy to a temp file, fsync it, then atomically
+        // rename it into place so a crash never leaves a partial keyfile behind. The temp name is
+        // unique because several target shards may run this concurrently.
+        Path tempKeyfile = Files.createTempFile(targetIndexDirectory, "keyfile.resize.", ".tmp");
         try {
-            Files.copy(sourceKeyfile, targetKeyfile);
+            Files.copy(sourceKeyfile, tempKeyfile, StandardCopyOption.REPLACE_EXISTING);
+            IOUtils.fsync(tempKeyfile, false);
+            Files.move(tempKeyfile, targetKeyfile, StandardCopyOption.ATOMIC_MOVE);
+            IOUtils.fsync(targetIndexDirectory, true);
             LOGGER.debug("Successfully copied keyfile from {} to {} for resize operation", sourceKeyfile, targetKeyfile);
         } catch (IOException e) {
+            IOUtils.deleteFilesIgnoringExceptions(tempKeyfile);
             throw new IOException(
                 "[Resize operation] Failed to copy keyfile from source index "
                     + resizeSourceName

@@ -7,6 +7,7 @@ package org.opensearch.index.store.key;
 import java.io.IOException;
 import java.security.Key;
 import java.security.Provider;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -16,6 +17,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
+import org.apache.lucene.util.IOUtils;
 import org.opensearch.common.crypto.DataKeyPair;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
@@ -43,6 +45,7 @@ public class DefaultKeyResolver implements KeyResolver {
     private final int shardId;
 
     private static final String KEY_FILE = "keyfile";
+    private static final String KEY_FILE_TEMP_SUFFIX = "tmp";
 
     /**
      * Constructs a new {@link DefaultKeyResolver} and ensures the key is initialized.
@@ -126,12 +129,27 @@ public class DefaultKeyResolver implements KeyResolver {
     }
 
     /**
-     * Writes a byte array to the specified file in the directory.
+     * Durably and atomically writes a byte array to the specified file in the directory:
+     * the data goes to a temp file which is fsynced, then renamed over the target, and the
+     * directory metadata is fsynced so the rename survives a crash.
      */
     private void writeByteArrayFile(String fileName, byte[] data) throws IOException {
-        try (IndexOutput out = directory.createOutput(fileName, IOContext.DEFAULT)) {
-            out.writeInt(data.length);
-            out.writeBytes(data, 0, data.length);
+        String tempName = null;
+        boolean success = false;
+        try {
+            try (IndexOutput out = directory.createTempOutput(fileName, KEY_FILE_TEMP_SUFFIX, IOContext.DEFAULT)) {
+                tempName = out.getName();
+                out.writeInt(data.length);
+                out.writeBytes(data, 0, data.length);
+            }
+            directory.sync(List.of(tempName));
+            directory.rename(tempName, fileName);
+            directory.syncMetaData();
+            success = true;
+        } finally {
+            if (success == false && tempName != null) {
+                IOUtils.deleteFilesIgnoringExceptions(directory, tempName);
+            }
         }
     }
 
