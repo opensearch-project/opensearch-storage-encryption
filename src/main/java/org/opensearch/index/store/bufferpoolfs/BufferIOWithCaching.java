@@ -92,6 +92,8 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         private final byte[] masterKey;
         private final Key fileKey;
         private final byte[] buffer;
+        /** Ciphertext for one OpenSSL update, reused for every chunk. */
+        private final byte[] cipherOut = new byte[OpenSslNativeCipher.MAX_HEAP_UPDATE_SIZE];
         private final Path path;
         private final String normalizedPath;
         private final Pool<RefCountedMemorySegment> memorySegmentPool;
@@ -312,12 +314,11 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                     initializeFrameCipher(frameNumber, currentOffset % frameSize);
                 }
 
-                int chunkSize = (int) Math.min(remaining, frameEnd - currentOffset);
+                int chunkSize = (int) Math.min(Math.min(remaining, cipherOut.length), frameEnd - currentOffset);
 
                 try {
-                    // Use OpenSSL native cipher for encryption
-                    byte[] encrypted = OpenSslNativeCipher.encryptUpdate(currentCipher, slice(data, dataOffset, chunkSize));
-                    out.write(encrypted);
+                    OpenSslNativeCipher.encryptUpdate(currentCipher, data, dataOffset, cipherOut, 0, chunkSize);
+                    out.write(cipherOut, 0, chunkSize);
 
                     currentOffset += chunkSize;
                     currentFrameOffset += chunkSize;
@@ -327,15 +328,6 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                     throw new IOException("Encryption failed at offset " + currentOffset, t);
                 }
             }
-        }
-
-        private byte[] slice(byte[] data, int offset, int length) {
-            if (offset == 0 && length == data.length) {
-                return data;
-            }
-            byte[] sliced = new byte[length];
-            System.arraycopy(data, offset, sliced, 0, length);
-            return sliced;
         }
 
         @Override
