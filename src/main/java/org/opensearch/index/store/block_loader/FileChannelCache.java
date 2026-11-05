@@ -14,6 +14,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.concurrent.TimeUnit;
 
 import org.opensearch.index.store.metrics.CryptoMetricsService;
+import org.opensearch.secure_sm.AccessController;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -201,12 +202,14 @@ public class FileChannelCache implements Closeable {
 
     private RefCountedChannel openChannel(String path) {
         try {
-            FileChannel fc;
-            if (directOpenOption != null) {
-                fc = FileChannel.open(Paths.get(path), StandardOpenOption.READ, directOpenOption);
-            } else {
-                fc = FileChannel.open(Paths.get(path), StandardOpenOption.READ);
-            }
+            // Privileged: a cache miss can open the file while untrusted code, such as a painless
+            // script reading doc values, is on the stack, and that code has no file permissions.
+            FileChannel fc = AccessController.doPrivilegedChecked(() -> {
+                if (directOpenOption != null) {
+                    return FileChannel.open(Paths.get(path), StandardOpenOption.READ, directOpenOption);
+                }
+                return FileChannel.open(Paths.get(path), StandardOpenOption.READ);
+            });
             return new RefCountedChannel(fc);
         } catch (IOException e) {
             throw new RuntimeException("Failed to open FileChannel: " + path, e);
