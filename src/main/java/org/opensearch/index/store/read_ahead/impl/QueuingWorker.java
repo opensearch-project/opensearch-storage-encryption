@@ -481,6 +481,15 @@ public final class QueuingWorker implements Worker {
     }
 
     @Override
+    public void cancelByPathPrefix(Path prefix) {
+        boolean qRemoved = queue.removeIf(t -> t.path.startsWith(prefix));
+        boolean fRemoved = inFlight.removeIf(t -> t.path.startsWith(prefix));
+        if (qRemoved || fRemoved) {
+            LOGGER.debug("Cancelled readahead prefix={} removedQueued={} removedInFlight={}", prefix, qRemoved, fRemoved);
+        }
+    }
+
+    @Override
     public boolean isRunning() {
         return !closed;
     }

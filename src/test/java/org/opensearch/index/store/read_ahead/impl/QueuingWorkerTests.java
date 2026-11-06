@@ -13,6 +13,7 @@ import static org.mockito.Mockito.when;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -147,6 +148,41 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
 
         // Both should have been attempted (cancel is best-effort)
         // This is just testing that cancel doesn't throw
+    }
+
+    /**
+     * Tests that cancelByPathPrefix drops only queued requests for files under the prefix,
+     * and leaves the shared worker running for other directories.
+     */
+    public void testCancelByPathPrefix() throws Exception {
+        ExecutorService blocked = Executors.newSingleThreadExecutor();
+        CountDownLatch release = new CountDownLatch(1);
+        try {
+            // Occupy the only executor thread so scheduled tasks stay queued
+            blocked.submit(() -> {
+                release.await();
+                return null;
+            });
+            worker = new QueuingWorker(100, blocked);
+
+            Path shard0 = Paths.get("/data/indices/uuid/0/index");
+            Path shard1 = Paths.get("/data/indices/uuid/1/index");
+            assertTrue(worker.schedule(mockBlockCache, shard0.resolve("_0.cfs"), 0, 4));
+            assertTrue(worker.schedule(mockBlockCache, shard0.resolve("_1.cfs"), 0, 4));
+            assertTrue(worker.schedule(mockBlockCache, shard1.resolve("_0.cfs"), 0, 4));
+            assertEquals(3, worker.getQueueSize());
+
+            worker.cancelByPathPrefix(shard0);
+
+            assertEquals(1, worker.getQueueSize());
+            assertTrue("Shared worker must keep running", worker.isRunning());
+            assertTrue(worker.schedule(mockBlockCache, shard1.resolve("_2.cfs"), 0, 4));
+        } finally {
+            release.countDown();
+            worker.close();
+            blocked.shutdown();
+            blocked.awaitTermination(5, TimeUnit.SECONDS);
+        }
     }
 
     /**

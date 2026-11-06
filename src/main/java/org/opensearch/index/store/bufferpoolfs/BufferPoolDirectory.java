@@ -208,7 +208,9 @@ public class BufferPoolDirectory extends FSDirectory {
     @Override
     @SuppressWarnings("ConvertToTryWithResources")
     public synchronized void close() throws IOException {
-        readAheadworker.close();
+        // The read-ahead worker is shared node-wide and is closed by PoolResources at node shutdown;
+        // only drop this directory's pending requests here.
+        readAheadworker.cancelByPathPrefix(dirPath);
         encryptionMetadataCache.invalidateDirectory();
 
         // Invalidate all cache entries for this directory to prevent memory leaks
