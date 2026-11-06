@@ -153,6 +153,17 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         }
     }
 
+    /**
+     * Fails unless {@code [pos, pos + n)} lies within this input. Cache blocks span the whole
+     * file, so without this a read past the end of a slice silently returns the bytes that
+     * follow it in the file (the next compound-file entry, or the encryption footer).
+     */
+    private void checkBounds(String action, long pos, long n) throws IOException {
+        if (pos < 0L || n > length - pos) {
+            throw handlePositionalIOOBE(null, action, pos);
+        }
+    }
+
     // the unused parameter is just to silence javac about unused variables
     AlreadyClosedException alreadyClosed(RuntimeException unused) {
         return new AlreadyClosedException("Already closed: " + this);
@@ -246,6 +257,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     public final byte readByte() throws IOException {
         // Use direct field access instead of virtual call
         final long currentPos = curPosition;
+        checkBounds("read", currentPos, 1);
         try {
             final MemorySegment segment = getCacheBlockWithOffset(currentPos);
             final byte v = segment.get(LAYOUT_BYTE, lastOffsetInBlock);
@@ -267,6 +279,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             return;
 
         final long startPos = curPosition; // avoid virtual call
+        checkBounds("read", startPos, len);
         int remaining = len;
         int bufferOffset = offset;
         long currentPos = startPos;
@@ -316,6 +329,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
         final long startPos = getFilePointer();
         final long totalBytes = Integer.BYTES * (long) length;
+        checkBounds("read", startPos, totalBytes);
 
         try {
             final MemorySegment segment;
@@ -351,6 +365,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
         final long startPos = getFilePointer();
         final long totalBytes = Long.BYTES * (long) length;
+        checkBounds("read", startPos, totalBytes);
 
         try {
             final MemorySegment segment;
@@ -386,6 +401,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
         final long startPos = getFilePointer();
         final long totalBytes = Float.BYTES * (long) length;
+        checkBounds("read", startPos, totalBytes);
 
         try {
             final MemorySegment segment;
@@ -417,6 +433,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     @Override
     public final short readShort() throws IOException {
         final long currentPos = getFilePointer();
+        checkBounds("read", currentPos, Short.BYTES);
         try {
             final MemorySegment segment;
             final int offsetInBlock;
@@ -447,6 +464,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     @Override
     public final int readInt() throws IOException {
         final long currentPos = curPosition;
+        checkBounds("read", currentPos, Integer.BYTES);
         try {
             final MemorySegment segment;
             final int offsetInBlock;
@@ -477,6 +495,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     @Override
     public final long readLong() throws IOException {
         final long currentPos = curPosition;
+        checkBounds("read", currentPos, Long.BYTES);
         try {
             final MemorySegment segment;
             final int offsetInBlock;
@@ -505,6 +524,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public void readGroupVInt(int[] dst, int offset) throws IOException {
+        checkBounds("read", curPosition, 1);
         try {
             final MemorySegment segment;
             final int offsetInBlock;
@@ -516,7 +536,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
                 final int len = GroupVIntUtil
                     .readGroupVInt(
                         this,
-                        segment.byteSize() - offsetInBlock,
+                        Math.min(segment.byteSize() - offsetInBlock, length - curPosition),
                         p -> segment.get(LAYOUT_LE_INT, p),
                         offsetInBlock,
                         dst,
@@ -583,9 +603,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public byte readByte(long pos) throws IOException {
-        if (pos < 0 || pos >= length) {
-            return 0;
-        }
+        checkBounds("read", pos, 1);
 
         try {
             final MemorySegment segment;
@@ -604,6 +622,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public short readShort(long pos) throws IOException {
+        checkBounds("read", pos, Short.BYTES);
         try {
             final MemorySegment segment;
             final int offsetInBlock;
@@ -636,6 +655,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public int readInt(long pos) throws IOException {
+        checkBounds("read", pos, Integer.BYTES);
         try {
             final MemorySegment segment;
             final int offsetInBlock;
@@ -668,6 +688,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public long readLong(long pos) throws IOException {
+        checkBounds("read", pos, Long.BYTES);
         try {
             final MemorySegment segment;
             final int offsetInBlock;
