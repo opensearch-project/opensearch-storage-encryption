@@ -278,10 +278,6 @@ public class ConcurrencyIntegTests extends OpenSearchIntegTestCase {
 
     /**
      * Indexes and searches 4 KB documents.
-     * <p>
-     * Do not override the pool settings here. The pool is a static built once per JVM by the first
-     * test to create a crypto index, so an override only applies when this test runs first, and
-     * then it applies to every later test in the JVM.
      */
     public void testIndexingLargeDocuments() throws Exception {
         internalCluster().startNode();
