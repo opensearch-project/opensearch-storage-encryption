@@ -596,7 +596,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * @return the initialized pool resources
      */
     @SuppressWarnings("DoubleCheckedLocking")
-    private static PoolBuilder.PoolResources ensurePoolInitialized() {
+    static PoolBuilder.PoolResources ensurePoolInitialized() {
         if (poolResources == null) {
             synchronized (initLock) {
                 if (poolResources == null) {
@@ -614,10 +614,16 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     /**
      * Close the shared pool resources if they were initialized.
      * Called from CryptoDirectoryPlugin.close() during node shutdown.
+     *
+     * The field is cleared so that a node started later in the same JVM (as integration tests do)
+     * builds a new pool from its own settings instead of reusing the closed one.
      */
     public static void closeSharedPool() {
-        if (poolResources != null) {
-            poolResources.close();
+        synchronized (initLock) {
+            if (poolResources != null) {
+                poolResources.close();
+                poolResources = null;
+            }
         }
     }
 
