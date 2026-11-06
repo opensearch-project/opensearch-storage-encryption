@@ -462,7 +462,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
             memorySegmentPool,
             keyResolverA,
             encryptionMetadataCache,
-            fileChannelCache
+            fileChannelCache,
+            false
         );
 
         // Create per-directory cache and worker
@@ -494,10 +495,10 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 keyResolverA,
                 memorySegmentPool,
                 blockCacheA,
-                blockLoaderA,
                 readAheadWorkerA,
                 encryptionMetadataCache,
-                fileChannelCache
+                fileChannelCache,
+                false
             )
         ) {
             // Write data
@@ -542,7 +543,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
             memorySegmentPool,
             keyResolverA,
             encryptionMetadataCache,
-            fileChannelCache
+            fileChannelCache,
+            false
         );
 
         // Create per-directory cache and worker
@@ -574,10 +576,10 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 keyResolverA,
                 memorySegmentPool,
                 blockCacheA,
-                blockLoaderA,
                 readAheadWorkerA,
                 encryptionMetadataCache,
-                fileChannelCache
+                fileChannelCache,
+                false
             )
         ) {
             // Write data
@@ -621,7 +623,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
             memorySegmentPool,
             keyResolverA,
             encryptionMetadataCache,
-            fileChannelCache
+            fileChannelCache,
+            false
         );
 
         // Create per-directory cache and worker
@@ -653,10 +656,10 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 keyResolverA,
                 memorySegmentPool,
                 blockCacheA,
-                blockLoaderA,
                 readAheadWorkerA,
                 encryptionMetadataCache,
-                fileChannelCache
+                fileChannelCache,
+                false
             )
         ) {
             // Write data
@@ -701,7 +704,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
             memorySegmentPool,
             keyResolverA,
             encryptionMetadataCache,
-            fileChannelCache
+            fileChannelCache,
+            false
         );
 
         // Create per-directory cache and worker
@@ -733,10 +737,10 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 keyResolverA,
                 memorySegmentPool,
                 blockCacheA,
-                blockLoaderA,
                 readAheadWorkerA,
                 encryptionMetadataCache,
-                fileChannelCache
+                fileChannelCache,
+                false
             )
         ) {
             // Write data

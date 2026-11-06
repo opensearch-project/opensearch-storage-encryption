@@ -67,6 +67,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
 
         BlockCacheValue<RefCountedMemorySegment> cacheValue = mock(BlockCacheValue.class);
         when(cacheValue.value()).thenReturn(refSegment);
+        when(cacheValue.getGeneration()).thenAnswer(inv -> refSegment.getGeneration());
         when(cacheValue.tryPin()).thenAnswer(inv -> refSegment.tryPin());
         Mockito.doAnswer(inv -> {
             refSegment.unpin();
@@ -106,6 +107,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
 
         BlockCacheValue<RefCountedMemorySegment> cacheValue = mock(BlockCacheValue.class);
         when(cacheValue.value()).thenReturn(refSegment);
+        when(cacheValue.getGeneration()).thenAnswer(inv -> refSegment.getGeneration());
         when(cacheValue.tryPin()).thenAnswer(inv -> refSegment.tryPin());
         Mockito.doAnswer(inv -> {
             refSegment.unpin();
@@ -156,6 +158,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
 
         BlockCacheValue<RefCountedMemorySegment> cacheValue = mock(BlockCacheValue.class);
         when(cacheValue.value()).thenReturn(refSegment);
+        when(cacheValue.getGeneration()).thenAnswer(inv -> refSegment.getGeneration());
         when(cacheValue.tryPin()).thenAnswer(inv -> refSegment.tryPin());
         Mockito.doAnswer(inv -> {
             refSegment.unpin();
@@ -198,6 +201,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
 
         BlockCacheValue<RefCountedMemorySegment> cacheValue1 = mock(BlockCacheValue.class);
         when(cacheValue1.value()).thenReturn(refSegment1);
+        when(cacheValue1.getGeneration()).thenAnswer(inv -> refSegment1.getGeneration());
         when(cacheValue1.tryPin()).thenAnswer(inv -> refSegment1.tryPin());
         Mockito.doAnswer(inv -> {
             refSegment1.unpin();
@@ -230,6 +234,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
 
         BlockCacheValue<RefCountedMemorySegment> cacheValue2 = mock(BlockCacheValue.class);
         when(cacheValue2.value()).thenReturn(refSegment2);
+        when(cacheValue2.getGeneration()).thenAnswer(inv -> refSegment2.getGeneration());
         when(cacheValue2.tryPin()).thenAnswer(inv -> refSegment2.tryPin());
         Mockito.doAnswer(inv -> {
             refSegment2.unpin();
@@ -260,6 +265,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
 
         BlockCacheValue<RefCountedMemorySegment> cacheValue = mock(BlockCacheValue.class);
         when(cacheValue.value()).thenReturn(refSegment);
+        when(cacheValue.getGeneration()).thenAnswer(inv -> refSegment.getGeneration());
         when(cacheValue.tryPin()).thenAnswer(inv -> refSegment.tryPin());
         Mockito.doAnswer(inv -> {
             refSegment.unpin();
@@ -326,6 +332,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
 
             BlockCacheValue<RefCountedMemorySegment> cacheValue = mock(BlockCacheValue.class);
             when(cacheValue.value()).thenReturn(refSegment);
+            when(cacheValue.getGeneration()).thenAnswer(inv -> refSegment.getGeneration());
             when(cacheValue.tryPin()).thenAnswer(inv -> refSegment.tryPin());
             Mockito.doAnswer(inv -> {
                 refSegment.unpin();
@@ -379,7 +386,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
 
         BlockCacheValue<RefCountedMemorySegment> cacheValue = mock(BlockCacheValue.class);
         when(cacheValue.value()).thenReturn(refSegment);
-
+        when(cacheValue.getGeneration()).thenAnswer(inv -> refSegment.getGeneration());
         AtomicInteger tryPinAttempts = new AtomicInteger(0);
 
         // First 2 tryPin calls fail, third succeeds
@@ -424,6 +431,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
 
         BlockCacheValue<RefCountedMemorySegment> cacheValue = mock(BlockCacheValue.class);
         when(cacheValue.value()).thenReturn(refSegment);
+        when(cacheValue.getGeneration()).thenAnswer(inv -> refSegment.getGeneration());
         when(cacheValue.tryPin()).thenReturn(false); // Always fail
 
         when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(null);
@@ -446,6 +454,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
 
         BlockCacheValue<RefCountedMemorySegment> cacheValue1 = mock(BlockCacheValue.class);
         when(cacheValue1.value()).thenReturn(refSegment1);
+        when(cacheValue1.getGeneration()).thenAnswer(inv -> refSegment1.getGeneration());
         when(cacheValue1.tryPin()).thenAnswer(inv -> refSegment1.tryPin());
         Mockito.doAnswer(inv -> {
             refSegment1.unpin();
@@ -467,6 +476,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
 
         BlockCacheValue<RefCountedMemorySegment> cacheValue2 = mock(BlockCacheValue.class);
         when(cacheValue2.value()).thenReturn(refSegment2);
+        when(cacheValue2.getGeneration()).thenAnswer(inv -> refSegment2.getGeneration());
         when(cacheValue2.tryPin()).thenAnswer(inv -> refSegment2.tryPin());
         Mockito.doAnswer(inv -> {
             refSegment2.unpin();
@@ -492,6 +502,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
 
         BlockCacheValue<RefCountedMemorySegment> cacheValue = mock(BlockCacheValue.class);
         when(cacheValue.value()).thenReturn(refSegment);
+        when(cacheValue.getGeneration()).thenAnswer(inv -> refSegment.getGeneration());
         when(cacheValue.tryPin()).thenAnswer(inv -> refSegment.tryPin());
         Mockito.doAnswer(inv -> {
             refSegment.unpin();
@@ -526,7 +537,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
 
         BlockCacheValue<RefCountedMemorySegment> cacheValue = mock(BlockCacheValue.class);
         when(cacheValue.value()).thenReturn(refSegment);
-
+        when(cacheValue.getGeneration()).thenAnswer(inv -> refSegment.getGeneration());
         // Latches to force the window: cache.get returned, then we pause at tryPin
         CountDownLatch tryPinEntered = new CountDownLatch(1);
         CountDownLatch allowTryPinToProceed = new CountDownLatch(1);
@@ -552,6 +563,7 @@ public class BlockSlotTinyCacheTests extends OpenSearchTestCase {
 
         BlockCacheValue<RefCountedMemorySegment> freshValue = mock(BlockCacheValue.class);
         when(freshValue.value()).thenReturn(freshSeg);
+        when(freshValue.getGeneration()).thenAnswer(inv -> freshSeg.getGeneration());
         when(freshValue.tryPin()).thenAnswer(inv -> freshSeg.tryPin());
         doAnswer(inv -> {
             freshSeg.unpin();
