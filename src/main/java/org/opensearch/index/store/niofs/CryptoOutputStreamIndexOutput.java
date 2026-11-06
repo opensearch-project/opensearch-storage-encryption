@@ -68,6 +68,8 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
         private final Key fileKey;
         private final byte[] masterKey;
         private final byte[] buffer;
+        /** Ciphertext for one OpenSSL update, reused for every chunk. */
+        private final byte[] cipherOut = new byte[OpenSslNativeCipher.MAX_HEAP_UPDATE_SIZE];
         private final EncryptionFooter footer;
         private final Provider provider;
         private final long frameSizeMask;
@@ -166,16 +168,16 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
                 int frameNumber = (int) (streamOffset >>> frameSizePower);
                 if (frameNumber != currentFrameNumber) {
                     finalizeCurrentFrame();
-                    totalFrames = Math.max(totalFrames, frameNumber + 1);
                     initializeFrameCipher(frameNumber, streamOffset & frameSizeMask);
                 }
 
                 // Calculate how much we can write in current frame
-                int chunkSize = (int) Math.min(remaining, (frameSizeMask + 1) - (streamOffset & frameSizeMask));
+                long frameRemaining = (frameSizeMask + 1) - (streamOffset & frameSizeMask);
+                int chunkSize = (int) Math.min(Math.min(remaining, cipherOut.length), frameRemaining);
 
                 try {
-                    byte[] encrypted = OpenSslNativeCipher.encryptUpdate(currentCipher, slice(data, dataOffset, chunkSize));
-                    out.write(encrypted);
+                    OpenSslNativeCipher.encryptUpdate(currentCipher, data, dataOffset, cipherOut, 0, chunkSize);
+                    out.write(cipherOut, 0, chunkSize);
 
                     streamOffset += chunkSize;
                     currentFrameOffset += chunkSize;
@@ -185,15 +187,6 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
                     throw new IOException("Encryption failed at offset " + streamOffset, t);
                 }
             }
-        }
-
-        private byte[] slice(byte[] data, int offset, int length) {
-            if (offset == 0 && length == data.length) {
-                return data;
-            }
-            byte[] sliced = new byte[length];
-            System.arraycopy(data, offset, sliced, 0, length);
-            return sliced;
         }
 
         @Override
@@ -272,6 +265,7 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
             try {
                 byte[] tag = OpenSslNativeCipher.finalizeAndGetTag(currentCipher);
                 footer.addGcmTag(tag);
+                totalFrames++;
                 currentCipher = null;
             } catch (Throwable t) {
                 throw new RuntimeException("Failed to finalize frame " + currentFrameNumber, t);

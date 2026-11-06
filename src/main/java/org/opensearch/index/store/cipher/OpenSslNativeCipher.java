@@ -16,6 +16,7 @@ import java.lang.invoke.MethodHandle;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
+import java.util.Objects;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -47,6 +48,19 @@ public final class OpenSslNativeCipher {
     public static final MethodHandle EVP_CIPHER_CTX_ctrl;
     public static final MethodHandle EVP_aes_256_ctr;
     public static final MethodHandle EVP_aes_256_gcm;
+
+    /**
+     * {@code EVP_EncryptUpdate} bound as a critical downcall that may take Java heap segments, so
+     * {@link #encryptUpdate(MemorySegment, byte[], int, byte[], int, int)} reads and writes the caller's
+     * arrays directly instead of copying them through native memory.
+     */
+    private static final MethodHandle EVP_EncryptUpdate_HEAP;
+
+    /**
+     * Largest number of bytes passed to one critical {@code EVP_EncryptUpdate} call. Garbage collection
+     * waits for a critical call to return, so large writes are split to keep that wait in the microseconds.
+     */
+    public static final int MAX_HEAP_UPDATE_SIZE = 64 * 1024;
 
     public static final int EVP_CTRL_GCM_GET_TAG = 0x10;
     public static final int EVP_CTRL_GCM_SET_TAG = 0x11;
@@ -145,19 +159,18 @@ public final class OpenSslNativeCipher {
                         )
                 );
 
-            EVP_EncryptUpdate = LINKER
-                .downcallHandle(
-                    LIBCRYPTO.find("EVP_EncryptUpdate").orElseThrow(),
-                    FunctionDescriptor
-                        .of(
-                            ValueLayout.JAVA_INT,
-                            ValueLayout.ADDRESS, // ctx
-                            ValueLayout.ADDRESS, // out
-                            ValueLayout.ADDRESS, // outLen
-                            ValueLayout.ADDRESS, // in
-                            ValueLayout.JAVA_INT // inLen
-                        )
+            FunctionDescriptor encryptUpdate = FunctionDescriptor
+                .of(
+                    ValueLayout.JAVA_INT,
+                    ValueLayout.ADDRESS, // ctx
+                    ValueLayout.ADDRESS, // out
+                    ValueLayout.ADDRESS, // outLen
+                    ValueLayout.ADDRESS, // in
+                    ValueLayout.JAVA_INT // inLen
                 );
+            EVP_EncryptUpdate = LINKER.downcallHandle(LIBCRYPTO.find("EVP_EncryptUpdate").orElseThrow(), encryptUpdate);
+            EVP_EncryptUpdate_HEAP = LINKER
+                .downcallHandle(LIBCRYPTO.find("EVP_EncryptUpdate").orElseThrow(), encryptUpdate, Linker.Option.critical(true));
 
             EVP_aes_256_ctr = LINKER
                 .downcallHandle(LIBCRYPTO.find("EVP_aes_256_ctr").orElseThrow(), FunctionDescriptor.of(ValueLayout.ADDRESS));
@@ -334,21 +347,47 @@ public final class OpenSslNativeCipher {
     }
 
     /**
-     * Encrypts data using an initialized GCM cipher context.
+     * Encrypts {@code length} bytes of {@code in} starting at {@code inOffset} into {@code out} starting at
+     * {@code outOffset}, using an initialized GCM cipher context. AES-GCM produces exactly one byte of
+     * ciphertext per byte of plaintext on update, so {@code out} must have {@code length} bytes free.
+     *
+     * <p>The arrays are passed to OpenSSL directly (no native staging buffer, no allocation). Input is fed
+     * in pieces of at most {@link #MAX_HEAP_UPDATE_SIZE} bytes. {@code in} and {@code out} may be the same
+     * range (in-place encryption); otherwise the two ranges must not overlap.
+     *
+     * @param ctx       the GCM context from {@link #initGCMCipher(byte[], byte[], long)}
+     * @param in        plaintext
+     * @param inOffset  start of the plaintext in {@code in}
+     * @param out       destination for the ciphertext
+     * @param outOffset start of the ciphertext in {@code out}
+     * @param length    number of bytes to encrypt
+     * @throws IllegalArgumentException if the input and output ranges partly overlap
+     * @throws Throwable if OpenSSL reports an error
      */
-    public static byte[] encryptUpdate(MemorySegment ctx, byte[] input) throws Throwable {
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment inSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, input);
-            MemorySegment outSeg = arena.allocate(input.length, 1);
-            MemorySegment outLen = arena.allocate(ValueLayout.JAVA_INT);
-
-            int rc = (int) EVP_EncryptUpdate.invoke(ctx, outSeg, outLen, inSeg, input.length);
+    public static void encryptUpdate(MemorySegment ctx, byte[] in, int inOffset, byte[] out, int outOffset, int length) throws Throwable {
+        Objects.checkFromIndexSize(inOffset, length, in.length);
+        Objects.checkFromIndexSize(outOffset, length, out.length);
+        if (in == out && inOffset != outOffset && inOffset < outOffset + length && outOffset < inOffset + length) {
+            // OpenSSL allows in-place encryption (same start) but requires distinct ranges to be disjoint.
+            throw new IllegalArgumentException("Input and output ranges overlap without starting at the same offset");
+        }
+        MemorySegment inSeg = MemorySegment.ofArray(in);
+        MemorySegment outSeg = MemorySegment.ofArray(out);
+        int[] outLen = new int[1];
+        MemorySegment outLenSeg = MemorySegment.ofArray(outLen);
+        int done = 0;
+        while (done < length) {
+            int n = Math.min(length - done, MAX_HEAP_UPDATE_SIZE);
+            int rc = (int) EVP_EncryptUpdate_HEAP
+                .invokeExact(ctx, outSeg.asSlice(outOffset + done, n), outLenSeg, inSeg.asSlice(inOffset + done, n), n);
             if (rc != 1) {
                 LOGGER.error("EVP_EncryptUpdate failed in streaming mode with return code: {}", rc);
                 throw new OpenSslException("EVP_EncryptUpdate failed");
             }
-            int bytesWritten = outLen.get(ValueLayout.JAVA_INT, 0);
-            return outSeg.asSlice(0, bytesWritten).toArray(ValueLayout.JAVA_BYTE);
+            if (outLen[0] != n) {
+                throw new OpenSslException("EVP_EncryptUpdate wrote " + outLen[0] + " bytes for " + n + " bytes of input");
+            }
+            done += n;
         }
     }
 
