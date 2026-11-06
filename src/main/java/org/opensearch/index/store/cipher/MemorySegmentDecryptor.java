@@ -74,7 +74,7 @@ public class MemorySegmentDecryptor {
 
         cipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(ivCopy));
 
-        if ((fileOffset & ((AesCipherFactory.AES_BLOCK_SIZE_BYTES_IN_POWER) - 1)) > 0) {
+        if ((fileOffset & ((1 << AesCipherFactory.AES_BLOCK_SIZE_BYTES_IN_POWER) - 1)) > 0) {
             cipher.update(ZERO_SKIP, 0, (int) (fileOffset & ((1 << AesCipherFactory.AES_BLOCK_SIZE_BYTES_IN_POWER) - 1)));
         }
 
@@ -255,7 +255,7 @@ public class MemorySegmentDecryptor {
             byte[] frameIV = AesCipherFactory
                 .computeFrameIV(directoryKey, messageId, frameNumber, currentOffset - frameStart, filePath, cache);
 
-            decryptInPlace(addr + bufferOffset, bytesInFrame, fileKey, frameIV, currentOffset);
+            decryptInPlace(addr + bufferOffset, bytesInFrame, fileKey, frameIV, currentOffset - frameStart);
 
             currentOffset += bytesInFrame;
             bufferOffset += bytesInFrame;
