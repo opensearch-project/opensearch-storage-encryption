@@ -274,21 +274,17 @@ public class ConcurrencyIntegTests extends OpenSearchIntegTestCase {
         }
     }
 
-    // ==================== P2: Pool Pressure and Fallback ====================
+    // ==================== P2: Large Documents ====================
 
     /**
-     * Tests memory pool exhaustion handling and fallback to ephemeral allocation.
+     * Indexes and searches 4 KB documents.
+     * <p>
+     * Do not override the pool settings here. The pool is a static built once per JVM by the first
+     * test to create a crypto index, so an override only applies when this test runs first, and
+     * then it applies to every later test in the JVM.
      */
-    public void testMemoryPoolExhaustionHandling() throws Exception {
-        // Start node with very small pool
-        Settings smallPoolSettings = Settings
-            .builder()
-            .put(nodeSettings(0))
-            .put("node.store.crypto.pool_size_percentage", 0.001) // Very small pool
-            .put("node.store.crypto.cache_to_pool_ratio", 0.5)
-            .build();
-
-        internalCluster().startNode(smallPoolSettings);
+    public void testIndexingLargeDocuments() throws Exception {
+        internalCluster().startNode();
 
         // Create encrypted index
         Settings settings = Settings
@@ -298,35 +294,19 @@ public class ConcurrencyIntegTests extends OpenSearchIntegTestCase {
             .put("index.number_of_replicas", 0)
             .build();
 
-        createIndex("test-pool-pressure", settings);
-        ensureGreen("test-pool-pressure");
+        createIndex("test-large-docs", settings);
+        ensureGreen("test-large-docs");
 
-        // Index documents - some may trigger pool exhaustion
         int numDocs = 100;
-        int successfulIndexes = 0;
-
+        String largeValue = "data".repeat(1000);
         for (int i = 0; i < numDocs; i++) {
-            try {
-                // Create larger documents to stress the pool
-                StringBuilder largeValue = new StringBuilder();
-                for (int j = 0; j < 1000; j++) {
-                    largeValue.append("data");
-                }
-
-                index("test-pool-pressure", "_doc", String.valueOf(i), "field", largeValue.toString(), "index", i);
-                successfulIndexes++;
-            } catch (Exception e) {
-                logger.debug("Expected pool pressure exception: {}", e.getMessage());
-            }
+            index("test-large-docs", "_doc", String.valueOf(i), "field", largeValue, "index", i);
         }
 
         refresh();
 
-        // Verify at least some documents were indexed (may use ephemeral pool)
-        assertThat("No documents were indexed despite pool pressure", successfulIndexes, greaterThan(0));
-
-        SearchResponse response = client().prepareSearch("test-pool-pressure").setSize(0).get();
-        assertThat(response.getHits().getTotalHits().value(), greaterThan(0L));
+        SearchResponse response = client().prepareSearch("test-large-docs").setSize(0).get();
+        assertThat(response.getHits().getTotalHits().value(), equalTo((long) numDocs));
     }
 
     // ==================== P2: Translog Encryption Integration ====================

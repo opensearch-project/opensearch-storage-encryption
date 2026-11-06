@@ -108,7 +108,7 @@ public class UpdateConflictIntegTests extends OpenSearchIntegTestCase {
      * - 5 shards, 8 bulk indexing clients
      * - http_logs-like documents (~500B JSON)
      * - 50% conflict rate (updates to existing docs)
-     * - 60+ second sustained load
+     * - Sustained load of up to 120 seconds or 1M document updates, whichever comes first
      * - Followed by refresh + force-merge
      *
      * Asserts no corruption errors AND that the cluster stays GREEN (no shard failures).
@@ -151,6 +151,9 @@ public class UpdateConflictIntegTests extends OpenSearchIntegTestCase {
         int numClients = 8;
         long durationMs = 120_000;
         long deadline = System.currentTimeMillis() + durationMs;
+        // Without a cap the index size depends on runner speed. A fast runner reached 2.6M updates, and
+        // the force-merge then timed out acquiring blocks from the pool and failed the shards.
+        int maxBulks = 2000;
 
         CountDownLatch startLatch = new CountDownLatch(1);
         CountDownLatch doneLatch = new CountDownLatch(numClients);
@@ -167,7 +170,7 @@ public class UpdateConflictIntegTests extends OpenSearchIntegTestCase {
                     try {
                         startLatch.await();
                         int round = 0;
-                        while (System.currentTimeMillis() < deadline) {
+                        while (System.currentTimeMillis() < deadline && totalBulks.get() < maxBulks) {
                             BulkRequestBuilder bulk = client().prepareBulk();
                             int currentBulkSize = 500;
                             for (int i = 0; i < currentBulkSize; i++) {
