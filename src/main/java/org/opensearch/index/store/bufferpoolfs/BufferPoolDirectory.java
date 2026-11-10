@@ -207,21 +207,29 @@ public class BufferPoolDirectory extends FSDirectory {
     }
 
     /**
-     * Creates a BufferIOWithCaching for the write path.
-     * The write path uses the pool and cache regardless of mode — the underlying
-     * Caffeine cache accepts any BlockCacheValue type, and the pool is cast appropriately.
+     * Creates a BufferIOWithCaching for the write path. Written blocks go into the block cache from the
+     * same pool the read path uses: MemorySegments by default, ByteBuffers (e.g. slab slots) in ByteBuffer mode.
      */
     @SuppressWarnings("unchecked")
     private IndexOutput createBufferIOWithCaching(String name, Path path, OutputStream fos) throws IOException {
-        // In ByteBuffer mode, pass null pool to skip write-through caching
-        // (BufferIOWithCaching handles null pool gracefully by skipping cache puts)
-        Pool<RefCountedMemorySegment> writePool = byteBufferModeEnabled ? null : (Pool<RefCountedMemorySegment>) pool;
+        if (byteBufferModeEnabled) {
+            return new BufferIOWithCaching(
+                name,
+                path,
+                fos,
+                masterKeyBytes,
+                (BlockCache<RefCountedByteBuffer>) (BlockCache<?>) blockCache,
+                (Pool<RefCountedByteBuffer>) pool,
+                this.provider,
+                this.encryptionMetadataCache
+            );
+        }
         return new BufferIOWithCaching(
             name,
             path,
             fos,
             masterKeyBytes,
-            writePool,
+            (Pool<RefCountedMemorySegment>) pool,
             (BlockCache<RefCountedMemorySegment>) (BlockCache<?>) blockCache,
             this.provider,
             this.encryptionMetadataCache

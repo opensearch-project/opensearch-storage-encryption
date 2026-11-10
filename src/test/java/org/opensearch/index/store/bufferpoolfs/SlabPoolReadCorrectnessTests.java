@@ -64,7 +64,7 @@ public class SlabPoolReadCorrectnessTests extends OpenSearchTestCase {
             .setNodeSettings(
                 Settings
                     .builder()
-                    .put("node.store.crypto.write_cache_enabled", false)
+                    .put("node.store.crypto.write_cache_enabled", writeCacheEnabled())
                     .put("node.store.crypto.byte_buffer_mode_enabled", true)
                     .put("node.store.crypto.byte_buffer_slab_pool_enabled", true)
                     .build()
@@ -112,6 +112,11 @@ public class SlabPoolReadCorrectnessTests extends OpenSearchTestCase {
             poolResources.getFileChannelCache(),
             true
         );
+    }
+
+    /** Whether written blocks also go into the block cache (from the slab pool). */
+    protected boolean writeCacheEnabled() {
+        return false;
     }
 
     @After

@@ -23,7 +23,9 @@ import org.apache.lucene.store.OutputStreamIndexOutput;
 import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.CryptoDirectoryFactory;
 import org.opensearch.index.store.PanamaNativeAccess;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
@@ -81,7 +83,27 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         super(
             "FSIndexOutput(path=\"" + path + "\")",
             name,
-            new EncryptedOutputStream(os, path, key, memorySegmentPool, blockCache, provider, encryptionMetadataCache),
+            new EncryptedOutputStream(os, path, key, memorySegmentPool, null, blockCache, provider, encryptionMetadataCache),
+            CHUNK_SIZE
+        );
+    }
+
+    /** ByteBuffer mode: written blocks are cached as {@link RefCountedByteBuffer}s taken from {@code byteBufferPool}. */
+    public BufferIOWithCaching(
+        String name,
+        Path path,
+        OutputStream os,
+        byte[] key,
+        BlockCache<RefCountedByteBuffer> blockCache,
+        Pool<RefCountedByteBuffer> byteBufferPool,
+        Provider provider,
+        EncryptionMetadataCache encryptionMetadataCache
+    )
+        throws IOException {
+        super(
+            "FSIndexOutput(path=\"" + path + "\")",
+            name,
+            new EncryptedOutputStream(os, path, key, null, byteBufferPool, blockCache, provider, encryptionMetadataCache),
             CHUNK_SIZE
         );
     }
@@ -96,8 +118,11 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         private final byte[] cipherOut = new byte[OpenSslNativeCipher.MAX_HEAP_UPDATE_SIZE];
         private final Path path;
         private final String normalizedPath;
+        // Exactly one pool is set: memorySegmentPool by default, byteBufferPool in ByteBuffer mode.
         private final Pool<RefCountedMemorySegment> memorySegmentPool;
-        private final BlockCache<RefCountedMemorySegment> blockCache;
+        private final Pool<RefCountedByteBuffer> byteBufferPool;
+        @SuppressWarnings("rawtypes")
+        private final BlockCache blockCache;
         private final long frameSize;
         private final long frameSizeMask;
 
@@ -124,7 +149,8 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             Path path,
             byte[] key,
             Pool<RefCountedMemorySegment> memorySegmentPool,
-            BlockCache<RefCountedMemorySegment> blockCache,
+            Pool<RefCountedByteBuffer> byteBufferPool,
+            BlockCache<?> blockCache,
             Provider provider,
             EncryptionMetadataCache encryptionMetadataCache
         ) {
@@ -134,6 +160,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             this.masterKey = key;
             this.buffer = new byte[BUFFER_SIZE];
             this.memorySegmentPool = memorySegmentPool;
+            this.byteBufferPool = byteBufferPool;
             this.blockCache = blockCache;
             this.provider = provider;
             this.encryptionMetadataCache = encryptionMetadataCache;
@@ -260,22 +287,14 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             int blockOffset,
             int chunkLen
         ) {
-            // No pool in ByteBuffer mode: the write cache is not used.
-            if (!CryptoDirectoryFactory.isWriteCacheEnabled() || memorySegmentPool == null) {
+            if (!CryptoDirectoryFactory.isWriteCacheEnabled() || (memorySegmentPool == null && byteBufferPool == null)) {
                 return;
             }
 
             // Cache fully-aligned full blocks immediately
             if (blockOffset == 0 && chunkLen == CACHE_BLOCK_SIZE) {
                 try {
-                    final RefCountedMemorySegment refSegment = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
-                    final MemorySegment pooled = refSegment.segment();
-                    final MemorySegment pooledSlice = pooled.asSlice(0, CACHE_BLOCK_SIZE);
-                    // Cache plaintext data
-                    MemorySegment.copy(sourceData, sourceOffset, pooledSlice, 0, CACHE_BLOCK_SIZE);
-
-                    BlockCacheKey cacheKey = new FileBlockCacheKey(path, blockAlignedOffset);
-                    blockCache.put(cacheKey, refSegment);
+                    cachePlaintextBlock(blockAlignedOffset, sourceData, sourceOffset, CACHE_BLOCK_SIZE);
 
                     // Track this as last cached block
                     lastCachedBlockOffset = blockAlignedOffset;
@@ -393,8 +412,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         }
 
         private void cacheFinalPartialBlock() {
-            // No pool in ByteBuffer mode: the write cache is not used.
-            if (!CryptoDirectoryFactory.isWriteCacheEnabled() || memorySegmentPool == null) {
+            if (!CryptoDirectoryFactory.isWriteCacheEnabled() || (memorySegmentPool == null && byteBufferPool == null)) {
                 return;
             }
             if (partialBlockLength == 0 || lastCachedBlockOffset < 0 || streamOffset <= 0) {
@@ -429,18 +447,35 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
 
             // Safe to cache - this is definitely the file's final partial block
             try {
-                RefCountedMemorySegment refSegment = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
-                MemorySegment pooled = refSegment.segment().asSlice(0, CACHE_BLOCK_SIZE);
-                MemorySegment.copy(MemorySegment.ofArray(partialBlockBuffer), 0, pooled, 0, partialBlockLength);
-
-                BlockCacheKey cacheKey = new FileBlockCacheKey(path, lastCachedBlockOffset);
-                blockCache.put(cacheKey, refSegment);
+                cachePlaintextBlock(lastCachedBlockOffset, MemorySegment.ofArray(partialBlockBuffer), 0, partialBlockLength);
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
                 LOGGER.warn("Interrupted while caching final partial block for path={}", path);
             } catch (Exception e) {
                 LOGGER.debug("Failed to acquire segment from pool for final partial block; skipping cache: {}", e.getMessage());
             }
+        }
+
+        /** Copies {@code len} plaintext bytes into a pooled block and caches it at {@code blockAlignedOffset}. */
+        @SuppressWarnings("unchecked")
+        private void cachePlaintextBlock(long blockAlignedOffset, MemorySegment src, long srcOffset, int len) throws Exception {
+            final BlockCacheValue<?> block;
+            if (byteBufferPool != null) {
+                final RefCountedByteBuffer buf = byteBufferPool.tryAcquire(5, TimeUnit.MILLISECONDS);
+                final MemorySegment dst = MemorySegment.ofBuffer(buf.buffer().order(java.nio.ByteOrder.LITTLE_ENDIAN));
+                MemorySegment.copy(src, srcOffset, dst, 0, len);
+                if (len < CACHE_BLOCK_SIZE) {
+                    // A reused slab slot may still hold another block's plaintext past this file's end.
+                    dst.asSlice(len).fill((byte) 0);
+                }
+                block = buf;
+            } else {
+                final RefCountedMemorySegment refSegment = memorySegmentPool.tryAcquire(5, TimeUnit.MILLISECONDS);
+                MemorySegment.copy(src, srcOffset, refSegment.segment().asSlice(0, CACHE_BLOCK_SIZE), 0, len);
+                block = refSegment;
+            }
+            BlockCacheKey cacheKey = new FileBlockCacheKey(path, blockAlignedOffset);
+            blockCache.put(cacheKey, block);
         }
 
         private void checkClosed() throws IOException {
