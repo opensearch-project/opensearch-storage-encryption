@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.index.store.metrics.LogThrottle;
 import org.opensearch.index.store.read_ahead.Worker;
 
 /**
@@ -37,6 +38,8 @@ import org.opensearch.index.store.read_ahead.Worker;
 public final class QueuingWorker implements Worker {
 
     private static final Logger LOGGER = LogManager.getLogger(QueuingWorker.class);
+    private static final LogThrottle LARGE_REQUEST_LOG = new LogThrottle(1, TimeUnit.MINUTES);
+    private static final LogThrottle FAILED_LOG = new LogThrottle(1, TimeUnit.MINUTES);
 
     /** Represents a queued readahead request. */
     private static final class Task {
@@ -198,7 +201,17 @@ public final class QueuingWorker implements Worker {
         if (blockCount <= 1) {
             LOGGER.trace("Tiny readahead request path={} off={} blocks={}", path, offset, blockCount);
         } else if (blockCount > LARGE_WINDOW_THRESHOLD) {
-            LOGGER.warn("Large readahead request path={} off={} blocks={} (possible runaway window)", path, offset, blockCount);
+            long suppressed = LARGE_REQUEST_LOG.tryAcquire();
+            if (suppressed >= 0) {
+                LOGGER
+                    .warn(
+                        "Large readahead request path={} off={} blocks={} (possible runaway window; {} similar messages suppressed)",
+                        path,
+                        offset,
+                        blockCount,
+                        suppressed
+                    );
+            }
         }
 
         // Overlap detection
@@ -361,7 +374,11 @@ public final class QueuingWorker implements Worker {
             LOGGER.debug("File not found during readahead path={}", task.path);
         } catch (IOException | UncheckedIOException e) {
             inFlight.remove(task);
-            LOGGER.warn("Readahead failed path={} msg={}", task.path, e.getMessage(), e);
+            // Readahead is best effort: the foreground read reports a real I/O failure itself
+            long suppressed = FAILED_LOG.tryAcquire();
+            if (suppressed >= 0) {
+                LOGGER.warn("Readahead failed path={} ({} similar messages suppressed)", task.path, suppressed, e);
+            }
         } catch (RuntimeException e) {
             inFlight.remove(task);
             throw e;
@@ -389,7 +406,7 @@ public final class QueuingWorker implements Worker {
             if (readAheadPaused && queueLow) {
                 readAheadPaused = false;
                 consecutivePauseWindows = 0;
-                LOGGER.info("RA_RESUMED: queue recovered qsz={}/{}", qsz, cap);
+                LOGGER.debug("RA_RESUMED: queue recovered qsz={}/{}", qsz, cap);
                 // Reset sampling so we don't immediately re-pause on stale deltas.
                 lastHits = -1;
                 lastMisses = -1;
@@ -416,7 +433,7 @@ public final class QueuingWorker implements Worker {
                 if (readAheadPaused && ++consecutivePauseWindows >= MAX_CONSECUTIVE_PAUSE_WINDOWS) {
                     readAheadPaused = false;
                     consecutivePauseWindows = 0;
-                    LOGGER.info("RA_RESUMED: forced periodic recovery (low sample) qsz={}/{}", qsz, cap);
+                    LOGGER.debug("RA_RESUMED: forced periodic recovery (low sample) qsz={}/{}", qsz, cap);
                     lastHits = -1;
                     lastMisses = -1;
                 }
@@ -430,7 +447,7 @@ public final class QueuingWorker implements Worker {
                 if (readAheadPaused) {
                     readAheadPaused = false;
                     consecutivePauseWindows = 0;
-                    LOGGER.info("RA_RESUMED: warmup period tasks={}/{}", totalTasksProcessed, WARMUP_TASKS);
+                    LOGGER.debug("RA_RESUMED: warmup period tasks={}/{}", totalTasksProcessed, WARMUP_TASKS);
                 }
                 // Reset sampling to avoid stale deltas carrying into first real decision window
                 lastHits = -1;
@@ -443,7 +460,7 @@ public final class QueuingWorker implements Worker {
                 if (pressured && missRate >= PAUSE_MISS_RATE) {
                     readAheadPaused = true;
                     consecutivePauseWindows = 0;
-                    LOGGER.info("RA_PAUSED: pressured + high missRate missRate={} (dm={}, ops={}) qsz={}/{}", missRate, dm, ops, qsz, cap);
+                    LOGGER.debug("RA_PAUSED: pressured + high missRate missRate={} (dm={}, ops={}) qsz={}/{}", missRate, dm, ops, qsz, cap);
                 }
                 return;
             }
@@ -452,7 +469,7 @@ public final class QueuingWorker implements Worker {
             if (missRate <= RESUME_MISS_RATE) {
                 readAheadPaused = false;
                 consecutivePauseWindows = 0;
-                LOGGER.info("RA_RESUMED: missRate improved missRate={} (dm={}, ops={}) qsz={}/{}", missRate, dm, ops, qsz, cap);
+                LOGGER.debug("RA_RESUMED: missRate improved missRate={} (dm={}, ops={}) qsz={}/{}", missRate, dm, ops, qsz, cap);
                 lastHits = -1;
                 lastMisses = -1;
             } else {
@@ -461,7 +478,7 @@ public final class QueuingWorker implements Worker {
                     // Avoid indefinite pause if signals are noisy/stuck.
                     readAheadPaused = false;
                     consecutivePauseWindows = 0;
-                    LOGGER.info("RA_RESUMED: forced periodic recovery qsz={}/{}", qsz, cap);
+                    LOGGER.debug("RA_RESUMED: forced periodic recovery qsz={}/{}", qsz, cap);
                     lastHits = -1;
                     lastMisses = -1;
                 }

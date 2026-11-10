@@ -18,6 +18,7 @@ import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.PanamaNativeAccess;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
+import org.opensearch.index.store.metrics.LogThrottle;
 
 /**
  * High-performance primary memory pool for off-heap memory segment allocation using
@@ -38,6 +39,7 @@ import org.opensearch.index.store.metrics.CryptoMetricsService;
 public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoCloseable {
 
     private static final Logger LOGGER = LogManager.getLogger(MemorySegmentPool.class);
+    private static final LogThrottle TIMEOUT_LOG = new LogThrottle(1, TimeUnit.MINUTES);
 
     private final ReentrantLock lock = new ReentrantLock();
     private final Condition notEmpty = lock.newCondition();
@@ -144,13 +146,17 @@ public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoClo
                 // Pool exhausted - wait with timeout for a segment to be released
                 long remainingNanos = deadlineNanos - System.nanoTime();
                 if (remainingNanos <= 0) {
-                    LOGGER
-                        .warn(
-                            "Pool acquisition timed out after {}ms (allocated={}, max={})",
-                            unit.toMillis(timeout),
-                            allocatedSegments,
-                            maxSegments
-                        );
+                    long suppressed = TIMEOUT_LOG.tryAcquire();
+                    if (suppressed >= 0) {
+                        LOGGER
+                            .warn(
+                                "Pool acquisition timed out after {}ms (allocated={}, max={}; {} similar messages suppressed)",
+                                unit.toMillis(timeout),
+                                allocatedSegments,
+                                maxSegments,
+                                suppressed
+                            );
+                    }
                     throw new IOException(
                         "Pool acquisition timed out after "
                             + timeout

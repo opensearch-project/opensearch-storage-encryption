@@ -135,7 +135,7 @@ public class CryptoTranslog extends LocalTranslog {
         this.keyResolver = keyResolver;
         this.translogUUID = translogUUID;
 
-        logger.info("CryptoTranslog initialized for translog: {}", translogUUID);
+        logger.debug("CryptoTranslog initialized for translog: {}", translogUUID);
     }
 
     /**
