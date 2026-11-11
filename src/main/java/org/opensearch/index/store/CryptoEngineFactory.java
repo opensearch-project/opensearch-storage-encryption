@@ -16,6 +16,7 @@ import org.opensearch.index.engine.Engine;
 import org.opensearch.index.engine.EngineConfig;
 import org.opensearch.index.engine.EngineFactory;
 import org.opensearch.index.engine.InternalEngine;
+import org.opensearch.index.engine.NRTReplicationEngine;
 import org.opensearch.index.remote.RemoteTranslogTransferTracker;
 import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
@@ -65,7 +66,11 @@ public class CryptoEngineFactory implements EngineFactory {
                 .translogFactory(cryptoTranslogFactory)  // <- Replace with our crypto factory
                 .build();
 
-            // Return the default engine with crypto-enabled translog
+            // Pick the engine the same way core's NRTReplicationEngineFactory does: segment-replication
+            // and remote-store replicas must not index locally, they receive segments from the primary
+            if (cryptoConfig.isReadOnlyReplica()) {
+                return new NRTReplicationEngine(cryptoConfig);
+            }
             return new InternalEngine(cryptoConfig);
         } catch (IOException e) {
             throw new RuntimeException("Failed to create crypto engine", e);
