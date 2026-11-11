@@ -33,7 +33,6 @@ import org.opensearch.crypto.CryptoHandlerRegistry;
 import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.shard.ShardPath;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_loader.BlockLoader;
@@ -84,9 +83,27 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         .boolSetting("node.store.crypto.write_cache_enabled", true, Property.NodeScope, Property.Dynamic);
 
     /**
+     * Setting to use ByteBuffer-based IndexInput instead of MemorySegment-based.
+     * When true, uses CachedByteBufferIndexInput with DirectByteBuffer and GC-managed lifecycle.
+     * When false (default), uses CachedMemorySegmentIndexInput with Panama MemorySegment.
+     */
+    public static final Setting<Boolean> BYTE_BUFFER_MODE_ENABLED = Setting
+        .boolSetting("node.store.crypto.byte_buffer_mode_enabled", false, Property.NodeScope);
+
+    /**
+     * In ByteBuffer mode, serve blocks from fixed, reused slots in large slabs ({@code SlabByteBufferPool})
+     * instead of one direct-buffer allocation per block, so cache churn doesn't fragment native memory.
+     */
+    public static final Setting<Boolean> BYTE_BUFFER_SLAB_POOL_ENABLED = Setting
+        .boolSetting("node.store.crypto.byte_buffer_slab_pool_enabled", false, Property.NodeScope);
+
+    /**
      * Current value of the write cache enabled setting, updated dynamically via cluster settings.
      */
     private static volatile boolean writeCacheEnabled = true;
+
+    private static volatile boolean byteBufferModeEnabled = false;
+    private static volatile boolean byteBufferSlabPoolEnabled = false;
 
     /**
      * Shared pool resources including pool, cache, and telemetry.
@@ -490,8 +507,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         * - Cache Wrapper: Wraps the shared cache with directory-specific loader
         * - ReadAhead Worker: Asynchronous prefetching for sequential reads
         *
-        * Memory Lifecycle:
-        * -----------------
+        * Memory Lifecycle (MemorySegment mode):
+        * --------------------------------------
         * 1. Cache miss: Loader reads encrypted data, decrypts it, stores in RefCountedMemorySegment
         * 2. Initial refCount=1 (cache's reference)
         * 3. Reader pins: refCount incremented via tryPin()
@@ -499,38 +516,41 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         * 5. Cache eviction: retired=true set (prevents new pins), then decRef() called
         * 6. refCount=0: Segment returned to pool for reuse
         *
-        * Two-Phase Eviction (prevents stale reads):
-        * -------------------------------------------
+        * Memory Lifecycle (ByteBuffer mode):
+        * -----------------------------------
+        * 1. Cache miss: Loader reads data, copies into pool-acquired DirectByteBuffer
+        * 2. ByteBuffer wrapped in RefCountedByteBuffer (GC-managed, no ref counting)
+        * 3. Readers access via absolute ByteBuffer reads (thread-safe)
+        * 4. Cache eviction: entry becomes unreachable, GC frees DirectByteBuffer
+        * 5. Cleaner decrements pool counter, allowing new allocations
+        *
+        * Two-Phase Eviction (MemorySegment mode only):
+        * ----------------------------------------------
         * - evictionListener: Sets retired=true (marks stale for BlockSlotTinyCache)
         * - removalListener: Calls decRef() (releases cache's reference)
         */
 
         // Ensure pool resources are initialized before creating directory
         PoolBuilder.PoolResources resources = ensurePoolInitialized();
-
-        // Create a per-directory loader that uses this directory's keyIvResolver for decryption
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(
-            resources.getSegmentPool(),
+        // Create a per-directory loader that uses this directory's keyIvResolver for decryption.
+        @SuppressWarnings({ "unchecked", "rawtypes" })
+        BlockLoader loader = new CryptoDirectIOBlockLoader(
+            resources.getPool(),
             keyResolver,
             encryptionMetadataCache,
-            resources.getFileChannelCache()
+            resources.getFileChannelCache(),
+            byteBufferModeEnabled
         );
 
         // Cache architecture: One shared Caffeine cache storage, multiple wrapper instances
-        // - sharedBlockCache: Created once in ensurePoolInitialized(), holds the actual cache storage
+        // - sharedCaffeineCache: Created once in ensurePoolInitialized(), holds the actual cache storage
         // - directoryCache: Per-directory wrapper that shares the underlying cache but uses its own loader
         // This design allows:
         // * Shared cache capacity across all directories
         // * Per-directory decryption via directory-specific loaders with unique keyIvResolvers
         // * Unified eviction policy managed by the shared cache
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> sharedCaffeineCache =
-            (CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment>) resources.getBlockCache();
-
-        BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
-            sharedCaffeineCache.getCache(),
-            loader,
-            resources.getMaxCacheBlocks()
-        );
+        @SuppressWarnings({ "unchecked", "rawtypes" })
+        BlockCache directoryCache = new CaffeineBlockCache(resources.getSharedCaffeineCache(), loader, resources.getMaxCacheBlocks());
 
         // Use the shared node-wide read-ahead worker
         // All shards/directories share a single queue and executor pool for better resource utilization
@@ -541,12 +561,12 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             lockFactory,
             provider,
             keyResolver,
-            resources.getSegmentPool(),
+            resources.getPool(),
             directoryCache,
-            loader,
             readaheadWorker,
             encryptionMetadataCache,
-            resources.getFileChannelCache()
+            resources.getFileChannelCache(),
+            byteBufferModeEnabled
         );
     }
 
@@ -559,6 +579,16 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     public static void setNodeSettings(Settings settings) {
         nodeSettings = settings;
         writeCacheEnabled = WRITE_CACHE_ENABLED_SETTING.get(settings);
+        byteBufferModeEnabled = BYTE_BUFFER_MODE_ENABLED.get(settings);
+        byteBufferSlabPoolEnabled = BYTE_BUFFER_SLAB_POOL_ENABLED.get(settings);
+    }
+
+    public static boolean byteBufferModeEnabled() {
+        return byteBufferModeEnabled;
+    }
+
+    public static boolean byteBufferSlabPoolEnabled() {
+        return byteBufferSlabPoolEnabled;
     }
 
     /**

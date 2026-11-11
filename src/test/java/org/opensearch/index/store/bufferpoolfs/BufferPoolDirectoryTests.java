@@ -64,7 +64,8 @@ public class BufferPoolDirectoryTests extends OpenSearchTestCase {
             .build();
 
         this.poolResources = PoolBuilder.build(nodeSettings);
-        Pool<RefCountedMemorySegment> segmentPool = poolResources.getSegmentPool();
+        @SuppressWarnings("unchecked")
+        Pool<RefCountedMemorySegment> segmentPool = (Pool<RefCountedMemorySegment>) poolResources.getPool();
 
         String indexUuid = randomAlphaOfLength(10);
         String indexName = randomAlphaOfLength(10);
@@ -78,7 +79,8 @@ public class BufferPoolDirectoryTests extends OpenSearchTestCase {
             segmentPool,
             keyResolver,
             encryptionMetadataCache,
-            poolResources.getFileChannelCache()
+            poolResources.getFileChannelCache(),
+            false
         );
 
         Worker worker = poolResources.getSharedReadaheadWorker();
@@ -100,10 +102,10 @@ public class BufferPoolDirectoryTests extends OpenSearchTestCase {
             keyResolver,
             segmentPool,
             directoryCache,
-            loader,
             worker,
             encryptionMetadataCache,
-            poolResources.getFileChannelCache()
+            poolResources.getFileChannelCache(),
+            false
         );
     }
 
