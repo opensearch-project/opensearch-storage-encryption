@@ -57,7 +57,8 @@ public class AmazonEncryptionContextResolver implements EncryptionContextResolve
             for (RepositoryMetadata repo : repositoriesMetadata.repositories()) {
                 String encCtx = repo.settings().get(AMAZON_ENC_CTX_SETTING);
                 if (encCtx != null && !encCtx.isEmpty()) {
-                    LOGGER.info("Found Amazon default encryption context from repository '{}': {}", repo.name(), encCtx);
+                    // Never log the context itself: it can carry tenant or account identifiers
+                    LOGGER.debug("Found the Amazon default encryption context in repository [{}]", repo.name());
                     return encCtx;
                 }
             }

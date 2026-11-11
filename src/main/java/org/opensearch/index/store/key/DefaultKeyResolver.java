@@ -8,8 +8,6 @@ import java.io.IOException;
 import java.security.Key;
 import java.security.Provider;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import javax.crypto.spec.SecretKeySpec;
 
@@ -96,7 +94,7 @@ public class DefaultKeyResolver implements KeyResolver {
             try {
                 initNewKey(shardId);
             } catch (Exception ex) {
-                CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, getMetricKey(ex));
+                CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, indexName);
                 String rootCause = KeyCacheException.extractRootCauseMessage(ex);
                 throw new KeyCacheException(
                     "Error encountered for index '" + indexName + "' (UUID: " + indexUuid + "): " + rootCause,
@@ -105,7 +103,7 @@ public class DefaultKeyResolver implements KeyResolver {
                 );
             }
         } catch (Exception e) {
-            CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, getMetricKey(e));
+            CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, indexName);
             String rootCause = KeyCacheException.extractRootCauseMessage(e);
             throw new KeyCacheException("Error encountered for index '" + indexName + "' (UUID: " + indexUuid + "): " + rootCause, e, true);
         }
@@ -165,7 +163,7 @@ public class DefaultKeyResolver implements KeyResolver {
             byte[] masterKey = keyProvider.decryptKey(encryptedKey);
             return new SecretKeySpec(masterKey, "AES");
         } catch (Exception e) {
-            CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, getMetricKey(e));
+            CryptoMetricsService.getInstance().recordError(ErrorType.KMS_KEY_ERROR, indexName);
             throw e;
         }
 
@@ -188,23 +186,6 @@ public class DefaultKeyResolver implements KeyResolver {
             // Only wrap unexpected exceptions
             throw new KeyCacheException("Failed to get encryption key for index: " + indexName, e, true);
         }
-    }
-
-    private String getMetricKey(Exception e) {
-        String kmsKey = extractKmsKey(e);
-        return this.indexName + ":" + kmsKey;
-    }
-
-    private String extractKmsKey(Exception e) {
-        String message = e.getMessage();
-        if (message != null) {
-            Pattern pattern = Pattern.compile("arn:aws:kms:[^:]+:[^:]+:key/([^\\s]+)");
-            Matcher matcher = pattern.matcher(message);
-            if (matcher.find()) {
-                return matcher.group(1); // Just the key ID, not full ARN
-            }
-        }
-        return "unknown";
     }
 
 }

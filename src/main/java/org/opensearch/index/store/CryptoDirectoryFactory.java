@@ -222,6 +222,13 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         );
 
     /**
+     * Replaces the encryption context resolver. Tests only: production code sets it in {@link #setClusterService}.
+     */
+    static void setEncryptionContextResolver(EncryptionContextResolver resolver) {
+        encryptionContextResolver = resolver;
+    }
+
+    /**
      * Get default encryption context from cluster metadata using the configured resolver.
      *
      * @return the encryption context from cluster settings, or empty string if not found
@@ -252,24 +259,21 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         // Merge default encryption context with index-specific context
         if (!defaultEncCtx.isEmpty()) {
             if (indexEncCtx == null || indexEncCtx.isEmpty()) {
-                // Use default encryption context if index doesn't specify one
+                // Use default encryption context if index doesn't specify one. The context values can carry
+                // tenant or account identifiers, so only the fact that a default was applied is logged.
                 LOGGER
-                    .info(
-                        "Using default encryption context from cluster repository for index {}: {}",
-                        indexSettings.getIndex().getName(),
-                        defaultEncCtx
+                    .debug(
+                        "Using the default KMS encryption context from a cluster repository for index {}",
+                        indexSettings.getIndex().getName()
                     );
                 settings = Settings.builder().put(settings).put("kms.encryption_context", defaultEncCtx).build();
             } else {
                 // Merge: default context is the baseline, index context is additional
                 String mergedEncCtx = defaultEncCtx + "," + indexEncCtx;
                 LOGGER
-                    .info(
-                        "Merging default encryption context '{}' with index-specific context '{}' for index {}: result='{}'",
-                        defaultEncCtx,
-                        indexEncCtx,
-                        indexSettings.getIndex().getName(),
-                        mergedEncCtx
+                    .debug(
+                        "Merging the default KMS encryption context with the index's own context for index {}",
+                        indexSettings.getIndex().getName()
                     );
                 settings = Settings.builder().put(settings).put("kms.encryption_context", mergedEncCtx).build();
             }
