@@ -448,7 +448,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                 );
             }
             case MMAPFS -> {
-                LOGGER.info("MMAPFS not supported natively for index-level-encryption; using bufferpoolfs with block caching");
+                LOGGER.debug("MMAPFS not supported natively for index-level-encryption; using bufferpoolfs with block caching");
                 return createCryptoBufferPoolFSDirectory(location, lockFactory, provider, keyResolver, encryptionMetadataCache);
             }
             case SIMPLEFS, NIOFS -> {

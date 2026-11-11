@@ -276,7 +276,7 @@ public class DirectIOWithIoUringIndexOutput extends IndexOutput {
 
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
-            LOGGER.warn("Interrupted while acquiring segment for cache.");
+            LOGGER.debug("Interrupted while acquiring segment for cache; skipping cache");
         } catch (Exception e) {
             LOGGER.debug("Failed to acquire segment from pool; skipping cache: {}", e.getMessage());
         }

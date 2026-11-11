@@ -281,7 +281,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                     partialBlockLength = 0; // Reset partial tracking
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
-                    LOGGER.warn("Interrupted while acquiring segment for cache.");
+                    LOGGER.debug("Interrupted while acquiring segment for cache; skipping cache");
                 } catch (Exception e) {
                     LOGGER.debug("Failed to acquire segment from pool; skipping cache: {}", e.getMessage());
                 }
@@ -403,7 +403,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             long expectedFinalBlockOffset = (streamOffset - 1) & ~CACHE_BLOCK_MASK;
             if (lastCachedBlockOffset != expectedFinalBlockOffset) {
                 LOGGER
-                    .warn(
+                    .debug(
                         "Partial block offset mismatch: tracked={}, expected={}, streamOffset={}",
                         lastCachedBlockOffset,
                         expectedFinalBlockOffset,
@@ -416,7 +416,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             int expectedTailSize = (int) (streamOffset - lastCachedBlockOffset);
             if (partialBlockLength != expectedTailSize) {
                 LOGGER
-                    .warn(
+                    .debug(
                         "Partial block size mismatch: tracked={}, expected={}, streamOffset={}",
                         partialBlockLength,
                         expectedTailSize,
@@ -435,7 +435,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                 blockCache.put(cacheKey, refSegment);
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
-                LOGGER.warn("Interrupted while caching final partial block for path={}", path);
+                LOGGER.debug("Interrupted while caching final partial block for path={}", path);
             } catch (Exception e) {
                 LOGGER.debug("Failed to acquire segment from pool for final partial block; skipping cache: {}", e.getMessage());
             }

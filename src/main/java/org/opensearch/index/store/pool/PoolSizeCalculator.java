@@ -92,7 +92,8 @@ public final class PoolSizeCalculator {
                 .info(
                     "Instance with low offheap (off-heap={} GB < {} GB), using reduced {} cache-to-pool ratio",
                     offHeapGB,
-                    SMALL_INSTANCE_THRESHOLD_GB
+                    SMALL_INSTANCE_THRESHOLD_GB,
+                    lowCacheToPoolRatio
                 );
             return lowCacheToPoolRatio;
         }

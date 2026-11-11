@@ -28,6 +28,7 @@ import org.opensearch.index.store.cipher.MemorySegmentDecryptor;
 import org.opensearch.index.store.footer.EncryptionFooter;
 import org.opensearch.index.store.footer.EncryptionMetadataTrailer;
 import org.opensearch.index.store.key.KeyResolver;
+import org.opensearch.index.store.metrics.LogThrottle;
 import org.opensearch.index.store.pool.Pool;
 
 /**
@@ -52,6 +53,7 @@ import org.opensearch.index.store.pool.Pool;
 @SuppressWarnings("preview")
 public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySegment> {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOBlockLoader.class);
+    private static final LogThrottle BULK_READ_FAILED_LOG = new LogThrottle(1, TimeUnit.MINUTES);
 
     private final KeyResolver keyResolver;
     private final Pool<RefCountedMemorySegment> segmentPool;
@@ -159,7 +161,18 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
         } catch (NoSuchFileException e) {
             throw e;
         } catch (Exception e) {
-            LOGGER.error("Bulk read failed: path={} offset={} length={} err={}", filePath, startOffset, readLength, e.toString());
+            long suppressed = BULK_READ_FAILED_LOG.tryAcquire();
+            if (suppressed >= 0) {
+                LOGGER
+                    .error(
+                        "Bulk read failed: path={} offset={} length={} err={} ({} similar messages suppressed)",
+                        filePath,
+                        startOffset,
+                        readLength,
+                        e.toString(),
+                        suppressed
+                    );
+            }
             throw e;
         }
     }
