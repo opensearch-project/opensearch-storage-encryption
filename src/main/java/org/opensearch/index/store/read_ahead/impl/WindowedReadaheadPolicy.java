@@ -25,19 +25,23 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
     private final int maxWindow;
     private final int minLead;
     private final int smallGapDivisor;
+    private final int minSequentialRun;
 
     /** Immutable state snapshot. */
     private static final class State {
         final long lastBlock;
         final int window;
+        // Consecutive sequential steps that led to lastBlock, capped at minSequentialRun.
+        final int run;
 
-        State(long lastBlock, int window) {
+        State(long lastBlock, int window, int run) {
             this.lastBlock = lastBlock;
             this.window = window;
+            this.run = run;
         }
 
         static State init(int initWin) {
-            return new State(-1L, initWin);
+            return new State(-1L, initWin, 0);
         }
     }
 
@@ -65,6 +69,22 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
      * @param smallGapDivisor the divisor for determining small forward jumps (must be &gt;= 2)
      */
     public WindowedReadaheadPolicy(Path path, int initialWindow, int maxWindow, int minLead, int smallGapDivisor) {
+        this(path, initialWindow, maxWindow, minLead, smallGapDivisor, 0);
+    }
+
+    /**
+     * Creates a new WindowedReadaheadPolicy that waits for sequential access before triggering.
+     *
+     * @param path the file path this policy applies to
+     * @param initialWindow the starting window size (must be &gt;= 1)
+     * @param maxWindow the maximum window size (must be &gt;= initialWindow)
+     * @param minLead the minimum lead distance (must be &gt;= 1)
+     * @param smallGapDivisor the divisor for determining small forward jumps (must be &gt;= 2)
+     * @param minSequentialRun sequential steps a reader must take before readahead triggers; 0
+     *        triggers on the first access. A point lookup often reads a block and the one after
+     *        it, so waiting for 2 steps keeps random reads from prefetching blocks nobody reads.
+     */
+    public WindowedReadaheadPolicy(Path path, int initialWindow, int maxWindow, int minLead, int smallGapDivisor, int minSequentialRun) {
         if (initialWindow < 1)
             throw new IllegalArgumentException("initialWindow must be >= 1");
         if (maxWindow < initialWindow)
@@ -73,12 +93,15 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
             throw new IllegalArgumentException("minLead must be >= 1");
         if (smallGapDivisor < 2)
             throw new IllegalArgumentException("smallGapDivisor must be >= 2");
+        if (minSequentialRun < 0)
+            throw new IllegalArgumentException("minSequentialRun must be >= 0");
 
         this.path = path;
         this.initialWindow = initialWindow;
         this.maxWindow = maxWindow;
         this.minLead = minLead;
         this.smallGapDivisor = smallGapDivisor;
+        this.minSequentialRun = minSequentialRun;
         this.ref = new AtomicReference<>(State.init(initialWindow));
     }
 
@@ -100,9 +123,9 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
             final State s = ref.get();
             if (s.lastBlock == -1L) {
                 final int win = initialWindow;
-                if (ref.compareAndSet(s, new State(currBlock, win))) {
+                if (ref.compareAndSet(s, new State(currBlock, win, 0))) {
                     LOGGER.trace("Init: path={}, currSeg={}, win={}", path, currBlock, win);
-                    return true;
+                    return minSequentialRun == 0;
                 }
                 continue;
             }
@@ -110,20 +133,25 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
             final long gap = currBlock - s.lastBlock;
             int newWin;
             boolean trigger;
+            int run = 0;
 
             final int seqGapBuffer = Math.max(2, Math.min(s.window / 2, 4));
             final boolean isSequential = gap >= 1 && gap <= seqGapBuffer;
 
             if (isSequential) {
-                // Sequential forward → always trigger, grow window
-                trigger = true;
-                newWin = Math.min(s.window << 1, maxWindow);
+                // Sequential forward → trigger and grow window once the run is long enough
+                run = Math.min(s.run + 1, minSequentialRun);
+                trigger = run >= minSequentialRun;
+                // The first trigger keeps the initial window: a short read of a few blocks then
+                // prefetches little it never uses.
+                newWin = trigger && s.run >= minSequentialRun ? Math.min(s.window << 1, maxWindow) : s.window;
             } else if (gap > seqGapBuffer) {
                 // Forward jump
                 final int smallGap = Math.max(1, s.window / smallGapDivisor);
                 if (gap <= smallGap) {
                     // Small jump → trigger, shrink window
-                    trigger = true;
+                    run = s.run;
+                    trigger = run >= minSequentialRun;
                     newWin = Math.max(initialWindow, s.window >>> 1);
                 } else {
                     // Large jump → hard reset (Linux behavior)
@@ -132,6 +160,7 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
                 }
             } else if (gap == 0) {
                 // Same position → no-op
+                run = s.run;
                 trigger = false;
                 newWin = s.window;
             } else {
@@ -141,7 +170,7 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
                 newWin = (absGap > s.window / 2) ? initialWindow : decay(s.window);
             }
 
-            final State next = new State(currBlock, newWin);
+            final State next = new State(currBlock, newWin, run);
             if (ref.compareAndSet(s, next)) {
                 if (LOGGER.isTraceEnabled()) {
                     LOGGER
@@ -160,6 +189,18 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
                 return trigger;
             }
         }
+    }
+
+    /**
+     * Records that the reader reached {@code currBlock} by consuming blocks that readahead
+     * scheduled. Cache hits never go through {@link #shouldTrigger(long)}, so without this the
+     * next miss would look like a large forward jump from the last miss and reset the window.
+     * Treated as sequential progress: the window grows.
+     *
+     * @param currBlock the block the reader is on
+     */
+    public void onReadaheadHit(long currBlock) {
+        ref.updateAndGet(s -> new State(currBlock, Math.min(s.window << 1, maxWindow), minSequentialRun));
     }
 
     @Override
@@ -192,7 +233,7 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
      * Called when the readahead queue is under moderate stress.
      */
     public void onQueuePressureMedium() {
-        ref.updateAndGet(s -> new State(s.lastBlock, Math.max(initialWindow, s.window >>> 1)));
+        ref.updateAndGet(s -> new State(s.lastBlock, Math.max(initialWindow, s.window >>> 1), s.run));
     }
 
     /**
@@ -200,7 +241,7 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
      * Called when the readahead queue is under severe stress.
      */
     public void onQueuePressureHigh() {
-        ref.updateAndGet(s -> new State(s.lastBlock, initialWindow));
+        ref.updateAndGet(s -> new State(s.lastBlock, initialWindow, s.run));
     }
 
     /**
@@ -216,7 +257,7 @@ public class WindowedReadaheadPolicy implements ReadaheadPolicy {
      * This reduces unnecessary prefetching when the cache is already effective.
      */
     public void onCacheHitShrink() {
-        ref.updateAndGet(s -> new State(s.lastBlock, Math.max(initialWindow, s.window >>> 1)));
+        ref.updateAndGet(s -> new State(s.lastBlock, Math.max(initialWindow, s.window >>> 1), s.run));
     }
 
     /**

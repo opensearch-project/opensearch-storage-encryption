@@ -55,7 +55,11 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     final Path path;
     final BlockCache<RefCountedMemorySegment> blockCache;
     final ReadaheadManager readaheadManager;
-    final ReadaheadContext readaheadContext;
+    // The master's context is the file's. A clone or slice reads at its own position, so it gets
+    // its own context from readaheadParent, created on its first cache miss: clones and slices
+    // that only hit cached blocks never need one.
+    ReadaheadContext readaheadContext;
+    private final ReadaheadContext readaheadParent;
 
     final long absoluteBaseOffset; // absolute position in original file where this input starts
     final boolean isSlice; // true for slices, false for main instances
@@ -133,7 +137,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         this.length = length;
         this.blockCache = blockCache;
         this.readaheadManager = readaheadManager;
-        this.readaheadContext = readaheadContext;
+        this.readaheadContext = isSlice ? null : readaheadContext;
+        this.readaheadParent = isSlice ? readaheadContext : null;
         this.isSlice = isSlice;
         this.blockSlotTinyCache = blockSlotTinyCache;
     }
@@ -206,8 +211,13 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         currentBlock = cacheValue;
 
         // Notify readahead manager of access pattern
-        if (readaheadContext != null) {
-            readaheadContext.onAccess(blockOffset, cacheHitHolder.wasCacheHit());
+        final boolean wasHit = cacheHitHolder.wasCacheHit();
+        ReadaheadContext ra = readaheadContext;
+        if (ra == null && wasHit == false && readaheadParent != null) {
+            ra = readaheadContext = readaheadParent.newReaderContext();
+        }
+        if (ra != null) {
+            ra.onAccess(blockOffset, wasHit);
         }
 
         return pinnedBlock.segment();
@@ -757,7 +767,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             length,
             blockCache,
             readaheadManager,
-            readaheadContext,
+            isSlice ? readaheadParent : readaheadContext,
             true,
             blockSlotTinyCache
         );

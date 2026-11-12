@@ -54,6 +54,19 @@ public interface ReadaheadContext extends Closeable {
     void onAccess(long blockOffset, boolean wasHit);
 
     /**
+     * Returns a context for another reader (a clone or slice) of the same file.
+     *
+     * <p>Readahead follows one reader's position, so readers that move independently must not
+     * share a context. The returned context shares the file, worker and cache with this one and
+     * stops when this context is closed.
+     *
+     * @return a context with its own access-pattern state
+     */
+    default ReadaheadContext newReaderContext() {
+        return this;
+    }
+
+    /**
      * Manually triggers readahead operations starting from the specified file offset.
      * 
      * <p>This method bypasses the normal access pattern detection and forces readahead
