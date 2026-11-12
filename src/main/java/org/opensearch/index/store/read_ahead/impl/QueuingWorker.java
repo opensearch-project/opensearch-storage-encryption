@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.metrics.LogThrottle;
 import org.opensearch.index.store.read_ahead.Worker;
 
@@ -43,7 +44,7 @@ public final class QueuingWorker implements Worker {
 
     /** Represents a queued readahead request. */
     private static final class Task {
-        final org.opensearch.index.store.block_cache.BlockCache<?> blockCache;
+        final BlockCache<?> blockCache;
         final Path path;
         final long offset;     // byte offset
         final long blockCount; // number of blocks
@@ -51,7 +52,7 @@ public final class QueuingWorker implements Worker {
         long startNanos;
         long doneNanos;
 
-        Task(org.opensearch.index.store.block_cache.BlockCache<?> blockCache, Path path, long offset, long blockCount) {
+        Task(BlockCache<?> blockCache, Path path, long offset, long blockCount) {
             this.blockCache = blockCache;
             this.path = path;
             this.offset = offset;
@@ -137,7 +138,7 @@ public final class QueuingWorker implements Worker {
     private int totalTasksProcessed = 0;
 
     // Cache reference for stats (captured from first task)
-    private volatile org.opensearch.index.store.block_cache.BlockCache<?> statsCache = null;
+    private volatile BlockCache<?> statsCache = null;
 
     /**
      * Creates a readahead worker with a bounded queue.
@@ -154,12 +155,7 @@ public final class QueuingWorker implements Worker {
     }
 
     @Override
-    public <T extends AutoCloseable> boolean schedule(
-        org.opensearch.index.store.block_cache.BlockCache<T> blockCache,
-        Path path,
-        long offset,
-        long blockCount
-    ) {
+    public <T extends AutoCloseable> boolean schedule(BlockCache<T> blockCache, Path path, long offset, long blockCount) {
         if (closed) {
             LOGGER.debug("Attempted schedule on closed worker path={} off={} blocks={}", path, offset, blockCount);
             return false;
@@ -189,14 +185,9 @@ public final class QueuingWorker implements Worker {
     }
 
     /** Internal method to schedule a single chunk (not exceeding MAX_BULK_SIZE). */
-    private <T extends AutoCloseable> boolean scheduleChunk(
-        org.opensearch.index.store.block_cache.BlockCache<T> blockCache,
-        Path path,
-        long offset,
-        long blockCount
-    ) {
-        final long blockStart = offset >>> CACHE_BLOCK_SIZE_POWER;
-        final long blockEnd = blockStart + blockCount;
+    private <T extends AutoCloseable> boolean scheduleChunk(BlockCache<T> blockCache, Path path, long offset, long blockCount) {
+        long blockStart = offset >>> CACHE_BLOCK_SIZE_POWER;
+        long blockEnd = blockStart + blockCount;
 
         if (blockCount <= 1) {
             LOGGER.trace("Tiny readahead request path={} off={} blocks={}", path, offset, blockCount);
@@ -214,23 +205,37 @@ public final class QueuingWorker implements Worker {
             }
         }
 
-        // Overlap detection
-        for (Task t : inFlight) {
-            if (!t.path.equals(path))
-                continue;
-            if (Math.max(blockStart, t.startBlock()) < Math.min(blockEnd, t.endBlock())) {
-                int dup = duplicateCounter.incrementAndGet();
-                if (dup == DUP_WARN_THRESHOLD) {
-                    LOGGER
-                        .warn(
-                            "Frequent duplicate readahead detected ({} overlaps so far). "
-                                + "Scheduling may be too aggressive or window too small.",
-                            dup
-                        );
+        // Overlap detection: drop the blocks in-flight tasks already cover at either end of this
+        // request, and load the rest. Dropping the whole request would leave the part that does
+        // not overlap unloaded. A task strictly inside the request is loaded again with it. Trimming
+        // one end can expose another task at the new end, so repeat until nothing changes.
+        boolean overlapped = false;
+        boolean trimmed;
+        do {
+            trimmed = false;
+            for (Task t : inFlight) {
+                if (!t.path.equals(path) || Math.max(blockStart, t.startBlock()) >= Math.min(blockEnd, t.endBlock())) {
+                    continue;
                 }
-                return true; // skip duplicate
+                overlapped = true;
+                if (t.startBlock() <= blockStart) {
+                    blockStart = t.endBlock();
+                    trimmed = true;
+                } else if (t.endBlock() >= blockEnd) {
+                    blockEnd = t.startBlock();
+                    trimmed = true;
+                }
+                if (blockStart >= blockEnd) {
+                    countDuplicate();
+                    return true; // fully covered
+                }
             }
+        } while (trimmed);
+        if (overlapped) {
+            countDuplicate();
         }
+        offset = blockStart << CACHE_BLOCK_SIZE_POWER;
+        blockCount = blockEnd - blockStart;
 
         final Task task = new Task(blockCache, path, offset, blockCount);
         if (!inFlight.add(task)) {
@@ -277,6 +282,18 @@ public final class QueuingWorker implements Worker {
     }
 
     /** Drains tasks from the queue in batches. */
+    private void countDuplicate() {
+        int dup = duplicateCounter.incrementAndGet();
+        if (dup == DUP_WARN_THRESHOLD) {
+            LOGGER
+                .warn(
+                    "Frequent duplicate readahead detected ({} overlaps so far). "
+                        + "Scheduling may be too aggressive or window too small.",
+                    dup
+                );
+        }
+    }
+
     private void drainLoop() {
         try {
             while (!closed) {
@@ -330,7 +347,7 @@ public final class QueuingWorker implements Worker {
             // Periodically update the node-wide gate.
             if (++tasksSinceCheck >= PAUSE_CHECK_INTERVAL) {
                 tasksSinceCheck = 0;
-                org.opensearch.index.store.block_cache.BlockCache<?> cache = statsCache;
+                BlockCache<?> cache = statsCache;
                 updateReadAheadGate(cache);
             }
 
@@ -392,7 +409,7 @@ public final class QueuingWorker implements Worker {
      *
      * Requires BlockCache to expose cumulative hit/miss counters (typed), so we can compute deltas.
      */
-    private void updateReadAheadGate(org.opensearch.index.store.block_cache.BlockCache<?> blockCache) {
+    private void updateReadAheadGate(BlockCache<?> blockCache) {
         if (blockCache == null)
             return;
         try {
