@@ -122,6 +122,19 @@ public class BufferPoolDirectoryTests extends OpenSearchTestCase {
     }
 
     /**
+     * The read-ahead worker is shared by every directory on the node, so closing one
+     * directory (shard close, relocation, deletion) must not stop it for the others.
+     */
+    public void testCloseDoesNotStopSharedReadaheadWorker() throws Exception {
+        Worker worker = poolResources.getSharedReadaheadWorker();
+        assertTrue(worker.isRunning());
+
+        directory.close();
+
+        assertTrue("Shared read-ahead worker must survive a directory close", worker.isRunning());
+    }
+
+    /**
      * Verifies that close() calls super.close() so that ensureOpen() throws
      * AlreadyClosedException on subsequent operations. Without super.close(),
      * the directory appears open and operations silently proceed on stale state.

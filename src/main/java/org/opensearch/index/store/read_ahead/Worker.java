@@ -61,6 +61,14 @@ public interface Worker extends Closeable {
     void cancel(Path path);
 
     /**
+     * Cancel all pending requests for files under a directory. Used when a directory closes:
+     * the worker is shared node-wide, so a directory must never close it.
+     *
+     * @param prefix directory whose files' pending readahead should be canceled
+     */
+    void cancelByPathPrefix(Path prefix);
+
+    /**
      * Checks if readahead is currently paused due to cache thrashing.
      * This is a cheap volatile read meant to be called from the hot path.
      *
