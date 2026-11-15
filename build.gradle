@@ -71,6 +71,7 @@ dependencies {
     testImplementation 'org.openjdk.jmh:jmh-generator-annprocess:1.37'
     testAnnotationProcessor 'org.openjdk.jmh:jmh-generator-annprocess:1.37'
     testImplementation 'org.apache.commons:commons-math3:3.6.1'
+    testImplementation 'org.bouncycastle:bcprov-jdk18on:1.84'
 
     // Integration test dependencies
     testImplementation "org.opensearch.plugin:reindex-client:${opensearch_version}"

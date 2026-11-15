@@ -7,6 +7,7 @@ package org.opensearch.index.store;
 import java.util.regex.Pattern;
 
 import org.opensearch.common.settings.Settings;
+import org.opensearch.common.settings.SettingsException;
 import org.opensearch.index.IndexModule;
 
 /**
@@ -44,6 +45,7 @@ public class CryptoIndexSettingsValidator {
         }
 
         validateKeyProvider(indexSettings);
+        validateCryptoProvider(indexSettings);
         validateKmsSettings(indexSettings);
         validateKmsEncryptionContext(indexSettings);
     }
@@ -56,6 +58,18 @@ public class CryptoIndexSettingsValidator {
 
         if (keyProvider == null || keyProvider.isEmpty()) {
             throw new IllegalArgumentException("index.store.crypto.key_provider must be specified when index.store.type is 'cryptofs'");
+        }
+    }
+
+    /**
+     * Validates that {@code index.store.crypto.provider} is empty/blank-free and names a
+     * registered JVM JCE provider. Omitted values use the {@code SunJCE} default.
+     */
+    private static void validateCryptoProvider(Settings indexSettings) {
+        try {
+            CryptoDirectoryFactory.INDEX_CRYPTO_PROVIDER_SETTING.get(indexSettings);
+        } catch (SettingsException e) {
+            throw new IllegalArgumentException(e.getMessage(), e);
         }
     }
 

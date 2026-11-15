@@ -15,6 +15,8 @@ import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.Provider;
+import java.security.Security;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
@@ -43,6 +45,8 @@ import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.threadpool.ThreadPool;
 
 public class CryptoRemoteFsTranslogTests extends OpenSearchTestCase {
+
+    private static final Provider SUN_JCE = Security.getProvider("SunJCE");
 
     private Path tempDir;
     private KeyResolver keyResolver;
@@ -156,7 +160,8 @@ public class CryptoRemoteFsTranslogTests extends OpenSearchTestCase {
             mockRemoteTranslogTransferTracker,
             mockRemoteStoreSettings,
             mockTranslogOperationHelper,
-            keyResolver
+            keyResolver,
+            SUN_JCE
         );
 
         assertNotNull("CryptoRemoteFsTranslog should be created successfully", translog);
@@ -202,7 +207,8 @@ public class CryptoRemoteFsTranslogTests extends OpenSearchTestCase {
                 mockRemoteTranslogTransferTracker,
                 mockRemoteStoreSettings,
                 mockTranslogOperationHelper,
-                null  // Null keyResolver
+                null,  // Null keyResolver
+                SUN_JCE
             );
         });
 
@@ -241,7 +247,8 @@ public class CryptoRemoteFsTranslogTests extends OpenSearchTestCase {
                 mockRemoteTranslogTransferTracker,
                 mockRemoteStoreSettings,
                 mockTranslogOperationHelper,
-                keyResolver
+                keyResolver,
+                SUN_JCE
             );
         });
 
@@ -274,7 +281,8 @@ public class CryptoRemoteFsTranslogTests extends OpenSearchTestCase {
             mockRemoteTranslogTransferTracker,
             mockRemoteStoreSettings,
             mockTranslogOperationHelper,
-            keyResolver
+            keyResolver,
+            SUN_JCE
         );
 
         // Access the translogTransferManager field

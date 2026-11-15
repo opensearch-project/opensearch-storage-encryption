@@ -5,6 +5,8 @@
 package org.opensearch.index.translog;
 
 import java.io.IOException;
+import java.security.Provider;
+import java.util.Objects;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
@@ -31,6 +33,7 @@ import org.opensearch.threadpool.ThreadPool;
 public class CryptoTranslogFactory implements TranslogFactory {
 
     private final KeyResolver keyResolver;
+    private final Provider provider;
     private final Repository repository;
     private final ThreadPool threadPool;
     private final RemoteTranslogTransferTracker remoteTranslogTransferTracker;
@@ -40,9 +43,11 @@ public class CryptoTranslogFactory implements TranslogFactory {
      * Constructor for CryptoTranslogFactory with local-only support.
      *
      * @param keyResolver the unified key resolver (same as used by index files)
+     * @param provider the JCE provider for translog cipher and digest
      */
-    public CryptoTranslogFactory(KeyResolver keyResolver) {
+    public CryptoTranslogFactory(KeyResolver keyResolver, Provider provider) {
         this.keyResolver = keyResolver;
+        this.provider = Objects.requireNonNull(provider, "provider");
         this.repository = null;
         this.threadPool = null;
         this.remoteTranslogTransferTracker = null;
@@ -53,6 +58,7 @@ public class CryptoTranslogFactory implements TranslogFactory {
      * Constructor for CryptoTranslogFactory with remote store support.
      *
      * @param keyResolver the unified key resolver (same as used by index files)
+     * @param provider the JCE provider for translog cipher and digest
      * @param repositoriesServiceSupplier supplier for the repositories service
      * @param threadPool the thread pool
      * @param repositoryName the name of the remote repository
@@ -61,6 +67,7 @@ public class CryptoTranslogFactory implements TranslogFactory {
      */
     public CryptoTranslogFactory(
         KeyResolver keyResolver,
+        Provider provider,
         Supplier<RepositoriesService> repositoriesServiceSupplier,
         ThreadPool threadPool,
         String repositoryName,
@@ -68,6 +75,7 @@ public class CryptoTranslogFactory implements TranslogFactory {
         RemoteStoreSettings remoteStoreSettings
     ) {
         this.keyResolver = keyResolver;
+        this.provider = Objects.requireNonNull(provider, "provider");
         this.threadPool = threadPool;
         this.remoteTranslogTransferTracker = remoteTranslogTransferTracker;
         this.remoteStoreSettings = remoteStoreSettings;
@@ -141,7 +149,8 @@ public class CryptoTranslogFactory implements TranslogFactory {
                 remoteTranslogTransferTracker,
                 remoteStoreSettings,
                 translogOperationHelper,
-                keyResolver
+                keyResolver,
+                provider
             );
         } else {
             // Create local translog with encryption
@@ -153,7 +162,8 @@ public class CryptoTranslogFactory implements TranslogFactory {
                 primaryTermSupplier,
                 persistedSequenceNumberConsumer,
                 translogOperationHelper,
-                keyResolver
+                keyResolver,
+                provider
             );
         }
     }

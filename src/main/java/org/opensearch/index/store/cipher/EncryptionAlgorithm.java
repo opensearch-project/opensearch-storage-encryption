@@ -46,12 +46,15 @@ public enum EncryptionAlgorithm {
     }
 
     /**
-     * Get decryption cipher for this algorithm
+     * Get a pooled CTR decryption cipher for this algorithm using the given provider.
+     *
+     * @param provider the JCE provider to use
+     * @return a pooled AES/CTR cipher bound to {@code provider}
      */
-    public Cipher getDecryptionCipher() {
+    public Cipher getDecryptionCipher(Provider provider) {
         switch (this) {
             case AES_256_GCM_CTR:
-                return AesCipherFactory.CIPHER_POOL.get(); // CTR for reading
+                return AesCipherFactory.getPooledCipher(provider);
             default:
                 throw new IllegalArgumentException("Unsupported algorithm: " + this);
         }

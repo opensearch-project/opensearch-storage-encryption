@@ -7,7 +7,6 @@ package org.opensearch.index.store;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.security.Provider;
-import java.security.Security;
 
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
@@ -38,8 +37,8 @@ public class CryptoEngineFactory implements EngineFactory {
     public Engine newReadWriteEngine(EngineConfig config) {
 
         try {
-            // Create a separate KeyResolver for translog encryption
-            KeyResolver keyResolver = createTranslogKeyResolver(config);
+            Provider provider = CryptoDirectoryFactory.resolveCryptoProvider(config.getIndexSettings().getSettings());
+            KeyResolver keyResolver = createTranslogKeyResolver(config, provider);
 
             // Check if remote translog is enabled
             boolean isRemoteTranslogEnabled = config.getIndexSettings().isRemoteTranslogStoreEnabled();
@@ -49,6 +48,7 @@ public class CryptoEngineFactory implements EngineFactory {
             if (isRemoteTranslogEnabled) {
                 cryptoTranslogFactory = new CryptoTranslogFactory(
                     keyResolver,
+                    provider,
                     CryptoDirectoryPlugin.getRepositoriesServiceSupplier(),
                     config.getThreadPool(),
                     config.getIndexSettings().getRemoteStoreTranslogRepository(),
@@ -56,7 +56,7 @@ public class CryptoEngineFactory implements EngineFactory {
                     CryptoDirectoryPlugin.getRemoteStoreSettings()
                 );
             } else {
-                cryptoTranslogFactory = new CryptoTranslogFactory(keyResolver);
+                cryptoTranslogFactory = new CryptoTranslogFactory(keyResolver, provider);
             }
 
             // Create new engine config by copying all fields from existing config
@@ -79,8 +79,9 @@ public class CryptoEngineFactory implements EngineFactory {
 
     /**
      * Create a separate KeyResolver for translog encryption.
+     * Resolves the JCE provider from {@link CryptoDirectoryFactory#INDEX_CRYPTO_PROVIDER_SETTING}.
      */
-    private KeyResolver createTranslogKeyResolver(EngineConfig config) throws IOException {
+    private KeyResolver createTranslogKeyResolver(EngineConfig config, Provider provider) throws IOException {
         // Create a separate key resolver for translog files
 
         // Use the translog location for key storage
@@ -88,8 +89,6 @@ public class CryptoEngineFactory implements EngineFactory {
         Path translogPath = config.getTranslogConfig().getTranslogPath();
         Path indexDirectory = translogPath.getParent().getParent(); // Go up two levels: translog -> shard -> index
 
-        // Get the same settings that CryptoDirectoryFactory uses
-        Provider provider = Security.getProvider(CryptoDirectoryFactory.DEFAULT_CRYPTO_PROVIDER);
         MasterKeyProvider keyProvider = getKeyProvider(config);
 
         // Create directory for index-level keys (same as CryptoDirectoryFactory)

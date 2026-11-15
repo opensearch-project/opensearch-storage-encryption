@@ -291,4 +291,15 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
             CryptoDirectoryPlugin.CRYPTO_PLUGIN_ENABLED_SETTING.getDefault(org.opensearch.common.settings.Settings.EMPTY)
         );
     }
+
+    /**
+     * Test that the JCE crypto provider setting is registered on the plugin.
+     */
+    public void testCryptoProviderSettingRegistered() {
+        CryptoDirectoryPlugin plugin = new CryptoDirectoryPlugin(org.opensearch.common.settings.Settings.EMPTY);
+        assertTrue(
+            "Settings should contain index.store.crypto.provider",
+            plugin.getSettings().contains(CryptoDirectoryFactory.INDEX_CRYPTO_PROVIDER_SETTING)
+        );
+    }
 }

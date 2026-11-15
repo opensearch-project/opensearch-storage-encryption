@@ -146,7 +146,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             this.footer = EncryptionFooter.generateNew(frameSize, (short) EncryptionMetadataTrailer.ALGORITHM_AES_256_GCM);
 
             // Derive file-specific key
-            byte[] derivedKey = HkdfKeyDerivation.deriveFileKey(masterKey, footer.getMessageId());
+            byte[] derivedKey = HkdfKeyDerivation.deriveFileKey(masterKey, footer.getMessageId(), provider);
             this.fileKey = new javax.crypto.spec.SecretKeySpec(derivedKey, "AES");
 
             // Initialize first frame cipher
@@ -346,10 +346,10 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
 
                 // Serialize footer with file key for authentication
                 byte[] fileKeyBytes = fileKey.getEncoded();
-                out.write(footer.serialize(null, fileKeyBytes));
+                out.write(footer.serialize(null, fileKeyBytes, provider));
 
                 // Cache metadata for future reads
-                encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, this.masterKey);
+                encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, this.masterKey, provider);
 
                 // close() only flushes to the OS (kernel page cache). It does NOT guarantee
                 // * durability on disk (no fsync here). Lucene will provide the durability boundary by calling
@@ -460,7 +460,8 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                         frameNumber,
                         offsetWithinFrame,
                         normalizedPath,
-                        encryptionMetadataCache
+                        encryptionMetadataCache,
+                        provider
                     );
 
                 // Initialize new OpenSSL cipher context

@@ -7,6 +7,7 @@ package org.opensearch.index.store.footer;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
+import java.security.Provider;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -85,7 +86,7 @@ public class EncryptionFooter {
         return footerLength;
     }
 
-    public byte[] serialize(Path filePath, byte[] fileKey) throws IOException {
+    public byte[] serialize(Path filePath, byte[] fileKey, Provider provider) throws IOException {
 
         // Build footer data without auth tag
         byte[] footerData = buildFooterDataWithoutAuthTag();
@@ -94,7 +95,7 @@ public class EncryptionFooter {
         this.setFooterLength(footerData.length + EncryptionMetadataTrailer.FOOTER_AUTH_TAG_SIZE);
 
         // Generate auth tag
-        this.footerAuthTag = generateFooterAuthTag(fileKey, footerData);
+        this.footerAuthTag = generateFooterAuthTag(fileKey, footerData, provider);
 
         // Prepend auth tag to footer: [AuthTag(16)][FooterData...]
         ByteBuffer buffer = ByteBuffer.allocate(footerData.length + EncryptionMetadataTrailer.FOOTER_AUTH_TAG_SIZE);
@@ -143,7 +144,7 @@ public class EncryptionFooter {
         return buffer.array();
     }
 
-    public static EncryptionFooter deserialize(byte[] fileBytes, byte[] fileKey) throws IOException {
+    public static EncryptionFooter deserialize(byte[] fileBytes, byte[] fileKey, Provider provider) throws IOException {
         if (fileBytes.length < EncryptionMetadataTrailer.MIN_FOOTER_SIZE) {
             throw new IOException("Invalid footer size: " + fileBytes.length);
         }
@@ -153,7 +154,7 @@ public class EncryptionFooter {
         byte[] footerData = Arrays.copyOfRange(fileBytes, EncryptionMetadataTrailer.FOOTER_AUTH_TAG_SIZE, fileBytes.length);
 
         // Verify auth tag
-        if (!verifyFooterAuthTag(fileKey, footerData, authTag)) {
+        if (!verifyFooterAuthTag(fileKey, footerData, authTag, provider)) {
             throw new IOException("Footer authentication failed");
         }
 
@@ -277,13 +278,12 @@ public class EncryptionFooter {
         return Arrays.copyOf(keyMetadata, keyMetadata.length);
     }
 
-    private static byte[] generateFooterAuthTag(byte[] fileKey, byte[] footerData) throws IOException {
+    private static byte[] generateFooterAuthTag(byte[] fileKey, byte[] footerData, Provider provider) throws IOException {
         try {
             byte[] footerIV = new byte[12];  // GCM uses 12-byte IV
             Arrays.fill(footerIV, 0, 8, (byte) 0xFF);  // 0xFFFFFFFFFFFFFFFF0000
 
-            // Use default provider instead of null
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            Cipher cipher = AesGcmCipherFactory.getCipher(provider);
             GCMParameterSpec spec = new GCMParameterSpec(128, footerIV);
             cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(fileKey, "AES"), spec);
 
@@ -298,9 +298,10 @@ public class EncryptionFooter {
         }
     }
 
-    private static boolean verifyFooterAuthTag(byte[] fileKey, byte[] footerData, byte[] expectedTag) throws IOException {
+    private static boolean verifyFooterAuthTag(byte[] fileKey, byte[] footerData, byte[] expectedTag, Provider provider)
+        throws IOException {
         try {
-            byte[] computedTag = generateFooterAuthTag(fileKey, footerData);
+            byte[] computedTag = generateFooterAuthTag(fileKey, footerData, provider);
             return Arrays.equals(computedTag, expectedTag);
         } catch (IOException e) {
             LOGGER.error("Encountered error while verify footer auth tag", e);
@@ -321,6 +322,7 @@ public class EncryptionFooter {
      * @param channel FileChannel to read from
      * @param masterKey Master key for file key derivation and footer authentication
      * @param encryptionMetadataCache cache for encryption metadata
+     * @param provider the JCE provider used to verify the footer auth tag
      * @return Deserialized EncryptionFooter
      * @throws IOException If reading or deserialization fails
      * @throws NotOSEFFileException If file is not a valid OSEF format
@@ -329,7 +331,8 @@ public class EncryptionFooter {
         String normalizedFilePath,
         java.nio.channels.FileChannel channel,
         byte[] masterKey,
-        EncryptionMetadataCache encryptionMetadataCache
+        EncryptionMetadataCache encryptionMetadataCache,
+        Provider provider
     ) throws IOException {
 
         EncryptionFooter cachedFooter = encryptionMetadataCache.getFooter(normalizedFilePath);
@@ -385,11 +388,11 @@ public class EncryptionFooter {
 
         // Extract messageId to derive file key for authentication
         byte[] messageId = extractMessageId(footerBytes);
-        byte[] fileKey = HkdfKeyDerivation.deriveFileKey(masterKey, messageId);
+        byte[] fileKey = HkdfKeyDerivation.deriveFileKey(masterKey, messageId, provider);
 
         // Deserialize footer with file key for authentication
-        EncryptionFooter footer = deserialize(footerBytes, fileKey);
-        encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, masterKey);
+        EncryptionFooter footer = deserialize(footerBytes, fileKey, provider);
+        encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, masterKey, provider);
         return footer;
     }
 

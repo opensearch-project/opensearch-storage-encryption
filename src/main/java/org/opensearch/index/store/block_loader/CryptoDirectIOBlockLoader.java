@@ -18,6 +18,7 @@ import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.security.Provider;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.logging.log4j.LogManager;
@@ -59,6 +60,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
     private final Pool<RefCountedMemorySegment> segmentPool;
     private final EncryptionMetadataCache encryptionMetadataCache;
     private final FileChannelCache fileChannelCache;
+    private final Provider provider;
 
     /**
      * Constructs a new CryptoDirectIOBlockLoader with the specified memory pool and key resolver.
@@ -67,17 +69,20 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
      * @param keyResolver the resolver for obtaining encryption keys and initialization vectors
      * @param encryptionMetadataCache cache for encryption metadata
      * @param fileChannelCache node-level cache of FileChannels bounded by max open FDs
+     * @param provider the JCE provider used for CTR decrypt and footer authentication
      */
     public CryptoDirectIOBlockLoader(
         Pool<RefCountedMemorySegment> segmentPool,
         KeyResolver keyResolver,
         EncryptionMetadataCache encryptionMetadataCache,
-        FileChannelCache fileChannelCache
+        FileChannelCache fileChannelCache,
+        Provider provider
     ) {
         this.segmentPool = segmentPool;
         this.keyResolver = keyResolver;
         this.encryptionMetadataCache = encryptionMetadataCache;
         this.fileChannelCache = fileChannelCache;
+        this.provider = provider;
     }
 
     @Override
@@ -108,7 +113,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
             EncryptionFooter footer = readFooterFromDisk(normalizedPath, filePath, masterKey);
 
             // Get or create metadata atomically - ensures footer and key are always consistent
-            var metadata = encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, masterKey);
+            var metadata = encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, masterKey, provider);
             byte[] messageId = metadata.getFooter().getMessageId();
             byte[] fileKey = metadata.getFileKey();
 
@@ -123,7 +128,8 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
                     EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE,
                     startOffset,
                     normalizedPath,
-                    encryptionMetadataCache
+                    encryptionMetadataCache,
+                    provider
                 );
 
             if (bytesRead == 0) {
@@ -209,7 +215,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
                 throw new IOException("Not an OSEF file -" + filePath);
             }
 
-            return EncryptionFooter.readViaFileChannel(normalizedPath, channel, masterKey, encryptionMetadataCache);
+            return EncryptionFooter.readViaFileChannel(normalizedPath, channel, masterKey, encryptionMetadataCache, provider);
         }
     }
 

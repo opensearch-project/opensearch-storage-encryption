@@ -5,14 +5,16 @@
 package org.opensearch.index.store.cipher;
 
 import java.security.NoSuchAlgorithmException;
-import java.security.NoSuchProviderException;
 import java.security.Provider;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
 
 import javax.crypto.Cipher;
 import javax.crypto.NoSuchPaddingException;
+import javax.crypto.ShortBufferException;
 
-import org.opensearch.index.store.CryptoDirectoryFactory;
 import org.opensearch.index.store.footer.EncryptionMetadataTrailer;
 import org.opensearch.index.store.key.HkdfKeyDerivation;
 
@@ -33,6 +35,11 @@ public class AesCipherFactory {
 
     /** AES block size in terms of 2 power bytes (16 bytes). Required for counter calculations. */
     public static final int AES_BLOCK_SIZE_BYTES_IN_POWER = 4;
+
+    /** AES block size in bytes (16). */
+    public static final int AES_BLOCK_SIZE_BYTES = 1 << AES_BLOCK_SIZE_BYTES_IN_POWER;
+
+    private static final byte[] ZERO_SKIP = new byte[AES_BLOCK_SIZE_BYTES];
 
     /** Number of bytes used for the counter in the IV (last 4 bytes). */
     public static final int COUNTER_SIZE_BYTES = 4;
@@ -59,18 +66,55 @@ public class AesCipherFactory {
     }
 
     /**
-     * Thread-local cipher pool for AES/CTR/NoPadding operations.
-     * Each thread gets its own cipher instance to avoid synchronization overhead.
+     * Thread-local, provider-keyed cipher pool for AES/CTR/NoPadding operations.
+     * Each thread gets its own cipher instance per provider so mixed-provider nodes
+     * stay correct without synchronization on the hot path.
      */
-    public static final ThreadLocal<Cipher> CIPHER_POOL = ThreadLocal.withInitial(() -> {
-        try {
-            // todo we can make provider comfigirable but for now with AES/CTR, SunJCE works best
-            // in terms of performance.
-            return Cipher.getInstance("AES/CTR/NoPadding", CryptoDirectoryFactory.DEFAULT_CRYPTO_PROVIDER);
-        } catch (NoSuchAlgorithmException | NoSuchProviderException | NoSuchPaddingException e) {
-            throw new RuntimeException(e);
+    private static final ThreadLocal<Map<String, Cipher>> CIPHER_POOLS = ThreadLocal.withInitial(HashMap::new);
+
+    /**
+     * Returns a thread-local pooled AES/CTR/NoPadding cipher for the given provider.
+     *
+     * @param provider the JCE provider to use
+     * @return a pooled {@link Cipher} instance bound to {@code provider}
+     */
+    public static Cipher getPooledCipher(Provider provider) {
+        Objects.requireNonNull(provider, "provider");
+        return CIPHER_POOLS.get().computeIfAbsent(provider.getName(), name -> getCipher(provider));
+    }
+
+    /**
+     * Intra-block CTR skip for {@code offset}: {@code offset % 16}.
+     *
+     * @param offset byte offset in the stream
+     * @return number of keystream bytes to skip within the current AES block
+     */
+    public static int skipBytesForOffset(long offset) {
+        return (int) (offset & (AES_BLOCK_SIZE_BYTES - 1));
+    }
+
+    /**
+     * Advances a CTR cipher by feeding {@code skipBytes} of zeros. SunJCE emits that
+     * prefix immediately; Bouncy Castle buffers a partial AES block, so the prefix
+     * appears at the start of a later {@code update}/{@code doFinal}. Returns how many
+     * of those later output bytes must be discarded.
+     *
+     * @param cipher an initialized AES/CTR cipher
+     * @param skipBytes keystream bytes to skip, in {@code [0, 16)}
+     * @return pending skip-prefix length in subsequent output
+     * @throws ShortBufferException if the provider needs more than one AES block of skip output
+     */
+    public static int advanceCtrSkip(Cipher cipher, int skipBytes) throws ShortBufferException {
+        if (skipBytes <= 0) {
+            return 0;
         }
-    });
+        byte[] skipOut = new byte[AES_BLOCK_SIZE_BYTES];
+        int emitted = cipher.update(ZERO_SKIP, 0, skipBytes, skipOut, 0);
+        if (emitted < 0) {
+            emitted = 0;
+        }
+        return skipBytes - emitted;
+    }
 
     /**
      * Computes an offset-adjusted IV for CTR mode decryption at a specific file position.
@@ -146,6 +190,7 @@ public class AesCipherFactory {
      * @param offsetWithinFrame the byte offset within the frame
      * @param normalizedFilePath the normalized file path string
      * @param encryptionMetadataCache the encryption metadata cache
+     * @param provider the JCE provider used for HKDF HMAC
      * @return frame-specific IV for encryption/decryption
      */
     public static byte[] computeFrameIV(
@@ -154,7 +199,8 @@ public class AesCipherFactory {
         long frameNumber,
         long offsetWithinFrame,
         String normalizedFilePath,
-        EncryptionMetadataCache encryptionMetadataCache
+        EncryptionMetadataCache encryptionMetadataCache,
+        Provider provider
     ) {
         if (messageId.length != 16) {
             throw new IllegalArgumentException("MessageId must be 16 bytes");
@@ -167,7 +213,7 @@ public class AesCipherFactory {
         byte[] frameBaseIV = encryptionMetadataCache.getFrameIv(normalizedFilePath, frameNumber);
         if (frameBaseIV == null) {
             String frameContext = EncryptionMetadataTrailer.FRAME_CONTEXT_PREFIX + frameNumber;
-            frameBaseIV = HkdfKeyDerivation.deriveKey(directoryKey, messageId, frameContext, 16);
+            frameBaseIV = HkdfKeyDerivation.deriveKey(directoryKey, messageId, frameContext, 16, provider);
             encryptionMetadataCache.putFrameIv(normalizedFilePath, frameNumber, frameBaseIV);
         }
 

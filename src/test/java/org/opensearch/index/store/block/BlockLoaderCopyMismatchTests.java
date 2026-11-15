@@ -62,6 +62,7 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
     private PoolBuilder.PoolResources poolResources;
     private KeyResolver keyResolver;
     private EncryptionMetadataCache encryptionMetadataCache;
+    private Provider provider;
     private boolean originalWriteCacheEnabled;
 
     @Before
@@ -71,7 +72,7 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
         originalWriteCacheEnabled = CryptoDirectoryFactory.isWriteCacheEnabled();
         CryptoDirectoryFactory.setNodeSettings(Settings.builder().put("node.store.crypto.write_cache_enabled", false).build());
         Path path = createTempDir();
-        Provider provider = Security.getProvider(DEFAULT_CRYPTO_PROVIDER);
+        provider = Security.getProvider(DEFAULT_CRYPTO_PROVIDER);
         MasterKeyProvider keyProvider = DummyKeyProvider.create();
 
         Settings nodeSettings = Settings
@@ -100,7 +101,8 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
             segmentPool,
             keyResolver,
             encryptionMetadataCache,
-            poolResources.getFileChannelCache()
+            poolResources.getFileChannelCache(),
+            provider
         );
 
         Worker worker = poolResources.getSharedReadaheadWorker();
@@ -371,7 +373,8 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
                 pool,
                 keyResolver,
                 encryptionMetadataCache,
-                poolResources.getFileChannelCache()
+                poolResources.getFileChannelCache(),
+                provider
             );
 
             RefCountedMemorySegment[] blocks = loader.load(filePath, 0, blockCount, 5000);
@@ -432,7 +435,8 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
             pool,
             keyResolver,
             encryptionMetadataCache,
-            poolResources.getFileChannelCache()
+            poolResources.getFileChannelCache(),
+            provider
         );
 
         RefCountedMemorySegment[] blocks = loader.load(filePath, 0, 1, 5000);
@@ -472,7 +476,8 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
             pool,
             keyResolver,
             encryptionMetadataCache,
-            poolResources.getFileChannelCache()
+            poolResources.getFileChannelCache(),
+            provider
         );
 
         RefCountedMemorySegment[] blocks = loader.load(filePath, 0, blockCount, 5000);
@@ -522,7 +527,8 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
             pool,
             keyResolver,
             encryptionMetadataCache,
-            poolResources.getFileChannelCache()
+            poolResources.getFileChannelCache(),
+            provider
         );
 
         RefCountedMemorySegment[] blocks = loader.load(filePath, 0, 1, 5000);
@@ -563,7 +569,8 @@ public class BlockLoaderCopyMismatchTests extends OpenSearchTestCase {
             pool,
             keyResolver,
             encryptionMetadataCache,
-            poolResources.getFileChannelCache()
+            poolResources.getFileChannelCache(),
+            provider
         );
 
         RefCountedMemorySegment[] blocks = loader.load(filePath, 0, blockCount, 5000);

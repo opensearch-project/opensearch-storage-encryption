@@ -53,20 +53,6 @@ public class AesGcmCipherFactory {
     }
 
     /**
-     * Returns a new Cipher instance configured for AES/GCM/NoPadding using the given provider.
-     *
-     * @return A configured {@link Cipher} instance
-     * @throws RuntimeException If the algorithm or padding is not supported
-     */
-    public static Cipher getCipher() {
-        try {
-            return Cipher.getInstance("AES/GCM/NoPadding");
-        } catch (NoSuchPaddingException | NoSuchAlgorithmException e) {
-            throw new RuntimeException("Failed to get cipher instance", e);
-        }
-    }
-
-    /**
      * Initializes a GCM cipher for encryption or decryption, using a 12-byte IV.
      *
      * @param cipher      The cipher instance to initialize
@@ -135,14 +121,15 @@ public class AesGcmCipherFactory {
     /**
      * Encrypts data with GCM and returns ciphertext with authentication tag appended.
      *
-     * @param key    The AES key
-     * @param iv     The initialization vector (first 12 bytes used)
-     * @param input  Input data to encrypt
-     * @param length Length of data to encrypt
+     * @param provider The JCE provider to use
+     * @param key      The AES key
+     * @param iv       The initialization vector (first 12 bytes used)
+     * @param input    Input data to encrypt
+     * @param length   Length of data to encrypt
      * @return Encrypted data with 16-byte authentication tag appended
      * @throws JavaCryptoException If encryption fails
      */
-    public static byte[] encryptWithTag(Key key, byte[] iv, byte[] input, int length) throws JavaCryptoException {
+    public static byte[] encryptWithTag(Provider provider, Key key, byte[] iv, byte[] input, int length) throws JavaCryptoException {
         if (input == null || length <= 0) {
             throw new IllegalArgumentException("Input cannot be null and length must be positive");
         }
@@ -151,7 +138,7 @@ public class AesGcmCipherFactory {
         }
 
         try {
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            Cipher cipher = getCipher(provider);
             byte[] gcmIv = new byte[12];
             System.arraycopy(iv, 0, gcmIv, 0, 12);
             GCMParameterSpec spec = new GCMParameterSpec(128, gcmIv);
@@ -166,19 +153,20 @@ public class AesGcmCipherFactory {
     /**
      * Decrypts GCM data and verifies authentication tag.
      *
+     * @param provider   The JCE provider to use
      * @param key        The AES key
      * @param iv         The initialization vector (first 12 bytes used)
      * @param ciphertext Encrypted data with authentication tag appended
      * @return Decrypted plaintext data
      * @throws JavaCryptoException If decryption or authentication fails
      */
-    public static byte[] decryptWithTag(Key key, byte[] iv, byte[] ciphertext) throws JavaCryptoException {
+    public static byte[] decryptWithTag(Provider provider, Key key, byte[] iv, byte[] ciphertext) throws JavaCryptoException {
         if (ciphertext == null || ciphertext.length < GCM_TAG_LENGTH) {
             throw new IllegalArgumentException("Ciphertext must be at least " + GCM_TAG_LENGTH + " bytes");
         }
 
         try {
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            Cipher cipher = getCipher(provider);
             byte[] gcmIv = new byte[12];
             System.arraycopy(iv, 0, gcmIv, 0, 12);
             GCMParameterSpec spec = new GCMParameterSpec(128, gcmIv);
@@ -215,7 +203,7 @@ public class AesGcmCipherFactory {
     ) {
         // Note: This method needs EncryptionMetadataCache parameter added to its signature
         // For now, using null as placeholder - caller must provide cache instance
-        byte[] frameIV = AesCipherFactory.computeFrameIV(directoryKey, messageId, frameNumber, offsetWithinFrame, filePath, null);
+        byte[] frameIV = AesCipherFactory.computeFrameIV(directoryKey, messageId, frameNumber, offsetWithinFrame, filePath, null, provider);
 
         Cipher cipher = algorithm.getEncryptionCipher(provider);
         initCipher(cipher, fileKey, frameIV, Cipher.ENCRYPT_MODE, offsetWithinFrame);
@@ -258,12 +246,13 @@ public class AesGcmCipherFactory {
      * Initialize GCM cipher for translog block encryption at given offset.
      * Generates unique IV based on offset and initializes cipher for encryption.
      *
+     * @param provider The JCE provider to use
      * @param key The encryption key
      * @param baseIV The base IV from KeyResolver
      * @param offset The byte offset (e.g., blockNumber * BLOCK_SIZE)
     FHeader should contain translog UUID     * @return Initialized GCM cipher ready for streaming encryption
      */
-    public static Cipher initializeGCMCipher(Key key, byte[] baseIV, long offset) {
+    public static Cipher initializeGCMCipher(Provider provider, Key key, byte[] baseIV, long offset) {
         // Generate unique IV for this offset (16 bytes)
         byte[] uniqueIV = AesCipherFactory.computeOffsetIVForAesGcmEncrypted(baseIV, offset);
 
@@ -272,7 +261,7 @@ public class AesGcmCipherFactory {
         System.arraycopy(uniqueIV, 0, gcmIV, 0, 12);
 
         // Get cipher instance
-        Cipher cipher = getCipher();
+        Cipher cipher = getCipher(provider);
 
         // Initialize for encryption
         initCipher(cipher, key, gcmIV, Cipher.ENCRYPT_MODE, offset);

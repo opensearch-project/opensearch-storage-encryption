@@ -87,7 +87,8 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
                     context,
                     this.keyResolver,
                     path,
-                    this.encryptionMetadataCache
+                    this.encryptionMetadataCache,
+                    this.provider
                 );
                 success = true;
                 return indexInput;
@@ -178,7 +179,7 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
         try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
             try {
                 EncryptionFooter footer = EncryptionFooter
-                    .readViaFileChannel(normalizedPath, channel, keyResolver.getDataKey().getEncoded(), encryptionMetadataCache);
+                    .readViaFileChannel(normalizedPath, channel, keyResolver.getDataKey().getEncoded(), encryptionMetadataCache, provider);
                 return fileSize - footer.getFooterLength();
             } catch (EncryptionFooter.NotOSEFFileException e) {
                 return fileSize;

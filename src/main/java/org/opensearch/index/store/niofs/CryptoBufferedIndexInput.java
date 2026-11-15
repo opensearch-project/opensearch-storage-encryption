@@ -13,6 +13,7 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
+import java.security.Provider;
 
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
@@ -37,7 +38,6 @@ import org.opensearch.index.store.key.KeyResolver;
  * @opensearch.internal
  */
 final class CryptoBufferedIndexInput extends BufferedIndexInput {
-    private static final byte[] ZERO_SKIP = new byte[1 << AesCipherFactory.AES_BLOCK_SIZE_BYTES_IN_POWER];
     private static final ByteBuffer EMPTY_BYTEBUFFER = ByteBuffer.allocate(0);
     private static final int CHUNK_SIZE = 16_384;
 
@@ -54,6 +54,7 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
     private final int frameSizePower;
     private final EncryptionAlgorithm algorithm;
     private final EncryptionMetadataCache encryptionMetadataCache;
+    private final Provider provider;
 
     private ByteBuffer tmpBuffer = EMPTY_BYTEBUFFER;
 
@@ -65,7 +66,8 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         IOContext context,
         KeyResolver keyResolver,
         Path filePath,
-        EncryptionMetadataCache encryptionMetadataCache
+        EncryptionMetadataCache encryptionMetadataCache,
+        Provider provider
     )
         throws IOException {
         super(resourceDesc, context);
@@ -76,15 +78,17 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         this.isClone = false;
         this.normalizedFilePath = EncryptionMetadataCache.normalizePath(filePath);
         this.encryptionMetadataCache = encryptionMetadataCache;
+        this.provider = provider;
 
         // Get master key first
         this.masterKey = keyResolver.getDataKey().getEncoded();
 
         // Read footer and cache metadata atomically
-        EncryptionFooter footer = EncryptionFooter.readViaFileChannel(normalizedFilePath, channel, masterKey, encryptionMetadataCache);
+        EncryptionFooter footer = EncryptionFooter
+            .readViaFileChannel(normalizedFilePath, channel, masterKey, encryptionMetadataCache, provider);
 
         // Get metadata (already cached by readViaFileChannel)
-        var metadata = encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, masterKey);
+        var metadata = encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, masterKey, provider);
         this.messageId = metadata.getFooter().getMessageId();
         this.frameSize = metadata.getFooter().getFrameSize();
         this.frameSizePower = metadata.getFooter().getFrameSizePower();
@@ -110,7 +114,8 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         byte[] masterKey,
         byte[] messageId,
         String normalizedFilePath,
-        EncryptionMetadataCache encryptionMetadataCache
+        EncryptionMetadataCache encryptionMetadataCache,
+        Provider provider
     )
         throws IOException {
         super(resourceDesc, bufferSize);
@@ -128,6 +133,7 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         this.messageId = messageId;  // Passed from parent
         this.normalizedFilePath = normalizedFilePath;
         this.encryptionMetadataCache = encryptionMetadataCache;
+        this.provider = provider;
     }
 
     @Override
@@ -166,7 +172,8 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
             masterKey,  // Pass directory key
             messageId,      // Pass message ID
             normalizedFilePath,
-            encryptionMetadataCache
+            encryptionMetadataCache,
+            provider
         );
     }
 
@@ -199,19 +206,44 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         tmpBuffer.flip();
 
         try {
-            Cipher cipher = algorithm.getDecryptionCipher();
+            Cipher cipher = algorithm.getDecryptionCipher(provider);
             byte[] frameIV = AesCipherFactory
-                .computeFrameIV(masterKey, messageId, frameNumber, offsetWithinFrame, this.normalizedFilePath, encryptionMetadataCache);
+                .computeFrameIV(
+                    masterKey,
+                    messageId,
+                    frameNumber,
+                    offsetWithinFrame,
+                    this.normalizedFilePath,
+                    encryptionMetadataCache,
+                    provider
+                );
             cipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(frameIV));
 
-            // skip partial AES block within frame if needed
-            int skipBytes = (int) (offsetWithinFrame & ((1 << AesCipherFactory.AES_BLOCK_SIZE_BYTES_IN_POWER) - 1));
-            if (skipBytes > 0) {
-                cipher.update(ZERO_SKIP, 0, skipBytes);
+            int pendingSkip = AesCipherFactory.advanceCtrSkip(cipher, AesCipherFactory.skipBytesForOffset(offsetWithinFrame));
+            // Each read() re-inits the cipher, so always doFinal. Buffering providers
+            // (Bouncy Castle) keep a partial AES block across update() even when skip is 0;
+            // returning update() alone can emit 0 on the next independently inited read
+            // and spin forever in readInternal().
+            if (pendingSkip == 0) {
+                return cipher.doFinal(tmpBuffer, dst);
             }
 
-            // decrypt into dst
-            return (end - position > bytesRead) ? cipher.update(tmpBuffer, dst) : cipher.doFinal(tmpBuffer, dst);
+            // Buffering providers (Bouncy Castle) emit the skip prefix with later
+            // ciphertext. Decrypt into a buffer large enough for skip + ciphertext,
+            // then copy only the requested plaintext into dst.
+            ByteBuffer out = ByteBuffer.allocate(pendingSkip + bytesRead + AesCipherFactory.AES_BLOCK_SIZE_BYTES);
+            cipher.update(tmpBuffer, out);
+            cipher.doFinal(ByteBuffer.allocate(0), out);
+            out.flip();
+            if (out.remaining() < pendingSkip) {
+                throw new ShortBufferException("CTR skip prefix missing from decrypt output");
+            }
+            out.position(out.position() + pendingSkip);
+            int toCopy = Math.min(out.remaining(), dst.remaining());
+            ByteBuffer plaintext = out.slice();
+            plaintext.limit(toCopy);
+            dst.put(plaintext);
+            return toCopy;
         } catch (ShortBufferException | IllegalBlockSizeException | BadPaddingException | InvalidAlgorithmParameterException
             | InvalidKeyException ex) {
             throw new IOException("Failed to decrypt block at position " + position, ex);

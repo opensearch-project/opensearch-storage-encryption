@@ -462,7 +462,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
             memorySegmentPool,
             keyResolverA,
             encryptionMetadataCache,
-            fileChannelCache
+            fileChannelCache,
+            cryptoProvider
         );
 
         // Create per-directory cache and worker
@@ -542,7 +543,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
             memorySegmentPool,
             keyResolverA,
             encryptionMetadataCache,
-            fileChannelCache
+            fileChannelCache,
+            cryptoProvider
         );
 
         // Create per-directory cache and worker
@@ -621,7 +623,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
             memorySegmentPool,
             keyResolverA,
             encryptionMetadataCache,
-            fileChannelCache
+            fileChannelCache,
+            cryptoProvider
         );
 
         // Create per-directory cache and worker
@@ -701,7 +704,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
             memorySegmentPool,
             keyResolverA,
             encryptionMetadataCache,
-            fileChannelCache
+            fileChannelCache,
+            cryptoProvider
         );
 
         // Create per-directory cache and worker
@@ -761,5 +765,95 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
 
             logger.info("✓ DirectIO cache invalidation on file delete works correctly");
         }
+    }
+
+    /**
+     * Bouncy Castle buffers a partial AES block on CTR skip. Unaligned seeks must still
+     * decrypt correctly instead of throwing ShortBufferException or returning mixed skip
+     * prefix + plaintext.
+     */
+    public void testUnalignedSeekReadWithBouncyCastle() throws IOException {
+        Provider bc = bouncyCastle();
+        String testFileName = "test-bc-unaligned.dat";
+        byte[] dataBytes = new byte[128];
+        for (int i = 0; i < dataBytes.length; i++) {
+            dataBytes[i] = (byte) i;
+        }
+
+        Path dirA = tempDir.resolve("index-a");
+        try (
+            Directory cryptoDir = new CryptoNIOFSDirectory(SimpleFSLockFactory.INSTANCE, dirA, bc, keyResolverA, encryptionMetadataCache)
+        ) {
+            try (IndexOutput out = cryptoDir.createOutput(testFileName, IOContext.DEFAULT)) {
+                out.writeBytes(dataBytes, 0, dataBytes.length);
+            }
+        }
+
+        try (
+            Directory cryptoDir = new CryptoNIOFSDirectory(SimpleFSLockFactory.INSTANCE, dirA, bc, keyResolverA, encryptionMetadataCache)
+        ) {
+            try (IndexInput in = cryptoDir.openInput(testFileName, IOContext.DEFAULT)) {
+                in.seek(1);
+                byte[] read32 = new byte[32];
+                in.readBytes(read32, 0, 32);
+                byte[] expected32 = new byte[32];
+                System.arraycopy(dataBytes, 1, expected32, 0, 32);
+                assertArrayEquals("seek(1) read 32 with Bouncy Castle", expected32, read32);
+
+                in.seek(1);
+                byte[] read31 = new byte[31];
+                in.readBytes(read31, 0, 31);
+                byte[] expected31 = new byte[31];
+                System.arraycopy(dataBytes, 1, expected31, 0, 31);
+                assertArrayEquals("seek(1) read 31 with Bouncy Castle", expected31, read31);
+            }
+        }
+    }
+
+    /**
+     * Bouncy Castle also buffers a partial AES block when the start offset is aligned.
+     * A mid-file read whose length is not a multiple of 16 must still finish; using
+     * update() without doFinal leaves one byte in the cipher, and readInternal() loops
+     * forever at the next position.
+     */
+    public void testAlignedPartialBlockReadBeforeEofWithBouncyCastle() throws IOException {
+        Provider bc = bouncyCastle();
+        String testFileName = "test-bc-aligned-partial.dat";
+        byte[] dataBytes = new byte[32 * 1024];
+        for (int i = 0; i < dataBytes.length; i++) {
+            dataBytes[i] = (byte) i;
+        }
+        int readLen = 2049;
+
+        Path dirA = tempDir.resolve("index-a");
+        try (
+            Directory cryptoDir = new CryptoNIOFSDirectory(SimpleFSLockFactory.INSTANCE, dirA, bc, keyResolverA, encryptionMetadataCache)
+        ) {
+            try (IndexOutput out = cryptoDir.createOutput(testFileName, IOContext.DEFAULT)) {
+                out.writeBytes(dataBytes, 0, dataBytes.length);
+            }
+        }
+
+        try (
+            Directory cryptoDir = new CryptoNIOFSDirectory(SimpleFSLockFactory.INSTANCE, dirA, bc, keyResolverA, encryptionMetadataCache)
+        ) {
+            try (IndexInput in = cryptoDir.openInput(testFileName, IOContext.DEFAULT)) {
+                in.seek(0);
+                byte[] got = new byte[readLen];
+                in.readBytes(got, 0, readLen);
+                byte[] expected = new byte[readLen];
+                System.arraycopy(dataBytes, 0, expected, 0, readLen);
+                assertArrayEquals("seek(0) read 2049 with Bouncy Castle", expected, got);
+            }
+        }
+    }
+
+    private static Provider bouncyCastle() {
+        Provider bc = Security.getProvider("BC");
+        if (bc == null) {
+            bc = new org.bouncycastle.jce.provider.BouncyCastleProvider();
+            Security.addProvider(bc);
+        }
+        return bc;
     }
 }

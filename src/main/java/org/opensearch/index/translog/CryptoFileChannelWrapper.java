@@ -15,6 +15,7 @@ import java.nio.channels.WritableByteChannel;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.security.Provider;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -54,11 +55,19 @@ public class CryptoFileChannelWrapper extends FileChannel {
      * @param path the file path (used for logging and debugging)
      * @param options the file open options (used for logging and debugging)
      * @param translogUUID the translog UUID for exact header size calculation
+     * @param provider the JCE provider for translog cipher and digest
      * @throws IOException if there is an error setting up the channel
      */
-    public CryptoFileChannelWrapper(FileChannel delegate, KeyResolver keyResolver, Path path, Set<OpenOption> options, String translogUUID)
+    public CryptoFileChannelWrapper(
+        FileChannel delegate,
+        KeyResolver keyResolver,
+        Path path,
+        Set<OpenOption> options,
+        String translogUUID,
+        Provider provider
+    )
         throws IOException {
-        this(delegate, keyResolver, path, options, translogUUID, TranslogChunkManager.DEFAULT_MAX_FRAME_SIZE);
+        this(delegate, keyResolver, path, options, translogUUID, TranslogChunkManager.DEFAULT_MAX_FRAME_SIZE, provider);
     }
 
     /**
@@ -70,12 +79,13 @@ public class CryptoFileChannelWrapper extends FileChannel {
         Path path,
         Set<OpenOption> options,
         String translogUUID,
-        int newFileMaxFrameSize
+        int newFileMaxFrameSize,
+        Provider provider
     )
         throws IOException {
         this.delegate = delegate;
         this.filePath = path;
-        this.chunkManager = new TranslogChunkManager(delegate, keyResolver, path, translogUUID, newFileMaxFrameSize);
+        this.chunkManager = new TranslogChunkManager(delegate, keyResolver, path, translogUUID, newFileMaxFrameSize, provider);
         this.position = new AtomicLong(options.contains(StandardOpenOption.APPEND) ? chunkManager.logicalSize() : 0);
         this.positionLock = new ReentrantReadWriteLock();
     }

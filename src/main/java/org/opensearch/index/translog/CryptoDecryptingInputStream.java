@@ -11,6 +11,7 @@ import java.nio.channels.FileChannel;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.security.Provider;
 import java.util.Set;
 
 import org.opensearch.index.store.key.KeyResolver;
@@ -37,14 +38,15 @@ public class CryptoDecryptingInputStream extends InputStream {
      * @param filePath the path to the encrypted translog file
      * @param keyResolver the key resolver for decryption
      * @param translogUUID the translog UUID used for encryption context
+     * @param provider the JCE provider for translog cipher and digest
      * @throws IOException if the file cannot be opened or decryption setup fails
      */
-    public CryptoDecryptingInputStream(Path filePath, KeyResolver keyResolver, String translogUUID) throws IOException {
+    public CryptoDecryptingInputStream(Path filePath, KeyResolver keyResolver, String translogUUID, Provider provider) throws IOException {
         Set<OpenOption> openOptions = Set.of(StandardOpenOption.READ);
         this.encryptedChannel = FileChannel.open(filePath, StandardOpenOption.READ);
 
         // Wrap with crypto channel for decrypted stream
-        this.decryptingChannel = new CryptoFileChannelWrapper(encryptedChannel, keyResolver, filePath, openOptions, translogUUID);
+        this.decryptingChannel = new CryptoFileChannelWrapper(encryptedChannel, keyResolver, filePath, openOptions, translogUUID, provider);
 
         this.buffer = ByteBuffer.allocate(8192);
         buffer.flip();
