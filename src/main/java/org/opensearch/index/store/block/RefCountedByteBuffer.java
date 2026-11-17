@@ -17,10 +17,16 @@ import org.opensearch.index.store.block_cache.BlockCacheValue;
  *
  * <p>Pin/unpin are no-ops — there is no pool recycling, so no use-after-recycle risk.
  * Generation is always 0 — there is no recycling, so staleness detection is unnecessary.
+ *
+ * <p>Closing (the cache does it when it drops the block) clears the reference to the buffer, and
+ * {@link #buffer()} then returns {@code null}. Inputs keep the last block they read, and Lucene keeps
+ * many inputs open; without this, each of them would keep an evicted block's buffer reachable, and in
+ * the slab pool its slot could not be reused. A reader that already holds the buffer keeps it
+ * reachable, and so valid, until it is done with it.
  */
 public final class RefCountedByteBuffer implements BlockCacheValue<RefCountedByteBuffer> {
 
-    private final ByteBuffer buffer;
+    private ByteBuffer buffer;
     private final int length;
     private volatile boolean closed = false;
 
@@ -39,6 +45,7 @@ public final class RefCountedByteBuffer implements BlockCacheValue<RefCountedByt
         return length;
     }
 
+    /** The block's buffer, or {@code null} once closed: read it again from the cache. */
     public ByteBuffer buffer() {
         return buffer;
     }
@@ -56,11 +63,12 @@ public final class RefCountedByteBuffer implements BlockCacheValue<RefCountedByt
     @Override
     public void close() {
         closed = true;
+        buffer = null;
     }
 
     @Override
     public void decRef() {
-        closed = true;
+        close();
     }
 
     @Override

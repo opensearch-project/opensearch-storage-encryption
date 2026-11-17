@@ -4,6 +4,7 @@
  */
 package org.opensearch.index.store.bufferpoolfs;
 
+import static org.mockito.Mockito.mock;
 import static org.opensearch.index.store.CryptoDirectoryFactory.DEFAULT_CRYPTO_PROVIDER;
 
 import java.nio.file.Path;
@@ -34,9 +35,11 @@ import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.cipher.EncryptionMetadataCacheRegistry;
 import org.opensearch.index.store.key.KeyResolver;
+import org.opensearch.index.store.metrics.CryptoMetricsService;
 import org.opensearch.index.store.pool.Pool;
 import org.opensearch.index.store.pool.PoolBuilder;
 import org.opensearch.index.store.pool.SlabByteBufferPool;
+import org.opensearch.telemetry.metrics.MetricsRegistry;
 import org.opensearch.test.OpenSearchTestCase;
 
 import com.carrotsearch.randomizedtesting.annotations.ThreadLeakScope;
@@ -56,10 +59,12 @@ public class SlabPoolReadCorrectnessTests extends OpenSearchTestCase {
 
     private BufferPoolDirectory directory;
     private PoolBuilder.PoolResources poolResources;
+    private CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer> sharedCache;
 
     @Before
     public void setUp() throws Exception {
         super.setUp();
+        CryptoMetricsService.initialize(mock(MetricsRegistry.class));
         CryptoDirectoryFactory
             .setNodeSettings(
                 Settings
@@ -99,6 +104,7 @@ public class SlabPoolReadCorrectnessTests extends OpenSearchTestCase {
         );
         CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer> shared =
             (CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer>) poolResources.getBlockCache();
+        sharedCache = shared;
         BlockCache<RefCountedByteBuffer> cache = new CaffeineBlockCache<>(shared.getCache(), loader, poolResources.getMaxCacheBlocks());
         directory = new BufferPoolDirectory(
             path,
@@ -215,5 +221,50 @@ public class SlabPoolReadCorrectnessTests extends OpenSearchTestCase {
         assertNull(failure.get() + " (" + stats + ")", failure.get());
         // Reading at least all the data once (~2.3x the pool) churns through every slot several times.
         assertTrue("checked only " + (bytesChecked.get() >> 20) + " MB", bytesChecked.get() > (long) FILES * FILE_BYTES);
+    }
+
+    /**
+     * An input keeps the last block it read, and Lucene keeps many inputs open. Once the cache drops
+     * those blocks, their slots must come back to the pool even though the inputs are still live:
+     * otherwise every live slice would pin one slot, and enough of them would exhaust the pool.
+     */
+    public void testLiveSlicesDoNotKeepEvictedBlocksSlots() throws Exception {
+        final int slices = 4096;
+        final int blockSize = 8192;
+        byte[] chunk = new byte[1 << 20];
+        try (IndexOutput out = directory.createOutput("held", IOContext.DEFAULT)) {
+            for (long base = 0; base < (long) slices * blockSize; base += chunk.length) {
+                for (int i = 0; i < chunk.length; i++) {
+                    chunk[i] = expected(0, base + i);
+                }
+                out.writeBytes(chunk, chunk.length);
+            }
+        }
+        SlabByteBufferPool pool = (SlabByteBufferPool) poolResources.getPool();
+        try (IndexInput main = directory.openInput("held", IOContext.DEFAULT)) {
+            // One live slice per block, each having read (and so holding) its own block.
+            List<IndexInput> held = new ArrayList<>(slices);
+            for (int b = 0; b < slices; b++) {
+                IndexInput slice = main.slice("block-" + b, (long) b * blockSize, blockSize);
+                assertEquals(expected(0, (long) b * blockSize), slice.readByte());
+                held.add(slice);
+            }
+            assertTrue(pool.poolStats(), pool.getBuffersInUse() >= slices);
+
+            // The cache drops every block, as eviction would. The slices stay live.
+            sharedCache.getCache().invalidateAll();
+            assertBusy(() -> {
+                System.gc();
+                assertTrue("slots still held by live slices: " + pool.poolStats(), pool.getBuffersInUse() < slices / 16);
+            });
+
+            // A slice whose block was dropped reads it again, from the cache or the file.
+            for (int b = 0; b < slices; b++) {
+                IndexInput slice = held.get(b);
+                slice.seek(1);
+                assertEquals(expected(0, (long) b * blockSize + 1), slice.readByte());
+            }
+            assertEquals(pool.poolStats(), 0, pool.getOverflowAllocations());
+        }
     }
 }

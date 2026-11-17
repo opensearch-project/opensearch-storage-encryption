@@ -43,6 +43,9 @@ public class CachedByteBufferIndexInput extends IndexInput implements RandomAcce
     long curPosition = 0L;
     volatile boolean isOpen = true;
 
+    /** Lookups to retry when the block is evicted between the cache lookup and reading its buffer. */
+    private static final int MAX_CLOSED_BLOCK_RETRIES = 10;
+
     private long currentBlockOffset = -1;
     private BlockCacheValue<RefCountedByteBuffer> currentBlock = null;
     private int lastOffsetInBlock;
@@ -123,15 +126,29 @@ public class CachedByteBufferIndexInput extends IndexInput implements RandomAcce
         final int offsetInBlock = (int) (fileOffset - blockOffset);
 
         if (blockOffset == currentBlockOffset && currentBlock != null) {
-            lastOffsetInBlock = offsetInBlock;
-            return currentBlock.value().buffer();
+            final ByteBuffer buffer = currentBlock.value().buffer();
+            if (buffer != null) {
+                lastOffsetInBlock = offsetInBlock;
+                return buffer;
+            }
+            // The cache has dropped this block since the last read (its buffer is cleared): look it up again.
         }
 
-        cacheHitHolder.reset();
-        final BlockCacheValue<RefCountedByteBuffer> cacheValue = slotCache.acquireRefCountedValue(blockOffset, cacheHitHolder);
-        if (cacheValue == null) {
-            throw new IOException("Failed to acquire cache value for block at offset " + blockOffset);
-        }
+        BlockCacheValue<RefCountedByteBuffer> cacheValue;
+        ByteBuffer buffer;
+        int attempts = 0;
+        do {
+            if (++attempts > MAX_CLOSED_BLOCK_RETRIES) {
+                throw new IOException("Block at offset " + blockOffset + " was evicted on each of " + MAX_CLOSED_BLOCK_RETRIES + " reads");
+            }
+            cacheHitHolder.reset();
+            cacheValue = slotCache.acquireRefCountedValue(blockOffset, cacheHitHolder);
+            if (cacheValue == null) {
+                throw new IOException("Failed to acquire cache value for block at offset " + blockOffset);
+            }
+            // Null if the cache dropped the block between the lookup and here.
+            buffer = cacheValue.value().buffer();
+        } while (buffer == null);
 
         currentBlockOffset = blockOffset;
         currentBlock = cacheValue;
@@ -142,7 +159,7 @@ public class CachedByteBufferIndexInput extends IndexInput implements RandomAcce
         }
 
         lastOffsetInBlock = offsetInBlock;
-        return cacheValue.value().buffer();
+        return buffer;
     }
 
     @Override
