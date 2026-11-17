@@ -44,7 +44,7 @@ public class ByteBufferPool extends AbstractPool<RefCountedByteBuffer> {
     }
 
     @Override
-    public RefCountedByteBuffer acquire() throws InterruptedException {
+    public RefCountedByteBuffer acquire() throws InterruptedException, IOException {
         if (Thread.currentThread().isInterrupted()) {
             throw new InterruptedException("Thread interrupted before pool acquire");
         }
