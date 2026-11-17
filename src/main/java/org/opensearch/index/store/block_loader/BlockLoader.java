@@ -24,6 +24,12 @@ public interface BlockLoader<T> {
     /**
      * Thrown when the memory segment pool is under pressure and cannot allocate segments.
      */
+    /**
+     * Pool timeout for on-demand loads (a reader is waiting). Loads given a shorter timeout, such as
+     * prefetch, are speculative.
+     */
+    long DEMAND_POOL_TIMEOUT_MS = 5000;
+
     class PoolPressureException extends IOException {
         /**
          * Constructs a new PoolPressureException with the specified detail message.
@@ -116,7 +122,7 @@ public interface BlockLoader<T> {
      * @throws Exception if loading fails due to I/O errors, pool pressure, or other issues
      */
     default T[] load(Path filePath, long startOffset, long blockCount) throws Exception {
-        return load(filePath, startOffset, blockCount, 5000); // 5 seconds for critical on-demand loads
+        return load(filePath, startOffset, blockCount, DEMAND_POOL_TIMEOUT_MS);
     }
 
     /**

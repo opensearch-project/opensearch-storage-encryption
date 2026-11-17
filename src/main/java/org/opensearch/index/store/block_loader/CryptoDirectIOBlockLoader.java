@@ -151,8 +151,12 @@ public class CryptoDirectIOBlockLoader<T extends BlockCacheValue<T>> implements 
                     int toCopy = Math.min(CACHE_BLOCK_SIZE, remaining);
 
                     if (byteBufferMode) {
-                        // ByteBuffer mode: acquire from ByteBufferPool, copy via MemorySegment.ofBuffer()
-                        T buf = pool.acquire();
+                        // ByteBuffer mode: acquire from ByteBufferPool, copy via MemorySegment.ofBuffer().
+                        // Only on-demand loads may wait out the pool's read path (and use overflow buffers);
+                        // a speculative load (prefetch) gives up after its own timeout, as in MemorySegment mode.
+                        T buf = poolTimeoutMs >= DEMAND_POOL_TIMEOUT_MS
+                            ? pool.acquire()
+                            : pool.tryAcquire(poolTimeoutMs, TimeUnit.MILLISECONDS);
                         ByteBuffer direct = ((RefCountedByteBuffer) buf).buffer();
                         direct.order(java.nio.ByteOrder.LITTLE_ENDIAN);
                         MemorySegment dst = MemorySegment.ofBuffer(direct);
