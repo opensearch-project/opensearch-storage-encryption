@@ -13,6 +13,7 @@ import java.security.Security;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -157,7 +158,10 @@ public class SlabPoolReadCorrectnessTests extends OpenSearchTestCase {
 
         AtomicReference<String> failure = new AtomicReference<>();
         AtomicLong bytesChecked = new AtomicLong();
-        long deadline = System.nanoTime() + 45_000_000_000L;
+        // Read until every file has been read through once in total (~2.3x the pool, so every slot is
+        // reused several times), however long that takes on the machine; the cap only stops a hung run.
+        final long target = (long) FILES * FILE_BYTES;
+        final long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(10);
         List<Thread> threads = new ArrayList<>();
         for (int t = 0; t < 8; t++) {
             final long seed = random().nextLong();
@@ -165,7 +169,7 @@ public class SlabPoolReadCorrectnessTests extends OpenSearchTestCase {
                 Random rnd = new Random(seed);
                 byte[] buf = new byte[64 << 10];
                 try {
-                    while (System.nanoTime() < deadline && failure.get() == null) {
+                    while (bytesChecked.get() <= target && System.nanoTime() < deadline && failure.get() == null) {
                         int f = rnd.nextInt(FILES);
                         IndexInput in;
                         long sliceStart;
@@ -220,7 +224,7 @@ public class SlabPoolReadCorrectnessTests extends OpenSearchTestCase {
         logger.info("checked {} MB; {}", bytesChecked.get() >> 20, stats);
         assertNull(failure.get() + " (" + stats + ")", failure.get());
         // Reading at least all the data once (~2.3x the pool) churns through every slot several times.
-        assertTrue("checked only " + (bytesChecked.get() >> 20) + " MB", bytesChecked.get() > (long) FILES * FILE_BYTES);
+        assertTrue("checked only " + (bytesChecked.get() >> 20) + " MB in 10 minutes", bytesChecked.get() > target);
     }
 
     /**
