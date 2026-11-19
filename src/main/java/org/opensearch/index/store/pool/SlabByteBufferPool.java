@@ -395,22 +395,23 @@ public class SlabByteBufferPool extends ByteBufferPool {
         } finally {
             lock.unlock();
         }
-        return String.format(
-            Locale.ROOT,
-            "SlabByteBufferPool[max=%d, slabs=%d/%d, free=%d, inUse=%d, overflow=%d, overflowLive=%d/%d, overflowCapWaits=%d, "
-                + "waits=%d, gcRequests=%d]",
-            maxSegments,
-            slabCount,
-            maxSlabs,
-            free,
-            getBuffersInUse(),
-            overflowAllocations.get(),
-            overflowLive,
-            maxOverflow,
-            overflowCapWaits.get(),
-            waits.get(),
-            gcRequests.get()
-        );
+        return String
+            .format(
+                Locale.ROOT,
+                "SlabByteBufferPool[max=%d, slabs=%d/%d, free=%d, inUse=%d, overflow=%d, overflowLive=%d/%d, overflowCapWaits=%d, "
+                    + "waits=%d, gcRequests=%d]",
+                maxSegments,
+                slabCount,
+                maxSlabs,
+                free,
+                getBuffersInUse(),
+                overflowAllocations.get(),
+                overflowLive,
+                maxOverflow,
+                overflowCapWaits.get(),
+                waits.get(),
+                gcRequests.get()
+            );
     }
 
     @Override

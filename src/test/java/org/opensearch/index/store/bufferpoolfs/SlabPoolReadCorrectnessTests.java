@@ -191,7 +191,8 @@ public class SlabPoolReadCorrectnessTests extends OpenSearchTestCase {
                                 for (int i = 0; i < Math.min(len, 64); i++) {
                                     byte b = in.readByte();
                                     if (b != expected(f, sliceStart + pos + i)) {
-                                        failure.compareAndSet(null, "file " + f + " offset " + (sliceStart + pos + i) + ": readByte mismatch");
+                                        failure
+                                            .compareAndSet(null, "file " + f + " offset " + (sliceStart + pos + i) + ": readByte mismatch");
                                     }
                                 }
                                 bytesChecked.addAndGet(Math.min(len, 64));
@@ -199,7 +200,11 @@ public class SlabPoolReadCorrectnessTests extends OpenSearchTestCase {
                                 in.readBytes(buf, 0, len);
                                 for (int i = 0; i < len; i++) {
                                     if (buf[i] != expected(f, sliceStart + pos + i)) {
-                                        failure.compareAndSet(null, "file " + f + " offset " + (sliceStart + pos + i) + ": readBytes mismatch");
+                                        failure
+                                            .compareAndSet(
+                                                null,
+                                                "file " + f + " offset " + (sliceStart + pos + i) + ": readBytes mismatch"
+                                            );
                                         break;
                                     }
                                 }

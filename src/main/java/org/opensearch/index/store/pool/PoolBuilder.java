@@ -359,7 +359,8 @@ public final class PoolBuilder {
             // 25% headroom over the cache for evicted blocks whose views the GC hasn't collected yet.
             long slots = (long) (maxCacheBlocks * 1.25);
             pool = new SlabByteBufferPool(slots * CACHE_BLOCK_SIZE, CACHE_BLOCK_SIZE);
-            LOGGER.info("ByteBuffer mode enabled with slab pool: capacity={}blocks ({}MB)", slots, slots * CACHE_BLOCK_SIZE / (1024 * 1024));
+            LOGGER
+                .info("ByteBuffer mode enabled with slab pool: capacity={}blocks ({}MB)", slots, slots * CACHE_BLOCK_SIZE / (1024 * 1024));
         } else if (byteBufferMode) {
             long bbPoolSize = (long) (maxCacheBlocks * 1.10) * CACHE_BLOCK_SIZE;
             pool = new ByteBufferPool(bbPoolSize, CACHE_BLOCK_SIZE);
