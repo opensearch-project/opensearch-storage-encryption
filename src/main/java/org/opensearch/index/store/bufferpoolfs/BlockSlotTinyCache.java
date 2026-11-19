@@ -11,7 +11,6 @@ import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.concurrent.locks.LockSupport;
 
-import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
@@ -31,7 +30,7 @@ import org.opensearch.index.store.block_cache.FileBlockCacheKey;
  *   fully constructed (JLS §17.5 final field semantics).
  * - A stale read sees either the old entry or the new entry, never a mix.
  */
-public class BlockSlotTinyCache {
+public class BlockSlotTinyCache<T> {
 
     public static final class CacheHitHolder {
         private boolean wasCacheHit;
@@ -49,40 +48,40 @@ public class BlockSlotTinyCache {
         }
     }
 
-    private record SlotEntry(long blockIdx, BlockCacheValue<RefCountedMemorySegment> val, int gen) {
+    private record SlotEntry<T>(long blockIdx, BlockCacheValue<T> val, int gen) {
     }
 
     private static final int SLOT_COUNT = 32;
     private static final int SLOT_MASK = SLOT_COUNT - 1;
 
-    private final BlockCache<RefCountedMemorySegment> cache;
+    private final BlockCache<T> cache;
     private final Path path;
 
-    private final AtomicReferenceArray<SlotEntry> slots = new AtomicReferenceArray<>(SLOT_COUNT);
+    private final AtomicReferenceArray<SlotEntry<T>> slots = new AtomicReferenceArray<>(SLOT_COUNT);
 
     // Key reuse per slot
     private final FileBlockCacheKey[] slotKeys = new FileBlockCacheKey[SLOT_COUNT];
 
-    public BlockSlotTinyCache(BlockCache<RefCountedMemorySegment> cache, Path path, long fileLength) {
+    public BlockSlotTinyCache(BlockCache<T> cache, Path path, long fileLength) {
         this.cache = cache;
         this.path = path;
     }
 
-    public BlockCacheValue<RefCountedMemorySegment> acquireRefCountedValue(long blockOff) throws IOException {
+    public BlockCacheValue<T> acquireRefCountedValue(long blockOff) throws IOException {
         return acquireRefCountedValue(blockOff, null);
     }
 
-    public BlockCacheValue<RefCountedMemorySegment> acquireRefCountedValue(long blockOff, CacheHitHolder hitHolder) throws IOException {
+    public BlockCacheValue<T> acquireRefCountedValue(long blockOff, CacheHitHolder hitHolder) throws IOException {
 
         final long blockIdx = blockOff >>> CACHE_BLOCK_SIZE_POWER;
         final int slotIdx = (int) ((blockIdx ^ (blockIdx >>> 17)) & SLOT_MASK);
 
         // L1 lookup: single atomic reference read gives consistent snapshot
-        SlotEntry entry = slots.get(slotIdx);
+        SlotEntry<T> entry = slots.get(slotIdx);
         if (entry != null && entry.blockIdx == blockIdx) {
-            BlockCacheValue<RefCountedMemorySegment> v = entry.val;
+            BlockCacheValue<T> v = entry.val;
             if (v.tryPin()) {
-                if (v.value().getGeneration() == entry.gen) {
+                if (v.getGeneration() == entry.gen) {
                     if (hitHolder != null)
                         hitHolder.setWasCacheHit(true);
                     return v;
@@ -100,11 +99,11 @@ public class BlockSlotTinyCache {
         }
 
         for (int attempts = 0; attempts < maxAttempts; attempts++) {
-            BlockCacheValue<RefCountedMemorySegment> v = cache.get(key);
+            BlockCacheValue<T> v = cache.get(key);
             if (v != null) {
-                final int expectedGen = v.value().getGeneration();
+                final int expectedGen = v.getGeneration();
                 if (v.tryPin()) {
-                    if (v.value().getGeneration() == expectedGen) {
+                    if (v.getGeneration() == expectedGen) {
                         publishToL1(slotIdx, blockIdx, v, expectedGen);
                         if (hitHolder != null)
                             hitHolder.setWasCacheHit(true);
@@ -114,11 +113,11 @@ public class BlockSlotTinyCache {
                 }
             }
 
-            BlockCacheValue<RefCountedMemorySegment> loaded = cache.getOrLoad(key);
+            BlockCacheValue<T> loaded = cache.getOrLoad(key);
             if (loaded != null) {
-                final int expectedGen = loaded.value().getGeneration();
+                final int expectedGen = loaded.getGeneration();
                 if (loaded.tryPin()) {
-                    if (loaded.value().getGeneration() == expectedGen) {
+                    if (loaded.getGeneration() == expectedGen) {
                         publishToL1(slotIdx, blockIdx, loaded, expectedGen);
                         if (hitHolder != null)
                             hitHolder.setWasCacheHit(false);
@@ -136,8 +135,8 @@ public class BlockSlotTinyCache {
         throw new IOException("Unable to pin memory segment for block offset " + blockOff + " after " + maxAttempts + " attempts");
     }
 
-    private void publishToL1(int slotIdx, long blockIdx, BlockCacheValue<RefCountedMemorySegment> v, int gen) {
-        slots.set(slotIdx, new SlotEntry(blockIdx, v, gen));
+    private void publishToL1(int slotIdx, long blockIdx, BlockCacheValue<T> v, int gen) {
+        slots.set(slotIdx, new SlotEntry<>(blockIdx, v, gen));
     }
 
     public void clear() {
