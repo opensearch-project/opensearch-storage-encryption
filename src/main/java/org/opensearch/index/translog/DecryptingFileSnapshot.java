@@ -7,6 +7,7 @@ package org.opensearch.index.translog;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Path;
+import java.security.Provider;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -25,6 +26,7 @@ public class DecryptingFileSnapshot extends FileSnapshot.TranslogFileSnapshot {
     private final TranslogFileSnapshot delegate;
     private final KeyResolver keyResolver;
     private final String translogUUID;
+    private final Provider provider;
     private final Long decryptedLength;
 
     /**
@@ -33,9 +35,11 @@ public class DecryptingFileSnapshot extends FileSnapshot.TranslogFileSnapshot {
      * @param delegate the original TranslogFileSnapshot to wrap
      * @param keyResolver the key resolver for decryption
      * @param translogUUID the translog UUID for encryption context (must match encryption!)
+     * @param provider the JCE provider for translog cipher and digest
      * @throws IOException if snapshot metadata cannot be read
      */
-    public DecryptingFileSnapshot(TranslogFileSnapshot delegate, KeyResolver keyResolver, String translogUUID) throws IOException {
+    public DecryptingFileSnapshot(TranslogFileSnapshot delegate, KeyResolver keyResolver, String translogUUID, Provider provider)
+        throws IOException {
         super(
             delegate.getPrimaryTerm(),
             delegate.getGeneration(),
@@ -46,6 +50,7 @@ public class DecryptingFileSnapshot extends FileSnapshot.TranslogFileSnapshot {
         this.delegate = delegate;
         this.keyResolver = keyResolver;
         this.translogUUID = translogUUID;
+        this.provider = provider;
         Path path = delegate.getPath();
 
         if (path != null && path.getFileName().toString().endsWith(".tlog")) {
@@ -73,7 +78,7 @@ public class DecryptingFileSnapshot extends FileSnapshot.TranslogFileSnapshot {
         long totalBytes = 0;
         byte[] buffer = new byte[8192];
 
-        try (CryptoDecryptingInputStream measuringStream = new CryptoDecryptingInputStream(path, keyResolver, translogUUID)) {
+        try (CryptoDecryptingInputStream measuringStream = new CryptoDecryptingInputStream(path, keyResolver, translogUUID, provider)) {
             int bytesRead;
             while ((bytesRead = measuringStream.read(buffer)) != -1) {
                 totalBytes += bytesRead;
@@ -98,7 +103,7 @@ public class DecryptingFileSnapshot extends FileSnapshot.TranslogFileSnapshot {
         Path path = delegate.getPath();
 
         if (path != null && path.getFileName().toString().endsWith(".tlog")) {
-            return new CryptoDecryptingInputStream(path, keyResolver, translogUUID);
+            return new CryptoDecryptingInputStream(path, keyResolver, translogUUID, provider);
         } else {
             // .ckp files are not encrypted, return normal stream
             return delegate.inputStream();

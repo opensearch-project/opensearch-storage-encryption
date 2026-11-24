@@ -104,7 +104,7 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
             // Generate MessageId and derive file-specific key
             this.footer = EncryptionFooter.generateNew(1L << frameSizePower, (short) algorithmId);
             this.masterKey = keyResolver.getDataKey().getEncoded();
-            byte[] derivedKey = HkdfKeyDerivation.deriveFileKey(masterKey, footer.getMessageId());
+            byte[] derivedKey = HkdfKeyDerivation.deriveFileKey(masterKey, footer.getMessageId(), provider);
             this.fileKey = new javax.crypto.spec.SecretKeySpec(derivedKey, "AES");
 
             this.provider = provider;
@@ -207,12 +207,12 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
 
                 // Write footer with file key for authentication
                 byte[] fileKeyBytes = fileKey.getEncoded();
-                out.write(footer.serialize(java.nio.file.Paths.get(normalizedFilePath), fileKeyBytes));
+                out.write(footer.serialize(java.nio.file.Paths.get(normalizedFilePath), fileKeyBytes, provider));
 
                 super.close();
 
                 if (normalizedFilePath != null) {
-                    encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, this.masterKey);
+                    encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, this.masterKey, provider);
                 }
 
             } catch (IOException e) {
@@ -245,7 +245,8 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
                     frameNumber,
                     offsetWithinFrame,
                     normalizedFilePath,
-                    encryptionMetadataCache
+                    encryptionMetadataCache,
+                    provider
                 );
 
             try {

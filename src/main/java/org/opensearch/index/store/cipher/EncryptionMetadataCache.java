@@ -5,6 +5,7 @@
 package org.opensearch.index.store.cipher;
 
 import java.nio.file.Path;
+import java.security.Provider;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.opensearch.index.store.footer.EncryptionFooter;
@@ -25,9 +26,9 @@ public class EncryptionMetadataCache {
         private final EncryptionFooter footer;
         private final byte[] fileKey;
 
-        FileEncryptionMetadata(EncryptionFooter footer, byte[] masterKey) {
+        FileEncryptionMetadata(EncryptionFooter footer, byte[] masterKey, Provider provider) {
             this.footer = footer;
-            this.fileKey = HkdfKeyDerivation.deriveFileKey(masterKey, footer.getMessageId());
+            this.fileKey = HkdfKeyDerivation.deriveFileKey(masterKey, footer.getMessageId(), provider);
         }
 
         public EncryptionFooter getFooter() {
@@ -91,10 +92,11 @@ public class EncryptionMetadataCache {
      * @param normalizedPath normalized file path
      * @param footer the footer containing messageId for derivation
      * @param masterKey master key for deriving file key
+     * @param provider the JCE provider used for HKDF HMAC
      * @return file encryption metadata (cached or newly created)
      */
-    public FileEncryptionMetadata getOrLoadMetadata(String normalizedPath, EncryptionFooter footer, byte[] masterKey) {
-        return fileMetadataCache.computeIfAbsent(normalizedPath, k -> new FileEncryptionMetadata(footer, masterKey));
+    public FileEncryptionMetadata getOrLoadMetadata(String normalizedPath, EncryptionFooter footer, byte[] masterKey, Provider provider) {
+        return fileMetadataCache.computeIfAbsent(normalizedPath, k -> new FileEncryptionMetadata(footer, masterKey, provider));
     }
 
     /**

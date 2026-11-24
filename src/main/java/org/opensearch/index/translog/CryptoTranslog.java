@@ -5,6 +5,7 @@
 package org.opensearch.index.translog;
 
 import java.io.IOException;
+import java.security.Provider;
 import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
 
@@ -44,6 +45,7 @@ public class CryptoTranslog extends LocalTranslog {
      * @param primaryTermSupplier the primary term supplier
      * @param persistedSequenceNumberConsumer the persisted sequence number consumer
      * @param keyResolver the key resolver for encryption (unified with index files)
+     * @param provider the JCE provider for translog cipher and digest
      * @throws IOException if translog creation fails
      */
     public CryptoTranslog(
@@ -53,7 +55,8 @@ public class CryptoTranslog extends LocalTranslog {
         LongSupplier globalCheckpointSupplier,
         LongSupplier primaryTermSupplier,
         LongConsumer persistedSequenceNumberConsumer,
-        KeyResolver keyResolver
+        KeyResolver keyResolver,
+        Provider provider
     )
         throws IOException {
 
@@ -65,7 +68,7 @@ public class CryptoTranslog extends LocalTranslog {
             primaryTermSupplier,
             persistedSequenceNumberConsumer,
             TranslogOperationHelper.DEFAULT,
-            createCryptoChannelFactory(keyResolver, translogUUID)
+            createCryptoChannelFactory(keyResolver, translogUUID, provider)
         );
 
         // Strict validation after super() - never allow null components
@@ -95,6 +98,7 @@ public class CryptoTranslog extends LocalTranslog {
      * @param persistedSequenceNumberConsumer the persisted sequence number consumer
      * @param translogOperationHelper the translog operation helper
      * @param keyResolver the key resolver for encryption (unified with index files)
+     * @param provider the JCE provider for translog cipher and digest
      * @throws IOException if translog creation fails
      */
     public CryptoTranslog(
@@ -105,7 +109,8 @@ public class CryptoTranslog extends LocalTranslog {
         LongSupplier primaryTermSupplier,
         LongConsumer persistedSequenceNumberConsumer,
         TranslogOperationHelper translogOperationHelper,
-        KeyResolver keyResolver
+        KeyResolver keyResolver,
+        Provider provider
     )
         throws IOException {
 
@@ -117,7 +122,7 @@ public class CryptoTranslog extends LocalTranslog {
             primaryTermSupplier,
             persistedSequenceNumberConsumer,
             translogOperationHelper,
-            createCryptoChannelFactory(keyResolver, translogUUID)
+            createCryptoChannelFactory(keyResolver, translogUUID, provider)
         );
 
         // Strict validation after super() - never allow null components
@@ -143,9 +148,10 @@ public class CryptoTranslog extends LocalTranslog {
      * This is needed because Java requires super() to be the first statement.
      * Returns ChannelFactory interface type to match LocalTranslog constructor signature.
      */
-    private static ChannelFactory createCryptoChannelFactory(KeyResolver keyResolver, String translogUUID) throws IOException {
+    private static ChannelFactory createCryptoChannelFactory(KeyResolver keyResolver, String translogUUID, Provider provider)
+        throws IOException {
         try {
-            CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyResolver, translogUUID);
+            CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyResolver, translogUUID, provider);
             return channelFactory;
         } catch (Exception e) {
             throw new IOException(

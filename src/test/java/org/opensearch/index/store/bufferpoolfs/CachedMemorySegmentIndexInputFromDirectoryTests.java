@@ -119,7 +119,8 @@ public class CachedMemorySegmentIndexInputFromDirectoryTests extends BaseIndexIn
             segmentPool,
             keyResolver,
             encryptionMetadataCache,
-            poolResources.getFileChannelCache()
+            poolResources.getFileChannelCache(),
+            provider
         );
 
         Worker worker = poolResources.getSharedReadaheadWorker();

@@ -13,7 +13,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.Provider;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
@@ -76,15 +81,49 @@ public class TranslogChunkManager {
     private static final String NONCE_CONTEXT = "translog-gcm-nonce-v1";
     private static final int TRANSFER_BUFFER_SIZE = 8192;
 
-    private static final ThreadLocal<Cipher> CIPHER = ThreadLocal.withInitial(() -> {
-        try {
-            return Cipher.getInstance(TRANSFORMATION);
-        } catch (GeneralSecurityException e) {
-            throw new IllegalStateException("AES/GCM is unavailable", e);
-        }
-    });
+    private static final ThreadLocal<Map<String, Cipher>> CIPHER_POOLS = ThreadLocal.withInitial(HashMap::new);
     private static final ThreadLocal<ByteBuffer> TRANSFER_BUFFER_POOL = ThreadLocal
         .withInitial(() -> ByteBuffer.allocate(TRANSFER_BUFFER_SIZE));
+
+    /**
+     * Returns a thread-local pooled AES/GCM/NoPadding cipher for the given provider.
+     *
+     * @param provider the JCE provider to use
+     * @return a pooled {@link Cipher} instance bound to {@code provider}
+     */
+    public static Cipher getPooledCipher(Provider provider) {
+        Objects.requireNonNull(provider, "provider");
+        return CIPHER_POOLS.get().computeIfAbsent(provider.getName(), name -> {
+            try {
+                return Cipher.getInstance(TRANSFORMATION, provider);
+            } catch (GeneralSecurityException e) {
+                throw new IllegalStateException("AES/GCM is unavailable", e);
+            }
+        });
+    }
+
+    /**
+     * Returns a SHA-256 {@link MessageDigest}, preferring {@code provider}.
+     * If that provider has no SHA-256 service (SunJCE does not), falls back to
+     * {@link MessageDigest#getInstance(String)} so JCA picks the first installed
+     * provider that implements it — the same search as before this setting existed.
+     *
+     * @param provider the preferred JCE provider
+     * @return a SHA-256 {@link MessageDigest}
+     */
+    public static MessageDigest getMessageDigest(Provider provider) {
+        Objects.requireNonNull(provider, "provider");
+        try {
+            return MessageDigest.getInstance("SHA-256", provider);
+        } catch (NoSuchAlgorithmException preferredUnavailable) {
+            try {
+                return MessageDigest.getInstance("SHA-256");
+            } catch (NoSuchAlgorithmException e) {
+                preferredUnavailable.addSuppressed(e);
+                throw new IllegalStateException("SHA-256 is unavailable", preferredUnavailable);
+            }
+        }
+    }
 
     /** A frame: its index, logical (plaintext) and physical (on-disk) start offsets, and plaintext length. */
     private record Frame(int index, long logicalStart, long physicalStart, int length) {
@@ -96,6 +135,7 @@ public class TranslogChunkManager {
 
     private final FileChannel delegate;
     private final KeyResolver keyResolver;
+    private final Provider provider;
     private final Path filePath;
     private final int actualHeaderSize;
     private final byte[] nonce;
@@ -124,10 +164,12 @@ public class TranslogChunkManager {
      * @param keyResolver the key resolver for encryption operations
      * @param filePath the translog file path; its name scopes the per-file nonce
      * @param translogUUID the translog UUID, for the header size and the per-file nonce
+     * @param provider the JCE provider for GCM cipher and SHA-256 digest
      * @throws IOException if the existing file content cannot be indexed
      */
-    public TranslogChunkManager(FileChannel delegate, KeyResolver keyResolver, Path filePath, String translogUUID) throws IOException {
-        this(delegate, keyResolver, filePath, translogUUID, DEFAULT_MAX_FRAME_SIZE);
+    public TranslogChunkManager(FileChannel delegate, KeyResolver keyResolver, Path filePath, String translogUUID, Provider provider)
+        throws IOException {
+        this(delegate, keyResolver, filePath, translogUUID, DEFAULT_MAX_FRAME_SIZE, provider);
     }
 
     /**
@@ -138,9 +180,17 @@ public class TranslogChunkManager {
      * @param filePath the translog file path; its name scopes the per-file nonce
      * @param translogUUID the translog UUID, for the header size and the per-file nonce
      * @param newFileMaxFrameSize the maximum frame size if this is a new file; an existing file keeps the size it was written with
+     * @param provider the JCE provider for GCM cipher and SHA-256 digest
      * @throws IOException if the existing file content cannot be indexed
      */
-    TranslogChunkManager(FileChannel delegate, KeyResolver keyResolver, Path filePath, String translogUUID, int newFileMaxFrameSize)
+    TranslogChunkManager(
+        FileChannel delegate,
+        KeyResolver keyResolver,
+        Path filePath,
+        String translogUUID,
+        int newFileMaxFrameSize,
+        Provider provider
+    )
         throws IOException {
         if (translogUUID == null) {
             throw new IllegalArgumentException("translogUUID is required for exact header size calculation");
@@ -150,10 +200,11 @@ public class TranslogChunkManager {
         }
         this.delegate = delegate;
         this.keyResolver = keyResolver;
+        this.provider = Objects.requireNonNull(provider, "provider");
         this.filePath = filePath;
         String fileName = filePath.getFileName().toString();
         this.actualHeaderSize = fileName.endsWith(".tlog") ? calculateTranslogHeaderSize(translogUUID) : 0;
-        this.nonce = deriveFileNonce(keyResolver.getDataKey().getEncoded(), translogUUID, fileName);
+        this.nonce = deriveFileNonce(keyResolver.getDataKey().getEncoded(), translogUUID, fileName, provider);
         this.newFileMaxFrameSize = newFileMaxFrameSize;
         synchronized (this) {
             indexNewFrames();
@@ -166,19 +217,16 @@ public class TranslogChunkManager {
      * @param key the shard data key
      * @param translogUUID the translog UUID
      * @param fileName the translog file name (encodes the generation)
+     * @param provider the JCE provider for SHA-256 and HKDF HMAC
      * @return the 8-byte nonce
      */
-    static byte[] deriveFileNonce(byte[] key, String translogUUID, String fileName) {
-        try {
-            MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
-            sha256.update(translogUUID.getBytes(StandardCharsets.UTF_8));
-            sha256.update((byte) 0);
-            sha256.update(fileName.getBytes(StandardCharsets.UTF_8));
-            byte[] fileId = Arrays.copyOf(sha256.digest(), 16);
-            return HkdfKeyDerivation.deriveKey(key, fileId, NONCE_CONTEXT, NONCE_SIZE);
-        } catch (GeneralSecurityException e) {
-            throw new IllegalStateException("Failed to derive translog nonce", e);
-        }
+    static byte[] deriveFileNonce(byte[] key, String translogUUID, String fileName, Provider provider) {
+        MessageDigest sha256 = getMessageDigest(provider);
+        sha256.update(translogUUID.getBytes(StandardCharsets.UTF_8));
+        sha256.update((byte) 0);
+        sha256.update(fileName.getBytes(StandardCharsets.UTF_8));
+        byte[] fileId = Arrays.copyOf(sha256.digest(), 16);
+        return HkdfKeyDerivation.deriveKey(key, fileId, NONCE_CONTEXT, NONCE_SIZE, provider);
     }
 
     /**
@@ -340,7 +388,7 @@ public class TranslogChunkManager {
         }
         ByteBuffer sealed = readPhysical(frame.physicalStart() + FRAME_HEADER_SIZE, frame.length() + GCM_TAG_SIZE);
         try {
-            Cipher cipher = CIPHER.get();
+            Cipher cipher = getPooledCipher(provider);
             initCipher(cipher, Cipher.DECRYPT_MODE, frame.index(), frame.logicalStart(), frame.length());
             byte[] plaintext = cipher.doFinal(sealed.array(), 0, sealed.limit());
             lastDecrypted = new DecryptedFrame(frame.index(), plaintext);
@@ -468,7 +516,7 @@ public class TranslogChunkManager {
                 formatHeaderPresent = true;
                 physicalEnd = actualHeaderSize + FORMAT_HEADER_SIZE;
             }
-            Cipher cipher = CIPHER.get();
+            Cipher cipher = getPooledCipher(provider);
             while (src.hasRemaining()) {
                 int length = Math.min(src.remaining(), maxFrameSize);
                 byte[] plaintext = new byte[length];

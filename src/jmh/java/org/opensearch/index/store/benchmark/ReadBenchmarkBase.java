@@ -152,7 +152,8 @@ public class ReadBenchmarkBase {
             segmentPool,
             keyResolver,
             encMetaCache,
-            poolResources.getFileChannelCache()
+            poolResources.getFileChannelCache(),
+            provider
         );
         Worker worker = poolResources.getSharedReadaheadWorker();
 

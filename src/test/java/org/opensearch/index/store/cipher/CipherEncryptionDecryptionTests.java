@@ -7,6 +7,7 @@ package org.opensearch.index.store.cipher;
 import static org.junit.Assert.assertArrayEquals;
 
 import java.nio.charset.StandardCharsets;
+import java.security.Provider;
 import java.security.Security;
 import java.util.Arrays;
 
@@ -24,15 +25,31 @@ public class CipherEncryptionDecryptionTests extends OpenSearchTestCase {
     private static final byte[] TEST_KEY = new byte[32]; // 256-bit AES key
     private static final byte[] TEST_IV = new byte[16];  // 128-bit IV
     private static final byte[] TEST_DATA = "Hello World Test Data".getBytes(StandardCharsets.UTF_8);
+    private static final Provider SUN_JCE = Security.getProvider("SunJCE");
 
     static {
         Arrays.fill(TEST_KEY, (byte) 0x42);
         Arrays.fill(TEST_IV, (byte) 0x24);
     }
 
+    public void testPooledCtrCipherUsesPassedProvider() {
+        Cipher cipher = AesCipherFactory.getPooledCipher(SUN_JCE);
+        assertEquals("SunJCE", cipher.getProvider().getName());
+    }
+
+    public void testGcmHelpersUsePassedProvider() throws Exception {
+        Cipher gcmCipher = AesGcmCipherFactory.getCipher(SUN_JCE);
+        assertEquals("SunJCE", gcmCipher.getProvider().getName());
+
+        SecretKeySpec keySpec = new SecretKeySpec(TEST_KEY, "AES");
+        byte[] encryptedWithTag = AesGcmCipherFactory.encryptWithTag(SUN_JCE, keySpec, TEST_IV, TEST_DATA, TEST_DATA.length);
+        byte[] decrypted = AesGcmCipherFactory.decryptWithTag(SUN_JCE, keySpec, TEST_IV, encryptedWithTag);
+        assertArrayEquals(TEST_DATA, decrypted);
+    }
+
     public void testEncryptDecryptWithCTR() throws Exception {
         // Get cipher from pool
-        Cipher cipher = AesCipherFactory.CIPHER_POOL.get();
+        Cipher cipher = AesCipherFactory.getPooledCipher(SUN_JCE);
         SecretKeySpec keySpec = new SecretKeySpec(TEST_KEY, "AES");
 
         // Encrypt
@@ -50,10 +67,10 @@ public class CipherEncryptionDecryptionTests extends OpenSearchTestCase {
         SecretKeySpec keySpec = new SecretKeySpec(TEST_KEY, "AES");
 
         // Encrypt with tag
-        byte[] encryptedWithTag = AesGcmCipherFactory.encryptWithTag(keySpec, TEST_IV, TEST_DATA, TEST_DATA.length);
+        byte[] encryptedWithTag = AesGcmCipherFactory.encryptWithTag(SUN_JCE, keySpec, TEST_IV, TEST_DATA, TEST_DATA.length);
 
         // Decrypt with tag verification
-        byte[] decrypted = AesGcmCipherFactory.decryptWithTag(keySpec, TEST_IV, encryptedWithTag);
+        byte[] decrypted = AesGcmCipherFactory.decryptWithTag(SUN_JCE, keySpec, TEST_IV, encryptedWithTag);
 
         assertArrayEquals(TEST_DATA, decrypted);
     }
@@ -62,7 +79,7 @@ public class CipherEncryptionDecryptionTests extends OpenSearchTestCase {
         SecretKeySpec keySpec = new SecretKeySpec(TEST_KEY, "AES");
 
         // Encrypt with GCM without tag
-        Cipher gcmCipher = AesGcmCipherFactory.getCipher(Security.getProvider("SunJCE"));
+        Cipher gcmCipher = AesGcmCipherFactory.getCipher(SUN_JCE);
         AesGcmCipherFactory.initCipher(gcmCipher, keySpec, TEST_IV, Cipher.ENCRYPT_MODE, 0);
         byte[] gcmEncrypted = AesGcmCipherFactory.encryptWithoutTag(0, gcmCipher, TEST_DATA, TEST_DATA.length);
 
@@ -75,7 +92,7 @@ public class CipherEncryptionDecryptionTests extends OpenSearchTestCase {
         System.arraycopy(remaining, 0, fullEncrypted, gcmEncrypted.length, remaining.length - AesGcmCipherFactory.GCM_TAG_LENGTH);
 
         // Decrypt with CTR using offset IV
-        Cipher ctrCipher = AesCipherFactory.CIPHER_POOL.get();
+        Cipher ctrCipher = AesCipherFactory.getPooledCipher(SUN_JCE);
         byte[] offsetIV = AesCipherFactory.computeOffsetIVForAesGcmEncrypted(TEST_IV, 0);
         ctrCipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(offsetIV));
         byte[] decrypted = ctrCipher.update(fullEncrypted);

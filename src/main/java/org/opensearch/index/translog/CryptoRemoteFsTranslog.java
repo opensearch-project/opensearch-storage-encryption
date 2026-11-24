@@ -10,6 +10,7 @@ import static org.opensearch.index.remote.RemoteStoreEnums.DataType.METADATA;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.security.Provider;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
@@ -55,7 +56,8 @@ public class CryptoRemoteFsTranslog extends RemoteFsTranslog {
         RemoteTranslogTransferTracker remoteTranslogTransferTracker,
         RemoteStoreSettings remoteStoreSettings,
         TranslogOperationHelper translogOperationHelper,
-        KeyResolver keyResolver
+        KeyResolver keyResolver,
+        Provider provider
     )
         throws IOException {
         super(
@@ -71,7 +73,7 @@ public class CryptoRemoteFsTranslog extends RemoteFsTranslog {
             remoteTranslogTransferTracker,
             remoteStoreSettings,
             translogOperationHelper,
-            createCryptoChannelFactory(keyResolver, translogUUID),
+            createCryptoChannelFactory(keyResolver, translogUUID, provider),
             true // isServerSideEncryptionEnabled
         );
 
@@ -168,9 +170,10 @@ public class CryptoRemoteFsTranslog extends RemoteFsTranslog {
     /**
      * Helper method to create CryptoChannelFactory for constructor use.
      */
-    private static CryptoChannelFactory createCryptoChannelFactory(KeyResolver keyResolver, String translogUUID) throws IOException {
+    private static CryptoChannelFactory createCryptoChannelFactory(KeyResolver keyResolver, String translogUUID, Provider provider)
+        throws IOException {
         try {
-            return new CryptoChannelFactory(keyResolver, translogUUID);
+            return new CryptoChannelFactory(keyResolver, translogUUID, provider);
         } catch (Exception e) {
             throw new IOException(
                 "Failed to initialize crypto channel factory for translog encryption. Cannot proceed without encryption!",

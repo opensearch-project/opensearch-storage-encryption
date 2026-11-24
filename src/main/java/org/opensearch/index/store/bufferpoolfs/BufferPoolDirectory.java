@@ -281,7 +281,8 @@ public class BufferPoolDirectory extends FSDirectory {
 
         // Cache miss - read footer from disk (happens during file open before cache populated)
         try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
-            EncryptionFooter footer = EncryptionFooter.readViaFileChannel(normalizedPath, channel, masterKeyBytes, encryptionMetadataCache);
+            EncryptionFooter footer = EncryptionFooter
+                .readViaFileChannel(normalizedPath, channel, masterKeyBytes, encryptionMetadataCache, provider);
 
             // Metadata is already cached by readViaFileChannel
 

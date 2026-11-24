@@ -134,6 +134,42 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     public static final String DEFAULT_CRYPTO_PROVIDER = "SunJCE";
 
     /**
+     * Specifies the JCE {@link Provider} used for leftover Java cryptographic operations
+     * on this index. Must name a provider already registered with the JVM. Defaults to
+     * {@link #DEFAULT_CRYPTO_PROVIDER} ({@code SunJCE}). Not changeable after index create.
+     */
+    public static final Setting<String> INDEX_CRYPTO_PROVIDER_SETTING = new Setting<>(
+        "index.store.crypto.provider",
+        DEFAULT_CRYPTO_PROVIDER,
+        Function.identity(),
+        (s) -> {
+            if (s == null || s.isBlank()) {
+                throw new SettingsException("index.store.crypto.provider must not be empty");
+            }
+            if (Security.getProvider(s) == null) {
+                throw new SettingsException("Unknown JCE provider [" + s + "] for index.store.crypto.provider");
+            }
+        },
+        Property.IndexScope,
+        Property.InternalIndex
+    );
+
+    /**
+     * Resolves the JCE {@link Provider} configured by {@link #INDEX_CRYPTO_PROVIDER_SETTING}.
+     *
+     * @param settings index settings (omitted key uses the {@link #DEFAULT_CRYPTO_PROVIDER} default)
+     * @return the registered JCE provider
+     */
+    public static Provider resolveCryptoProvider(Settings settings) {
+        String providerName = INDEX_CRYPTO_PROVIDER_SETTING.get(settings);
+        Provider provider = Security.getProvider(providerName);
+        if (provider == null) {
+            throw new SettingsException("Unknown JCE provider [" + providerName + "] for index.store.crypto.provider");
+        }
+        return provider;
+    }
+
+    /**
      * Specifies the Key management plugin type to be used. The desired CryptoKeyProviderPlugin
      * plugin should be installed.
      */
@@ -407,7 +443,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         // Extract shardId from path structure: .../indices/{index-uuid}/{shard-id}/index/
         // location.getParent() gives us the shard directory
         int shardId = Integer.parseInt(location.getParent().getFileName().toString());
-        final Provider provider = Security.getProvider(DEFAULT_CRYPTO_PROVIDER);
+        final Provider provider = resolveCryptoProvider(indexSettings.getSettings());
 
         // Use index-level key resolver - store keys at index level
 
@@ -513,7 +549,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             resources.getSegmentPool(),
             keyResolver,
             encryptionMetadataCache,
-            resources.getFileChannelCache()
+            resources.getFileChannelCache(),
+            provider
         );
 
         // Cache architecture: One shared Caffeine cache storage, multiple wrapper instances

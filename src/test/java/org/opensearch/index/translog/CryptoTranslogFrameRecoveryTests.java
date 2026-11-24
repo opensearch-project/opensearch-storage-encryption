@@ -12,6 +12,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.Key;
+import java.security.Provider;
+import java.security.Security;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -36,6 +38,7 @@ public class CryptoTranslogFrameRecoveryTests extends OpenSearchTestCase {
 
     private static final String MARKER = "frame-recovery-marker-";
     private static final long PRIMARY_TERM = 1L;
+    private static final Provider SUN_JCE = Security.getProvider("SunJCE");
 
     private KeyResolver keyResolver;
     private ShardId shardId;
@@ -59,7 +62,7 @@ public class CryptoTranslogFrameRecoveryTests extends OpenSearchTestCase {
                 SequenceNumbers.NO_OPS_PERFORMED,
                 PRIMARY_TERM,
                 translogUUID,
-                new CryptoChannelFactory(keyResolver, translogUUID)
+                new CryptoChannelFactory(keyResolver, translogUUID, SUN_JCE)
             );
     }
 
@@ -79,7 +82,8 @@ public class CryptoTranslogFrameRecoveryTests extends OpenSearchTestCase {
             () -> SequenceNumbers.NO_OPS_PERFORMED,
             () -> PRIMARY_TERM,
             seqNo -> {},
-            keyResolver
+            keyResolver,
+            SUN_JCE
         );
     }
 

@@ -100,7 +100,7 @@ public class DecryptingTransferSnapshot implements TransferSnapshot {
                 // This writes authentication tags so the file can be decrypted during upload
                 cryptoFactory.finalizeForPath(path);
 
-                wrapped.add(new DecryptingFileSnapshot(translogSnapshot, keyResolver, translogUUID));
+                wrapped.add(new DecryptingFileSnapshot(translogSnapshot, keyResolver, translogUUID, cryptoFactory.getProvider()));
             } else {
                 wrapped.add(snapshot);
             }

@@ -8,7 +8,9 @@ import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.security.Provider;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -35,6 +37,7 @@ public class CryptoChannelFactory implements ChannelFactory {
 
     private final KeyResolver keyResolver;
     private final String translogUUID;
+    private final Provider provider;
     private final Map<Path, CryptoFileChannelWrapper> wrappers = new ConcurrentHashMap<>();
 
     /**
@@ -42,13 +45,15 @@ public class CryptoChannelFactory implements ChannelFactory {
      *
      * @param keyResolver the key and IV resolver for encryption keys (unified with index files)
      * @param translogUUID the translog UUID for exact header size calculation
+     * @param provider the JCE provider for translog cipher and digest
      */
-    public CryptoChannelFactory(KeyResolver keyResolver, String translogUUID) {
+    public CryptoChannelFactory(KeyResolver keyResolver, String translogUUID, Provider provider) {
         if (translogUUID == null) {
             throw new IllegalArgumentException("translogUUID is required for exact header size calculation");
         }
         this.keyResolver = keyResolver;
         this.translogUUID = translogUUID;
+        this.provider = Objects.requireNonNull(provider, "provider");
     }
 
     @Override
@@ -62,7 +67,7 @@ public class CryptoChannelFactory implements ChannelFactory {
         Set<OpenOption> optionsSet = Set.of(options);
         CryptoFileChannelWrapper wrapper;
         try {
-            wrapper = new CryptoFileChannelWrapper(baseChannel, keyResolver, path, optionsSet, translogUUID);
+            wrapper = new CryptoFileChannelWrapper(baseChannel, keyResolver, path, optionsSet, translogUUID, provider);
         } catch (IOException | RuntimeException e) {
             IOUtils.closeWhileHandlingException(baseChannel);
             throw e;
@@ -99,5 +104,12 @@ public class CryptoChannelFactory implements ChannelFactory {
      */
     public void removeWrapper(Path path) {
         wrappers.remove(path);
+    }
+
+    /**
+     * Returns the JCE provider used for translog cipher and digest operations.
+     */
+    public Provider getProvider() {
+        return provider;
     }
 }

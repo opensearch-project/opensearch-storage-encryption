@@ -50,6 +50,7 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
     private KeyResolver keyResolver;
     private MasterKeyProvider keyProvider;
     private String testIndexUuid;
+    private Provider cryptoProvider;
 
     /**
      * Helper method to register the resolver in the ShardKeyResolverRegistry
@@ -96,7 +97,7 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
         MasterKeyHealthMonitor.initialize(nodeSettings, mockClient, mockClusterService);
         NodeLevelKeyCache.initialize(nodeSettings, MasterKeyHealthMonitor.getInstance());
 
-        Provider cryptoProvider = Security.getProvider("SunJCE");
+        cryptoProvider = Security.getProvider("SunJCE");
 
         // Create a mock key provider for testing
         keyProvider = new MasterKeyProvider() {
@@ -150,7 +151,7 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
 
     public void testTranslogDataIsActuallyEncrypted() throws IOException {
         String testTranslogUUID = "test-encryption-uuid";
-        CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyResolver, testTranslogUUID);
+        CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyResolver, testTranslogUUID, cryptoProvider);
 
         Path translogPath = tempDir.resolve("test-encryption.tlog");
 
@@ -215,7 +216,7 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
      */
     public void testTranslogEncryptionDecryptionRoundTrip() throws IOException {
         String testTranslogUUID = "test-roundtrip-uuid";
-        CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyResolver, testTranslogUUID);
+        CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyResolver, testTranslogUUID, cryptoProvider);
 
         Path translogPath = tempDir.resolve("test-roundtrip.tlog");
 

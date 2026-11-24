@@ -17,6 +17,8 @@ import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.Key;
+import java.security.Provider;
+import java.security.Security;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -37,6 +39,7 @@ import org.opensearch.test.OpenSearchTestCase;
 public class TranslogFrameEncryptionTests extends OpenSearchTestCase {
 
     private static final String TRANSLOG_UUID = "a9QxbK3pTzuWq0-Jf9lZ2w";
+    private static final Provider SUN_JCE = Security.getProvider("SunJCE");
     private static final Set<OpenOption> WRITE = Set.of(StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
     private static final Set<OpenOption> READ = Set.of(StandardOpenOption.READ);
     private static final String MARKER = "secret-marker-";
@@ -78,7 +81,7 @@ public class TranslogFrameEncryptionTests extends OpenSearchTestCase {
     }
 
     private CryptoFileChannelWrapper open(Path file, Set<OpenOption> options) throws IOException {
-        return (CryptoFileChannelWrapper) new CryptoChannelFactory(keyResolver, TRANSLOG_UUID)
+        return (CryptoFileChannelWrapper) new CryptoChannelFactory(keyResolver, TRANSLOG_UUID, SUN_JCE)
             .open(file, options.toArray(new OpenOption[0]));
     }
 
@@ -240,7 +243,8 @@ public class TranslogFrameEncryptionTests extends OpenSearchTestCase {
                 path,
                 WRITE,
                 TRANSLOG_UUID,
-                1024
+                1024,
+                SUN_JCE
             )
         ) {
             w = writeSizes(writer, 3000); // 1024 + 1024 + 952
@@ -374,7 +378,7 @@ public class TranslogFrameEncryptionTests extends OpenSearchTestCase {
                 return super.write(src, position);
             }
         };
-        try (CryptoFileChannelWrapper writer = new CryptoFileChannelWrapper(failing, keyResolver, path, WRITE, TRANSLOG_UUID)) {
+        try (CryptoFileChannelWrapper writer = new CryptoFileChannelWrapper(failing, keyResolver, path, WRITE, TRANSLOG_UUID, SUN_JCE)) {
             Written w = writeSizes(writer, 1000);
             failNextWrite.set(true);
             expectThrows(IOException.class, () -> writeFully(writer, randomBytes(1000), w.end));
@@ -465,11 +469,11 @@ public class TranslogFrameEncryptionTests extends OpenSearchTestCase {
 
     public void testNonceIsUniquePerTranslogFile() {
         byte[] key = keyResolver.getDataKey().getEncoded();
-        byte[] gen1 = TranslogChunkManager.deriveFileNonce(key, TRANSLOG_UUID, "translog-1.tlog");
+        byte[] gen1 = TranslogChunkManager.deriveFileNonce(key, TRANSLOG_UUID, "translog-1.tlog", SUN_JCE);
         assertEquals(8, gen1.length);
-        assertArrayEquals(gen1, TranslogChunkManager.deriveFileNonce(key, TRANSLOG_UUID, "translog-1.tlog"));
-        assertFalse(Arrays.equals(gen1, TranslogChunkManager.deriveFileNonce(key, TRANSLOG_UUID, "translog-2.tlog")));
-        assertFalse(Arrays.equals(gen1, TranslogChunkManager.deriveFileNonce(key, "otherUuidAAAAAAAAAAAAA", "translog-1.tlog")));
+        assertArrayEquals(gen1, TranslogChunkManager.deriveFileNonce(key, TRANSLOG_UUID, "translog-1.tlog", SUN_JCE));
+        assertFalse(Arrays.equals(gen1, TranslogChunkManager.deriveFileNonce(key, TRANSLOG_UUID, "translog-2.tlog", SUN_JCE)));
+        assertFalse(Arrays.equals(gen1, TranslogChunkManager.deriveFileNonce(key, "otherUuidAAAAAAAAAAAAA", "translog-1.tlog", SUN_JCE)));
     }
 
     public void testSameOffsetsInDifferentGenerationsEncryptDifferently() throws IOException {

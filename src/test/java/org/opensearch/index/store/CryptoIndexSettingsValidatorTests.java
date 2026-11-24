@@ -195,4 +195,58 @@ public class CryptoIndexSettingsValidatorTests extends OpenSearchTestCase {
         // Should not throw any exception - KMS ARN not required for non-aws-kms providers
         CryptoIndexSettingsValidator.validate(settings);
     }
+
+    public void testUnknownJceProviderRejected() {
+        Settings settings = Settings
+            .builder()
+            .put(IndexModule.INDEX_STORE_TYPE_SETTING.getKey(), "cryptofs")
+            .put(CryptoDirectoryFactory.INDEX_KEY_PROVIDER_SETTING.getKey(), "dummy")
+            .put(CryptoDirectoryFactory.INDEX_CRYPTO_PROVIDER_SETTING.getKey(), "NotAProvider")
+            .build();
+
+        IllegalArgumentException exception = expectThrows(
+            IllegalArgumentException.class,
+            () -> CryptoIndexSettingsValidator.validate(settings)
+        );
+
+        assertTrue(exception.getMessage().contains("index.store.crypto.provider"));
+        assertTrue(exception.getMessage().contains("NotAProvider"));
+    }
+
+    public void testEmptyJceProviderRejected() {
+        Settings settings = Settings
+            .builder()
+            .put(IndexModule.INDEX_STORE_TYPE_SETTING.getKey(), "cryptofs")
+            .put(CryptoDirectoryFactory.INDEX_KEY_PROVIDER_SETTING.getKey(), "dummy")
+            .put(CryptoDirectoryFactory.INDEX_CRYPTO_PROVIDER_SETTING.getKey(), "")
+            .build();
+
+        IllegalArgumentException exception = expectThrows(
+            IllegalArgumentException.class,
+            () -> CryptoIndexSettingsValidator.validate(settings)
+        );
+
+        assertTrue(exception.getMessage().contains("index.store.crypto.provider"));
+    }
+
+    public void testOmittedJceProviderDefaultsToSunJce() {
+        Settings settings = Settings
+            .builder()
+            .put(IndexModule.INDEX_STORE_TYPE_SETTING.getKey(), "cryptofs")
+            .put(CryptoDirectoryFactory.INDEX_KEY_PROVIDER_SETTING.getKey(), "dummy")
+            .build();
+
+        CryptoIndexSettingsValidator.validate(settings);
+    }
+
+    public void testExplicitSunJceProviderAccepted() {
+        Settings settings = Settings
+            .builder()
+            .put(IndexModule.INDEX_STORE_TYPE_SETTING.getKey(), "cryptofs")
+            .put(CryptoDirectoryFactory.INDEX_KEY_PROVIDER_SETTING.getKey(), "dummy")
+            .put(CryptoDirectoryFactory.INDEX_CRYPTO_PROVIDER_SETTING.getKey(), "SunJCE")
+            .build();
+
+        CryptoIndexSettingsValidator.validate(settings);
+    }
 }

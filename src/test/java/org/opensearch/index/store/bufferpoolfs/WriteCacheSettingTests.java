@@ -90,7 +90,8 @@ public class WriteCacheSettingTests extends OpenSearchTestCase {
             segmentPool,
             keyResolver,
             encryptionMetadataCache,
-            poolResources.getFileChannelCache()
+            poolResources.getFileChannelCache(),
+            provider
         );
 
         Worker worker = poolResources.getSharedReadaheadWorker();
