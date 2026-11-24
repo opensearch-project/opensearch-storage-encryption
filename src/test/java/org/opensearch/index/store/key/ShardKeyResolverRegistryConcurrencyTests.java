@@ -4,8 +4,11 @@
  */
 package org.opensearch.index.store.key;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -30,6 +33,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.util.IOUtils;
 import org.junit.After;
 import org.junit.Before;
 import org.opensearch.action.support.clustermanager.AcknowledgedResponse;
@@ -317,5 +321,96 @@ public class ShardKeyResolverRegistryConcurrencyTests extends OpenSearchTestCase
 
         // Each index should have generated exactly one key
         verify(mockKeyProvider, times(numIndices)).generateDataPair();
+    }
+
+    /**
+     * When the last shard of an index leaves a node, OpenSearch deletes the index directory and its keyfile,
+     * but the resolver stays registered. If a shard of the index comes back, the registry must write the
+     * keyfile back so the key can still be loaded.
+     */
+    public void testKeyFileRestoredWhenShardReturnsAfterIndexDirectoryDeleted() throws Exception {
+        String indexUuid = "test-index-returns";
+        String indexName = "test-index-returns";
+        Path indexPath = tempDir.resolve(indexUuid);
+        Files.createDirectories(indexPath);
+        Path keyfilePath = indexPath.resolve("keyfile");
+
+        Directory firstDirectory = FSDirectory.open(indexPath);
+        KeyResolver first = ShardKeyResolverRegistry
+            .getOrCreateResolver(indexUuid, firstDirectory, cryptoProvider, mockKeyProvider, 0, indexName);
+        byte[] originalKeyfile = Files.readAllBytes(keyfilePath);
+
+        // The shard moves away: the node deletes the index directory, the resolver stays registered,
+        // and later the cached key expires.
+        IOUtils.rm(indexPath);
+        NodeLevelKeyCache.getInstance().clear();
+
+        // A shard of the index is allocated to the node again.
+        Files.createDirectories(indexPath);
+        Directory secondDirectory = FSDirectory.open(indexPath);
+        KeyResolver second = ShardKeyResolverRegistry
+            .getOrCreateResolver(indexUuid, secondDirectory, cryptoProvider, mockKeyProvider, 0, indexName);
+
+        assertSame("The registered resolver should be reused", first, second);
+        assertTrue("The keyfile should be written back", Files.exists(keyfilePath));
+        assertArrayEquals("The same encrypted data key should be written back", originalKeyfile, Files.readAllBytes(keyfilePath));
+        assertNotNull("The key should load from the restored keyfile", second.getDataKey());
+        verify(mockKeyProvider, times(1)).generateDataPair();
+
+        firstDirectory.close();
+        secondDirectory.close();
+    }
+
+    /**
+     * A registered resolver must not recreate an index directory that no longer exists on the node.
+     */
+    public void testKeyFileNotRestoredWhenIndexDirectoryMissing() throws Exception {
+        String indexUuid = "test-index-gone";
+        String indexName = "test-index-gone";
+        Path indexPath = tempDir.resolve(indexUuid);
+        Files.createDirectories(indexPath);
+
+        Directory directory = FSDirectory.open(indexPath);
+        ShardKeyResolverRegistry.getOrCreateResolver(indexUuid, directory, cryptoProvider, mockKeyProvider, 0, indexName);
+        IOUtils.rm(indexPath);
+
+        ShardKeyResolverRegistry.getOrCreateResolver(indexUuid, directory, cryptoProvider, mockKeyProvider, 0, indexName);
+
+        assertFalse("The index directory should not be recreated", Files.exists(indexPath));
+        directory.close();
+    }
+
+    /**
+     * With several data paths the returning shard can land on a different path than the one the resolver
+     * read its keyfile from. The keyfile must be written to the new path and loaded from there.
+     */
+    public void testKeyFileRestoredOnDifferentDataPath() throws Exception {
+        String indexUuid = "test-index-other-path";
+        String indexName = "test-index-other-path";
+        Path firstPath = tempDir.resolve("path0").resolve(indexUuid);
+        Path secondPath = tempDir.resolve("path1").resolve(indexUuid);
+        Files.createDirectories(firstPath);
+
+        Directory firstDirectory = FSDirectory.open(firstPath);
+        KeyResolver first = ShardKeyResolverRegistry
+            .getOrCreateResolver(indexUuid, firstDirectory, cryptoProvider, mockKeyProvider, 0, indexName);
+        byte[] originalKeyfile = Files.readAllBytes(firstPath.resolve("keyfile"));
+
+        IOUtils.rm(firstPath);
+        NodeLevelKeyCache.getInstance().clear();
+
+        Files.createDirectories(secondPath);
+        Directory secondDirectory = FSDirectory.open(secondPath);
+        KeyResolver second = ShardKeyResolverRegistry
+            .getOrCreateResolver(indexUuid, secondDirectory, cryptoProvider, mockKeyProvider, 0, indexName);
+
+        assertSame(first, second);
+        assertArrayEquals(originalKeyfile, Files.readAllBytes(secondPath.resolve("keyfile")));
+        assertFalse("The old index directory should not be recreated", Files.exists(firstPath));
+        assertNotNull(second.getDataKey());
+        verify(mockKeyProvider, times(1)).generateDataPair();
+
+        firstDirectory.close();
+        secondDirectory.close();
     }
 }

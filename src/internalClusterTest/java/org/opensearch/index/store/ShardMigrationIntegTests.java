@@ -8,7 +8,10 @@ import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.is;
+import static org.opensearch.test.hamcrest.OpenSearchAssertions.assertAcked;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.concurrent.CountDownLatch;
@@ -23,6 +26,9 @@ import org.opensearch.action.search.SearchResponse;
 import org.opensearch.cluster.routing.allocation.command.MoveAllocationCommand;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
+import org.opensearch.core.index.Index;
+import org.opensearch.env.NodeEnvironment;
+import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.test.OpenSearchIntegTestCase;
 
@@ -507,5 +513,75 @@ public class ShardMigrationIntegTests extends OpenSearchIntegTestCase {
         assertThat(specificDoc.getHits().getTotalHits().value(), equalTo(1L));
 
         logger.info("Replica recovery with data changes test completed successfully");
+    }
+
+    /**
+     * Moves an encrypted index off a node until the node deletes the index directory (and its keyfile), then
+     * back onto that node. The node must still be able to load the index key afterwards.
+     */
+    public void testIndexReturnsToNodeAfterIndexDirectoryDeleted() throws Exception {
+        String nodeA = internalCluster().startNode();
+        String nodeB = internalCluster().startNode();
+        String indexName = "test-index-returns";
+
+        Settings settings = Settings
+            .builder()
+            .put(cryptoIndexSettings())
+            .put("index.number_of_shards", 1)
+            .put("index.number_of_replicas", 0)
+            .put("index.routing.allocation.require._name", nodeA)
+            .build();
+        createIndex(indexName, settings);
+        ensureGreen(indexName);
+
+        int numDocs = randomIntBetween(50, 200);
+        for (int i = 0; i < numDocs; i++) {
+            index(indexName, "_doc", String.valueOf(i), "field", "value" + i, "number", i);
+        }
+        flushAndRefresh(indexName);
+
+        Index index = resolveIndex(indexName);
+        NodeEnvironment nodeAEnv = internalCluster().getInstance(NodeEnvironment.class, nodeA);
+
+        // Move the only shard to node B and wait for node A to delete the index directory.
+        requireNode(indexName, nodeB);
+        ensureGreen(indexName);
+        assertBusy(() -> {
+            for (Path indexPath : nodeAEnv.indexPaths(index)) {
+                assertFalse("index directory should be deleted on " + nodeA, Files.exists(indexPath));
+            }
+        });
+
+        // Move it back to node A.
+        requireNode(indexName, nodeA);
+        ensureGreen(indexName);
+        // The node can have several data paths; the keyfile must be next to the shard directory.
+        boolean shardFound = false;
+        for (Path indexPath : nodeAEnv.indexPaths(index)) {
+            if (Files.isDirectory(indexPath.resolve("0"))) {
+                shardFound = true;
+                assertTrue("keyfile should exist next to the shard on " + nodeA, Files.exists(indexPath.resolve("keyfile")));
+            }
+        }
+        assertTrue("shard directory should exist on " + nodeA, shardFound);
+
+        // Expire the cached key and reopen the shard so the key is read from the keyfile again.
+        NodeLevelKeyCache.getInstance().clear();
+        assertAcked(client().admin().indices().prepareClose(indexName));
+        assertAcked(client().admin().indices().prepareOpen(indexName));
+        ensureGreen(TimeValue.timeValueSeconds(60), indexName);
+
+        SearchResponse response = client().prepareSearch(indexName).setSize(0).get();
+        assertThat(response.getHits().getTotalHits().value(), equalTo((long) numDocs));
+    }
+
+    private void requireNode(String indexName, String nodeName) {
+        assertAcked(
+            client()
+                .admin()
+                .indices()
+                .prepareUpdateSettings(indexName)
+                .setSettings(Settings.builder().put("index.routing.allocation.require._name", nodeName))
+        );
     }
 }
