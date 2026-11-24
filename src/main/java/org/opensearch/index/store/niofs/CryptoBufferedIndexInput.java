@@ -42,15 +42,14 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
     private static final int CHUNK_SIZE = 16_384;
 
     private final FileChannel channel;
+    /** True for slices and clones, which share the root's channel and must not close it. */
     private boolean isClone;
-    private final boolean isSlice;
     private final long off;
     private final long end;
     private final KeyResolver keyResolver;
     private final SecretKeySpec keySpec;
     private final byte[] masterKey;
     private final byte[] messageId;
-    private final int footerLength;
     private final long frameSize;
     private final int frameSizePower;
     private final EncryptionAlgorithm algorithm;
@@ -74,10 +73,8 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         super(resourceDesc, context);
         this.channel = fc;
         this.off = 0L;
-        this.end = fc.size();
         this.keyResolver = keyResolver;
         this.isClone = false;
-        this.isSlice = false;
         this.normalizedFilePath = EncryptionMetadataCache.normalizePath(filePath);
         this.encryptionMetadataCache = encryptionMetadataCache;
         this.provider = provider;
@@ -97,8 +94,8 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         this.algorithm = EncryptionAlgorithm.fromId(metadata.getFooter().getAlgorithmId());
         this.keySpec = new SecretKeySpec(metadata.getFileKey(), ALGORITHM);
 
-        // Calculate footer length
-        this.footerLength = metadata.getFooter().getFooterLength();
+        // The logical end excludes the encryption footer, so length() is end - off for every instance.
+        this.end = fc.size() - metadata.getFooter().getFooterLength();
     }
 
     public CryptoBufferedIndexInput(
@@ -109,7 +106,6 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         int bufferSize,
         KeyResolver keyResolver,
         SecretKeySpec keySpec,
-        int footerLength,
         long frameSize,
         int frameSizePower,
         short algorithmId,
@@ -125,10 +121,8 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         this.off = off;
         this.end = off + length;
         this.isClone = true;
-        this.isSlice = true;
         this.keyResolver = keyResolver;
         this.keySpec = keySpec;  // Reuse keySpec from main file
-        this.footerLength = footerLength;
         this.frameSize = frameSize;
         this.frameSizePower = frameSizePower;
         this.algorithm = EncryptionAlgorithm.fromId(algorithmId);
@@ -169,7 +163,6 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
             getBufferSize(),
             keyResolver,
             keySpec,  // Pass the already-derived keySpec
-            footerLength,
             frameSize,
             frameSizePower,
             algorithm.getAlgorithmId(),
@@ -183,11 +176,7 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
 
     @Override
     public long length() {
-        if (isSlice) {
-            return end - off;  // slice: exact length passed in
-        } else {
-            return end - off - footerLength;  // whole file (root or clone): exclude footer
-        }
+        return end - off;
     }
 
     @SuppressForbidden(reason = "FileChannel#read is efficient and used intentionally")

@@ -7,9 +7,11 @@ package org.opensearch.index.store;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import java.io.EOFException;
 import java.nio.file.Path;
 import java.security.Provider;
 import java.security.Security;
+import java.util.Arrays;
 import java.util.Random;
 
 import javax.crypto.spec.SecretKeySpec;
@@ -94,6 +96,70 @@ public class CloneCloseReproTests extends OpenSearchTestCase {
                 byte[] expected = new byte[16];
                 System.arraycopy(data, (int) farPos, expected, 0, 16);
                 assertArrayEquals("parent should read correct bytes after clone.close()", expected, after);
+            }
+        }
+    }
+
+    // Not a multiple of the 16 KiB read chunk or the AES block size, so the last read is partial.
+    private static final int DATA_SIZE = 70_001;
+
+    private static byte[] writeFile(Directory dir, String fileName) throws Exception {
+        byte[] data = new byte[DATA_SIZE];
+        new Random(11).nextBytes(data);
+        try (IndexOutput out = dir.createOutput(fileName, IOContext.DEFAULT)) {
+            out.writeBytes(data, data.length);
+        }
+        return data;
+    }
+
+    /** Reads from the current position to EOF, checks the bytes, and checks that one more byte fails. */
+    private static void assertReadsThroughEof(IndexInput in, byte[] expected, int expectedStart) throws Exception {
+        int remaining = (int) (in.length() - in.getFilePointer());
+        byte[] actual = new byte[remaining];
+        in.readBytes(actual, 0, remaining);
+        assertArrayEquals(Arrays.copyOfRange(expected, expectedStart, expectedStart + remaining), actual);
+        assertEquals(in.length(), in.getFilePointer());
+        expectThrows(EOFException.class, in::readByte);
+    }
+
+    public void testCloneOfRootKeepsLogicalLengthAndPosition() throws Exception {
+        try (Directory dir = getDirectory(createTempDir())) {
+            byte[] data = writeFile(dir, "root-clone");
+            try (IndexInput parent = dir.openInput("root-clone", IOContext.DEFAULT)) {
+                assertEquals("the root's length excludes the footer", DATA_SIZE, parent.length());
+                parent.seek(12_345);
+
+                IndexInput clone = parent.clone();
+                assertEquals(DATA_SIZE, clone.length());
+                assertEquals(12_345, clone.getFilePointer());
+                assertReadsThroughEof(clone, data, 12_345);
+
+                clone.close();
+                assertReadsThroughEof(parent, data, 12_345);
+            }
+        }
+    }
+
+    public void testCloneOfSliceAtNonZeroOffset() throws Exception {
+        try (Directory dir = getDirectory(createTempDir())) {
+            byte[] data = writeFile(dir, "slice-clone");
+            final int sliceOffset = 4_099;
+            final int sliceLength = 50_003;
+            try (IndexInput parent = dir.openInput("slice-clone", IOContext.DEFAULT)) {
+                IndexInput slice = parent.slice("slice", sliceOffset, sliceLength);
+                assertEquals(sliceLength, slice.length());
+                slice.seek(777);
+
+                IndexInput clone = slice.clone();
+                assertEquals(sliceLength, clone.length());
+                assertEquals(777, clone.getFilePointer());
+                assertReadsThroughEof(clone, data, sliceOffset + 777);
+
+                clone.close();
+                slice.close();
+                assertReadsThroughEof(slice, data, sliceOffset + 777);
+                parent.seek(0);
+                assertReadsThroughEof(parent, data, 0);
             }
         }
     }
