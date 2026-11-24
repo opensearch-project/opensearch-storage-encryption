@@ -4,6 +4,7 @@
  */
 package org.opensearch.index.store.key;
 
+import java.io.IOException;
 import java.security.Provider;
 import java.util.HashSet;
 import java.util.Map;
@@ -80,6 +81,21 @@ public class ShardKeyResolverRegistry {
         // Synchronize at INDEX level to serialize keyfile initialization
         // This prevents race conditions when multiple shards are created concurrently
         synchronized (indexLock) {
+            KeyResolver existing = resolverCache.get(key);
+            if (existing instanceof DefaultKeyResolver defaultResolver) {
+                // The node may have deleted the index directory (and its keyfile) after its last shard of the
+                // index moved away, while this resolver stayed registered. Restore the keyfile before reuse.
+                try {
+                    defaultResolver.ensureKeyFile(indexDirectory);
+                } catch (IOException e) {
+                    throw new KeyCacheException(
+                        "Failed to restore keyfile for index '" + indexName + "' (UUID: " + indexUuid + "): " + e.getMessage(),
+                        e,
+                        true
+                    );
+                }
+                return existing;
+            }
             return resolverCache.computeIfAbsent(key, k -> {
                 try {
                     return new DefaultKeyResolver(indexUuid, indexName, indexDirectory, provider, keyProvider, shardId);

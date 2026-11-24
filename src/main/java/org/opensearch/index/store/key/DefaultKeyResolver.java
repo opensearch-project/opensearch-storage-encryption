@@ -4,14 +4,20 @@
  */
 package org.opensearch.index.store.key;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.security.Key;
 import java.security.Provider;
 import java.util.List;
 
 import javax.crypto.spec.SecretKeySpec;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
@@ -36,11 +42,19 @@ import org.opensearch.index.store.metrics.ErrorType;
  */
 public class DefaultKeyResolver implements KeyResolver {
 
+    private static final Logger logger = LogManager.getLogger(DefaultKeyResolver.class);
+
     private final String indexUuid;
     private final String indexName;
-    private final Directory directory;
+    private volatile Directory directory;
     private final MasterKeyProvider keyProvider;
     private final int shardId;
+
+    /**
+     * The encrypted data key this resolver read from or wrote to the keyfile. Kept so the keyfile can be
+     * written back if the node deletes the index directory and later receives a shard of the same index.
+     */
+    private volatile byte[] encryptedKey;
 
     private static final String KEY_FILE = "keyfile";
     private static final String KEY_FILE_TEMP_SUFFIX = "tmp";
@@ -88,7 +102,9 @@ public class DefaultKeyResolver implements KeyResolver {
      */
     private void initialize(int shardId) throws KeyCacheException {
         try {
-            keyProvider.decryptKey(readByteArrayFile(KEY_FILE));
+            byte[] storedKey = readByteArrayFile(KEY_FILE);
+            keyProvider.decryptKey(storedKey);
+            encryptedKey = storedKey;
         } catch (java.nio.file.NoSuchFileException e) {
             // Key file doesn't exist, generate new one
             try {
@@ -111,7 +127,53 @@ public class DefaultKeyResolver implements KeyResolver {
 
     private void initNewKey(int shardId) throws IOException {
         DataKeyPair pair = keyProvider.generateDataPair();
-        writeByteArrayFile(KEY_FILE, pair.getEncryptedKey());
+        writeByteArrayFile(directory, KEY_FILE, pair.getEncryptedKey());
+        encryptedKey = pair.getEncryptedKey();
+    }
+
+    /**
+     * Makes sure this resolver reads its keyfile from a directory that has one.
+     *
+     * <p>When the last shard of an index leaves a node, OpenSearch deletes the index directory, keyfile
+     * included, but this resolver stays registered. If a shard of the index is later allocated to the node
+     * again, the registry hands back this resolver, so {@link #initialize(int)} does not run again and every
+     * key load would fail on the missing keyfile. In that case this writes the same encrypted data key into
+     * the directory the new shard uses (when it has no keyfile) and reads from that directory from then on.
+     * Keeping the same data key keeps the key the node already has cached, and any files it wrote with it,
+     * valid.
+     *
+     * <p>Does nothing while this resolver's keyfile exists, or when {@code shardIndexDirectory} does not exist.
+     *
+     * @param shardIndexDirectory the index-level directory of the shard being created
+     * @return true if this resolver moved to {@code shardIndexDirectory}
+     * @throws IOException if the keyfile cannot be written
+     */
+    boolean ensureKeyFile(Directory shardIndexDirectory) throws IOException {
+        if (keyFileExists(directory)) {
+            return false;
+        }
+        if (shardIndexDirectory instanceof FSDirectory fsDirectory && Files.isDirectory(fsDirectory.getDirectory()) == false) {
+            return false;
+        }
+        byte[] key = encryptedKey;
+        if (key == null) {
+            return false;
+        }
+        if (keyFileExists(shardIndexDirectory) == false) {
+            writeByteArrayFile(shardIndexDirectory, KEY_FILE, key);
+            logger.info("Restored missing keyfile for index {} (UUID: {}), shard {}", indexName, indexUuid, shardId);
+        }
+        directory = shardIndexDirectory;
+        return true;
+    }
+
+    private static boolean keyFileExists(Directory dir) throws IOException {
+        try {
+            dir.fileLength(KEY_FILE);
+            return true;
+        } catch (NoSuchFileException | FileNotFoundException e) {
+            return false;
+        }
     }
 
     /**
@@ -131,7 +193,7 @@ public class DefaultKeyResolver implements KeyResolver {
      * the data goes to a temp file which is fsynced, then renamed over the target, and the
      * directory metadata is fsynced so the rename survives a crash.
      */
-    private void writeByteArrayFile(String fileName, byte[] data) throws IOException {
+    private static void writeByteArrayFile(Directory directory, String fileName, byte[] data) throws IOException {
         String tempName = null;
         boolean success = false;
         try {
