@@ -6,6 +6,7 @@ package org.opensearch.index.store.bufferpoolfs;
 
 import static org.hamcrest.Matchers.containsString;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CountDownLatch;
@@ -13,6 +14,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import org.apache.lucene.store.IndexInput;
+import org.apache.lucene.store.RandomAccessInput;
 import org.opensearch.common.lucene.store.OpenSearchIndexInputTestCase;
 
 public abstract class BaseIndexInputTests extends OpenSearchIndexInputTestCase {
@@ -88,9 +90,9 @@ public abstract class BaseIndexInputTests extends OpenSearchIndexInputTestCase {
                 // read using int size
                 int secondReadLen = bytesLeft + randomIntBetween(1, 100);
                 indexInput.readBytes(new byte[secondReadLen], 0, secondReadLen);
-                // fail();
+                fail();
             } catch (IOException ex) {
-                // assertThat(ex.getMessage(), containsString("EOF"));
+                assertThat(ex.getMessage(), containsString("EOF"));
             }
         }
     }
@@ -151,13 +153,59 @@ public abstract class BaseIndexInputTests extends OpenSearchIndexInputTestCase {
             // now try to read beyond the boundary of the slice, but within the
             // boundary of the original IndexInput. We've already read few bytes
             // so this is expected to fail
-            // assertThrows(EOFException.class, () -> slice.readBytes(new byte[sliceLength], 0, sliceLength));
+            expectThrows(EOFException.class, () -> slice.readBytes(new byte[sliceLength], 0, sliceLength));
 
             // seek to EOF and then try to read
             slice.seek(sliceLength);
-            // assertThrows(EOFException.class, () -> slice.readBytes(new byte[1], 0, 1));
+            expectThrows(EOFException.class, () -> slice.readBytes(new byte[1], 0, 1));
+            expectThrows(EOFException.class, slice::readByte);
         }
         // read a byte from sliced index input and verify if the read value is correct
 
+    }
+
+    /**
+     * Every read that would run past the end of a slice must fail, even though the bytes after
+     * the slice exist in the underlying file. Otherwise a reader of one compound-file entry
+     * silently gets the next entry's bytes.
+     */
+    public void testReadsPastSliceEndThrow() throws IOException {
+        int inputLength = randomIntBetween(1024 * 20, 1024 * 40);
+        byte[] input = new byte[inputLength];
+        random().nextBytes(input);
+        IndexInput indexInput = getIndexInput(input);
+
+        int sliceOffset = randomIntBetween(1, inputLength / 2);
+        int sliceLength = randomIntBetween(16, inputLength - sliceOffset - 16);
+        IndexInput slice = indexInput.slice("slice", sliceOffset, sliceLength);
+
+        // Sequential reads that straddle the end of the slice.
+        for (int width : new int[] { Byte.BYTES, Short.BYTES, Integer.BYTES, Long.BYTES }) {
+            slice.seek(sliceLength - width + 1);
+            switch (width) {
+                case Byte.BYTES -> expectThrows(EOFException.class, slice::readByte);
+                case Short.BYTES -> expectThrows(EOFException.class, slice::readShort);
+                case Integer.BYTES -> expectThrows(EOFException.class, slice::readInt);
+                default -> expectThrows(EOFException.class, slice::readLong);
+            }
+        }
+        slice.seek(sliceLength - 1);
+        expectThrows(EOFException.class, () -> slice.readInts(new int[1], 0, 1));
+        expectThrows(EOFException.class, () -> slice.readLongs(new long[1], 0, 1));
+        expectThrows(EOFException.class, () -> slice.readFloats(new float[1], 0, 1));
+
+        // Reads that end exactly at the slice end still succeed.
+        slice.seek(sliceLength - Long.BYTES);
+        slice.readLong();
+        assertEquals(sliceLength, slice.getFilePointer());
+
+        if (slice instanceof RandomAccessInput random) {
+            expectThrows(EOFException.class, () -> random.readByte(sliceLength));
+            expectThrows(EOFException.class, () -> random.readShort(sliceLength - 1));
+            expectThrows(EOFException.class, () -> random.readInt(sliceLength - 3));
+            expectThrows(EOFException.class, () -> random.readLong(sliceLength - 7));
+            expectThrows(IllegalArgumentException.class, () -> random.readByte(-1));
+            assertEquals(input[sliceOffset + sliceLength - 1], random.readByte(sliceLength - 1));
+        }
     }
 }
