@@ -61,15 +61,17 @@ public class SlabByteBufferPool extends ByteBufferPool {
     /** Live overflow buffers allowed, as a fraction of the pool's slots. */
     static final double MAX_OVERFLOW_FRACTION = 0.10;
     /**
-     * Minimum time between two GC requests by the reclaimer. Kept well under {@link #DEMAND_WAIT_NANOS},
-     * so a read waiting at the overflow cap sees at least two GC requests before it fails, even if the
-     * pool ran dry again right after the previous one.
+     * Minimum time between two GC requests by the reclaimer. Kept well under {@link #DEMAND_WAIT_NANOS}:
+     * a read waiting at the overflow cap requests another GC every interval, so it sees at least two
+     * before it fails, even if it is the only waiter.
      */
     static final long GC_REQUEST_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(2);
     private static final int OVERFLOW = -2;
     private static final long WARN_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(10);
 
     private final int slotsPerSlab;
+    /** Written over a slot when it comes back, so an evicted block's plaintext doesn't stay in the slab. */
+    private final byte[] zeros;
     private final int maxSlabs;
     private final List<ByteBuffer> slabs = new ArrayList<>();
     private final int[] freeSlots;
@@ -87,6 +89,12 @@ public class SlabByteBufferPool extends ByteBufferPool {
     private final AtomicLong overflowAllocations = new AtomicLong();
     private final AtomicLong overflowCapWaits = new AtomicLong();
     private final AtomicLong gcRequests = new AtomicLong();
+    /** Longest System.gc() call by the reclaimer; with ExplicitGCInvokesConcurrent, a whole concurrent cycle. */
+    private final AtomicLong maxGCNanos = new AtomicLong();
+    /** Start of the latest GC request whose first returned slot hasn't been seen yet, or 0. */
+    private volatile long pendingGCStartNanos;
+    /** Longest time from a GC request to the first slot returned after it. */
+    private long maxGCToSlotNanos; // guarded by lock
     private final AtomicLong waits = new AtomicLong();
     private final AtomicLong lastWarnNanos = new AtomicLong();
 
@@ -96,6 +104,7 @@ public class SlabByteBufferPool extends ByteBufferPool {
             throw new IllegalArgumentException("Slab size must be a multiple of segment size");
         }
         this.slotsPerSlab = SLAB_BYTES / segmentSize;
+        this.zeros = new byte[segmentSize];
         this.maxSlabs = (maxSegments + slotsPerSlab - 1) / slotsPerSlab;
         this.freeSlots = new int[maxSlabs * slotsPerSlab];
         this.maxOverflow = Math.max(1, (int) (maxSegments * MAX_OVERFLOW_FRACTION));
@@ -149,12 +158,19 @@ public class SlabByteBufferPool extends ByteBufferPool {
             waits.incrementAndGet();
             requestReclaim();
             final long start = System.nanoTime();
+            long lastReclaimRequest = start;
             boolean countedCapWait = false;
             while (!closed) {
                 if (freeCount > 0) {
                     return freeSlots[--freeCount];
                 }
-                final long elapsed = System.nanoTime() - start;
+                final long now = System.nanoTime();
+                final long elapsed = now - start;
+                // Keep asking while waiting: blocks evicted after the last GC began need another one.
+                if (now - lastReclaimRequest >= GC_REQUEST_INTERVAL_NANOS) {
+                    requestReclaim();
+                    lastReclaimRequest = now;
+                }
                 final boolean mayOverflow = overflowAfterNanos >= 0 && elapsed >= overflowAfterNanos;
                 if (mayOverflow) {
                     if (liveOverflow < maxOverflow) {
@@ -170,9 +186,11 @@ public class SlabByteBufferPool extends ByteBufferPool {
                 if (remaining <= 0) {
                     return -1;
                 }
-                // Woken by a returned slot or a freed overflow buffer; until overflow is allowed, wake then too.
+                // Woken by a returned slot or a freed overflow buffer; until overflow is allowed, wake then too,
+                // and at least once per GC request interval to request another GC.
                 final long untilOverflow = overflowAfterNanos >= 0 && !mayOverflow ? overflowAfterNanos - elapsed : remaining;
-                slotReturned.awaitNanos(Math.min(remaining, untilOverflow));
+                final long untilNextRequest = GC_REQUEST_INTERVAL_NANOS - (now - lastReclaimRequest);
+                slotReturned.awaitNanos(Math.min(Math.min(remaining, untilOverflow), untilNextRequest));
             }
             return -1;
         } finally {
@@ -197,7 +215,8 @@ public class SlabByteBufferPool extends ByteBufferPool {
         lock.lock();
         try {
             liveOverflow--;
-            slotReturned.signal();
+            // signalAll: write-path waiters can't take overflow, so waking only one could miss the read that can.
+            slotReturned.signalAll();
         } finally {
             lock.unlock();
         }
@@ -249,9 +268,13 @@ public class SlabByteBufferPool extends ByteBufferPool {
                 continue;
             }
             reclaimRequested = false;
-            lastGCRequestNanos = System.nanoTime();
+            final long start = System.nanoTime();
+            lastGCRequestNanos = start;
+            pendingGCStartNanos = start;
             gcRequests.incrementAndGet();
             System.gc();
+            final long took = System.nanoTime() - start;
+            maxGCNanos.accumulateAndGet(took, Math::max);
         }
     }
 
@@ -281,9 +304,25 @@ public class SlabByteBufferPool extends ByteBufferPool {
     }
 
     private void returnSlot(int slot) {
+        // Zero the slot before it goes back on the free list: it held a decrypted block, and slabs are
+        // never freed, so the plaintext would otherwise stay in native memory until the slot is reused.
+        // Nothing else references the slot now (its view is unreachable), so this needs no lock.
+        ByteBuffer slab;
+        lock.lock();
+        try {
+            slab = slabs.get(slot / slotsPerSlab);
+        } finally {
+            lock.unlock();
+        }
+        slab.put((slot % slotsPerSlab) * segmentSize, zeros, 0, segmentSize);
         lock.lock();
         try {
             freeSlots[freeCount++] = slot;
+            final long gcStart = pendingGCStartNanos;
+            if (gcStart != 0) {
+                pendingGCStartNanos = 0;
+                maxGCToSlotNanos = Math.max(maxGCToSlotNanos, System.nanoTime() - gcStart);
+            }
             slotReturned.signal();
         } finally {
             lock.unlock();
@@ -353,6 +392,21 @@ public class SlabByteBufferPool extends ByteBufferPool {
         return gcRequests.get();
     }
 
+    /** Longest GC requested by the reclaimer, in milliseconds (a full concurrent cycle with ExplicitGCInvokesConcurrent). */
+    public long getMaxGCMillis() {
+        return TimeUnit.NANOSECONDS.toMillis(maxGCNanos.get());
+    }
+
+    /** Longest time from a GC request to the first slot returned after it, in milliseconds. */
+    public long getMaxGCToSlotMillis() {
+        lock.lock();
+        try {
+            return TimeUnit.NANOSECONDS.toMillis(maxGCToSlotNanos);
+        } finally {
+            lock.unlock();
+        }
+    }
+
     @Override
     public long availableMemory() {
         return (long) Math.max(0, maxSegments - getBuffersInUse()) * segmentSize;
@@ -391,11 +445,13 @@ public class SlabByteBufferPool extends ByteBufferPool {
         int slabCount;
         int free;
         int overflowLive;
+        long gcToSlot;
         lock.lock();
         try {
             slabCount = slabs.size();
             free = freeCount;
             overflowLive = liveOverflow;
+            gcToSlot = maxGCToSlotNanos;
         } finally {
             lock.unlock();
         }
@@ -403,7 +459,7 @@ public class SlabByteBufferPool extends ByteBufferPool {
             .format(
                 Locale.ROOT,
                 "SlabByteBufferPool[max=%d, slabs=%d/%d, free=%d, inUse=%d, overflow=%d, overflowLive=%d/%d, overflowCapWaits=%d, "
-                    + "waits=%d, gcRequests=%d]",
+                    + "waits=%d, gcRequests=%d, gcMaxMs=%d, gcToSlotMaxMs=%d]",
                 maxSegments,
                 slabCount,
                 maxSlabs,
@@ -414,7 +470,9 @@ public class SlabByteBufferPool extends ByteBufferPool {
                 maxOverflow,
                 overflowCapWaits.get(),
                 waits.get(),
-                gcRequests.get()
+                gcRequests.get(),
+                TimeUnit.NANOSECONDS.toMillis(maxGCNanos.get()),
+                TimeUnit.NANOSECONDS.toMillis(gcToSlot)
             );
     }
 

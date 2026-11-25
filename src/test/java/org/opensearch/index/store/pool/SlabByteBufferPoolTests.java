@@ -9,6 +9,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.test.OpenSearchTestCase;
@@ -134,6 +135,105 @@ public class SlabByteBufferPoolTests extends OpenSearchTestCase {
         assertNull(a);
         assertNotNull(b);
         assertNotNull(overflow);
+        pool.close();
+    }
+
+    /**
+     * A read that is the only waiter keeps requesting GCs while it waits: here the slot it needs becomes
+     * reclaimable only after the GC its own arrival requested, and no other read or write comes along.
+     */
+    public void testLoneWaiterKeepsRequestingGcsWhileItWaits() throws Exception {
+        SlabByteBufferPool pool = new SlabByteBufferPool(BLOCK_SIZE * 2L, BLOCK_SIZE);
+        AtomicReference<RefCountedByteBuffer> a = new AtomicReference<>(pool.acquire());
+        RefCountedByteBuffer b = pool.acquire();
+        RefCountedByteBuffer overflow = pool.acquire(); // pool full: first GC request, takes the only overflow buffer
+        assertBusy(() -> assertEquals(1, pool.getGCRequests()));
+
+        AtomicReference<Object> got = new AtomicReference<>();
+        Thread reader = new Thread(() -> {
+            try {
+                got.set(pool.acquire());
+            } catch (Exception e) {
+                got.set(e);
+            }
+        });
+        reader.start();
+        assertBusy(() -> assertEquals(2, pool.getGCRequests())); // the reader's own request, after the interval
+        a.set(null); // reclaimable now, but only by a GC after that one
+        reader.join(TimeUnit.NANOSECONDS.toMillis(SlabByteBufferPool.DEMAND_WAIT_NANOS) * 2);
+
+        assertTrue("reader got " + got.get(), got.get() instanceof RefCountedByteBuffer);
+        assertTrue("GC requests: " + pool.getGCRequests(), pool.getGCRequests() >= 3);
+        assertTrue("a GC request was timed", pool.getMaxGCToSlotMillis() > 0 || pool.getMaxGCMillis() > 0);
+        assertTrue(pool.poolStats(), pool.poolStats().contains("gcToSlotMaxMs="));
+        assertNotNull(b);
+        assertNotNull(overflow);
+        pool.close();
+    }
+
+    /**
+     * A freed overflow buffer wakes a read waiting at the overflow cap even when a write-path waiter
+     * (which can't take overflow) queued first.
+     */
+    public void testFreedOverflowWakesCappedReadBehindWritePathWaiter() throws Exception {
+        SlabByteBufferPool pool = new SlabByteBufferPool(BLOCK_SIZE * 2L, BLOCK_SIZE);
+        RefCountedByteBuffer a = pool.acquire();
+        RefCountedByteBuffer b = pool.acquire();
+        AtomicReference<RefCountedByteBuffer> overflow = new AtomicReference<>(pool.acquire()); // the only overflow buffer
+
+        Thread writer = new Thread(() -> {
+            try {
+                pool.tryAcquire(TimeUnit.NANOSECONDS.toMillis(SlabByteBufferPool.DEMAND_WAIT_NANOS), TimeUnit.MILLISECONDS);
+            } catch (Exception e) {
+                // times out: there is never a free slot
+            }
+        });
+        writer.start();
+        Thread.sleep(200); // the write-path waiter queues first
+        AtomicReference<Object> got = new AtomicReference<>();
+        AtomicReference<Long> gotAtNanos = new AtomicReference<>();
+        Thread reader = new Thread(() -> {
+            try {
+                got.set(pool.acquire());
+            } catch (Exception e) {
+                got.set(e);
+            }
+            gotAtNanos.set(System.nanoTime());
+        });
+        reader.start();
+        assertBusy(() -> assertEquals(1, pool.getOverflowCapWaits())); // the read is waiting at the cap
+
+        overflow.set(null);
+        long freedAt = System.nanoTime();
+        System.gc(); // frees the overflow buffer
+        reader.join(TimeUnit.NANOSECONDS.toMillis(SlabByteBufferPool.DEMAND_WAIT_NANOS) * 2);
+        writer.join(TimeUnit.NANOSECONDS.toMillis(SlabByteBufferPool.DEMAND_WAIT_NANOS) * 2);
+
+        assertTrue("reader got " + got.get(), got.get() instanceof RefCountedByteBuffer);
+        long wokeAfterMs = TimeUnit.NANOSECONDS.toMillis(gotAtNanos.get() - freedAt);
+        assertTrue("read took the freed overflow buffer " + wokeAfterMs + " ms after it was freed", wokeAfterMs < 1_000);
+        assertNotNull(a);
+        assertNotNull(b);
+        pool.close();
+    }
+
+    /** A slot is zeroed when it comes back, so an evicted block's plaintext doesn't stay in the slab. */
+    public void testReturnedSlotIsZeroed() throws Exception {
+        SlabByteBufferPool pool = new SlabByteBufferPool(BLOCK_SIZE, BLOCK_SIZE); // one slot
+        RefCountedByteBuffer first = pool.acquire();
+        ByteBuffer view = first.buffer();
+        for (int i = 0; i < BLOCK_SIZE; i++) {
+            view.put(i, (byte) 0xAB);
+        }
+        view = null;
+        first = null; // the slot comes back once the GC finds the view unreachable
+        RefCountedByteBuffer again = pool.tryAcquire(10, TimeUnit.SECONDS);
+        ByteBuffer reused = again.buffer();
+        for (int i = 0; i < BLOCK_SIZE; i++) {
+            assertEquals("byte " + i + " of the reused slot", 0, reused.get(i));
+        }
+        assertNull(first);
+        assertNull(view);
         pool.close();
     }
 
