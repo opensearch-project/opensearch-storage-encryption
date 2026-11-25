@@ -60,8 +60,12 @@ public class SlabByteBufferPool extends ByteBufferPool {
     static final long DEMAND_WAIT_NANOS = TimeUnit.SECONDS.toNanos(5);
     /** Live overflow buffers allowed, as a fraction of the pool's slots. */
     static final double MAX_OVERFLOW_FRACTION = 0.10;
-    /** Minimum time between two GC requests by the reclaimer. */
-    private static final long GC_REQUEST_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(10);
+    /**
+     * Minimum time between two GC requests by the reclaimer. Kept well under {@link #DEMAND_WAIT_NANOS},
+     * so a read waiting at the overflow cap sees at least two GC requests before it fails, even if the
+     * pool ran dry again right after the previous one.
+     */
+    static final long GC_REQUEST_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(2);
     private static final int OVERFLOW = -2;
     private static final long WARN_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(10);
 

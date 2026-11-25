@@ -108,6 +108,35 @@ public class SlabByteBufferPoolTests extends OpenSearchTestCase {
         pool.close();
     }
 
+    /**
+     * The pool and the overflow cap fill again right after a GC request, and only then does a slot become
+     * reclaimable. A read that arrives then must get another GC request, and the slot, before its demand
+     * wait runs out, rather than waiting behind the cooldown.
+     */
+    public void testReadAtOverflowCapGetsGcBeforeItsWaitEnds() throws Exception {
+        assertTrue(SlabByteBufferPool.GC_REQUEST_INTERVAL_NANOS * 2 <= SlabByteBufferPool.DEMAND_WAIT_NANOS);
+        SlabByteBufferPool pool = new SlabByteBufferPool(BLOCK_SIZE * 2L, BLOCK_SIZE);
+        RefCountedByteBuffer a = pool.acquire();
+        RefCountedByteBuffer b = pool.acquire();
+        RefCountedByteBuffer overflow = pool.acquire(); // pool full: requests the first GC, takes the only overflow buffer
+        assertEquals(1, pool.getOverflowAllocations());
+        assertBusy(() -> assertEquals(1, pool.getGCRequests()));
+
+        a = null; // reclaimable now, but only by another GC
+        long t0 = System.nanoTime();
+        RefCountedByteBuffer got = pool.acquire();
+        long waitedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
+
+        assertNotNull(got);
+        assertEquals("no second overflow buffer past the cap", 1, pool.getOverflowAllocations());
+        assertTrue("GC requests: " + pool.getGCRequests(), pool.getGCRequests() >= 2);
+        assertTrue("read waited " + waitedMs + " ms", waitedMs < TimeUnit.NANOSECONDS.toMillis(SlabByteBufferPool.DEMAND_WAIT_NANOS));
+        assertNull(a);
+        assertNotNull(b);
+        assertNotNull(overflow);
+        pool.close();
+    }
+
     public void testSlabsGrowLazilyUpToTheCap() throws Exception {
         int slotsPerSlab = SlabByteBufferPool.SLAB_BYTES / BLOCK_SIZE;
         SlabByteBufferPool pool = new SlabByteBufferPool((long) BLOCK_SIZE * (slotsPerSlab + 3), BLOCK_SIZE);
