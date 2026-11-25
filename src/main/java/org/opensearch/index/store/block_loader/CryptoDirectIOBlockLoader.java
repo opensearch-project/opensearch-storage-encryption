@@ -154,9 +154,7 @@ public class CryptoDirectIOBlockLoader<T extends BlockCacheValue<T>> implements 
                         // ByteBuffer mode: acquire from ByteBufferPool, copy via MemorySegment.ofBuffer().
                         // Only on-demand loads may wait out the pool's read path (and use overflow buffers);
                         // a speculative load (prefetch) gives up after its own timeout, as in MemorySegment mode.
-                        T buf = poolTimeoutMs >= DEMAND_POOL_TIMEOUT_MS
-                            ? pool.acquire()
-                            : pool.tryAcquire(poolTimeoutMs, TimeUnit.MILLISECONDS);
+                        T buf = poolTimeoutMs >= DEMAND_POOL_TIMEOUT_MS ? pool.acquire() : tryAcquireSpeculative(poolTimeoutMs, filePath);
                         ByteBuffer direct = ((RefCountedByteBuffer) buf).buffer();
                         direct.order(java.nio.ByteOrder.LITTLE_ENDIAN);
                         MemorySegment dst = MemorySegment.ofBuffer(direct);
@@ -169,7 +167,9 @@ public class CryptoDirectIOBlockLoader<T extends BlockCacheValue<T>> implements 
                     } else {
                         // MemorySegment mode: acquire from MemorySegmentPool with caller-specified timeout
                         // (5s for critical loads, 50ms for prefetch)
-                        T handle = pool.tryAcquire(poolTimeoutMs, TimeUnit.MILLISECONDS);
+                        T handle = poolTimeoutMs >= DEMAND_POOL_TIMEOUT_MS
+                            ? pool.tryAcquire(poolTimeoutMs, TimeUnit.MILLISECONDS)
+                            : tryAcquireSpeculative(poolTimeoutMs, filePath);
                         MemorySegment pooled = ((RefCountedMemorySegment) handle).segment();
 
                         if (toCopy > 0) {
@@ -193,9 +193,27 @@ public class CryptoDirectIOBlockLoader<T extends BlockCacheValue<T>> implements 
             return result;
         } catch (NoSuchFileException e) {
             throw e;
+        } catch (PoolPressureException e) {
+            // A speculative load (prefetch) that found no free slot: expected under pool pressure, and the
+            // block is loaded on demand later if it is read.
+            LOGGER.debug("Speculative load skipped: path={} offset={} length={} err={}", filePath, startOffset, readLength, e.getMessage());
+            throw e;
         } catch (Exception e) {
             LOGGER.error("Bulk read failed: path={} offset={} length={} err={}", filePath, startOffset, readLength, e.toString());
             throw e;
+        }
+    }
+
+    /**
+     * Takes a pool slot for a speculative load (prefetch), which gives up after its own short timeout.
+     * Failing to get one is expected when the pool is under pressure, so it is reported as a
+     * {@link PoolPressureException} rather than a load failure.
+     */
+    private T tryAcquireSpeculative(long timeoutMs, Path filePath) throws Exception {
+        try {
+            return pool.tryAcquire(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (IOException e) {
+            throw new PoolPressureException("No free pool slot within " + timeoutMs + " ms for a speculative load of " + filePath, e);
         }
     }
 

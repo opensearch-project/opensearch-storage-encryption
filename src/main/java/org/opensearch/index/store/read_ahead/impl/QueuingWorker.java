@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.read_ahead.Worker;
 
 /**
@@ -359,6 +360,10 @@ public final class QueuingWorker implements Worker {
         } catch (NoSuchFileException e) {
             inFlight.remove(task);
             LOGGER.debug("File not found during readahead path={}", task.path);
+        } catch (BlockLoader.PoolPressureException e) {
+            // No free pool slot within the prefetch timeout: skipping read-ahead under pool pressure is expected.
+            inFlight.remove(task);
+            LOGGER.debug("Readahead skipped under pool pressure path={} msg={}", task.path, e.getMessage());
         } catch (IOException | UncheckedIOException e) {
             inFlight.remove(task);
             LOGGER.warn("Readahead failed path={} msg={}", task.path, e.getMessage(), e);
