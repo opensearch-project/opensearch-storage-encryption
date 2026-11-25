@@ -9,10 +9,14 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE_POWER;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -222,5 +226,120 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
 
         // Should have been called at least twice (200/128 = 2 chunks)
         verify(mockBlockCache, org.mockito.Mockito.atLeast(2)).loadForPrefetch(any(), anyLong(), anyLong());
+    }
+
+    /**
+     * Tests that a request partly covered by an in-flight task loads the part that is not
+     * covered, instead of being dropped whole.
+     */
+    public void testPartlyOverlappingRequestLoadsTheRest() throws Exception {
+        worker = new QueuingWorker(100, executor);
+        final long block = 1L << CACHE_BLOCK_SIZE_POWER;
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch secondDone = new CountDownLatch(1);
+        when(mockBlockCache.loadForPrefetch(any(), anyLong(), anyLong())).thenAnswer(inv -> {
+            if ((long) inv.getArgument(1) == 0L) {
+                firstStarted.countDown();
+                release.await(5, TimeUnit.SECONDS);
+            } else {
+                secondDone.countDown();
+            }
+            return Map.of();
+        });
+
+        // Blocks [0, 10) are in flight while [5, 20) is requested.
+        assertTrue(worker.schedule(mockBlockCache, TEST_PATH, 0, 10));
+        assertTrue(firstStarted.await(5, TimeUnit.SECONDS));
+        assertTrue(worker.schedule(mockBlockCache, TEST_PATH, 5 * block, 15));
+        assertTrue("non-overlapping part should load", secondDone.await(5, TimeUnit.SECONDS));
+        release.countDown();
+
+        verify(mockBlockCache).loadForPrefetch(TEST_PATH, 10 * block, 10);
+    }
+
+    /**
+     * Tests that a request fully covered by an in-flight task is skipped.
+     */
+    public void testFullyCoveredRequestIsSkipped() throws Exception {
+        worker = new QueuingWorker(100, executor);
+        final long block = 1L << CACHE_BLOCK_SIZE_POWER;
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        when(mockBlockCache.loadForPrefetch(any(), anyLong(), anyLong())).thenAnswer(inv -> {
+            firstStarted.countDown();
+            release.await(5, TimeUnit.SECONDS);
+            return Map.of();
+        });
+
+        assertTrue(worker.schedule(mockBlockCache, TEST_PATH, 0, 10));
+        assertTrue(firstStarted.await(5, TimeUnit.SECONDS));
+        assertTrue(worker.schedule(mockBlockCache, TEST_PATH, 2 * block, 5));
+        assertEquals("covered request is not queued", 0, worker.getQueueSize());
+        release.countDown();
+    }
+
+    /** Holds every load of a request starting at a given block until released. */
+    private CountDownLatch blockLoadsAt(long... startBlocks) throws IOException {
+        CountDownLatch release = new CountDownLatch(1);
+        Set<Long> held = new HashSet<>();
+        for (long b : startBlocks) {
+            held.add(b << CACHE_BLOCK_SIZE_POWER);
+        }
+        when(mockBlockCache.loadForPrefetch(any(), anyLong(), anyLong())).thenAnswer(inv -> {
+            if (held.contains((long) inv.getArgument(1))) {
+                release.await(5, TimeUnit.SECONDS);
+            }
+            return Map.of();
+        });
+        return release;
+    }
+
+    /**
+     * Tests that a request whose end overlaps an in-flight task loads only its start.
+     */
+    public void testRequestOverlappingAtTheEndLoadsTheStart() throws Exception {
+        worker = new QueuingWorker(100, executor);
+        final long block = 1L << CACHE_BLOCK_SIZE_POWER;
+        CountDownLatch release = blockLoadsAt(10);
+
+        assertTrue(worker.schedule(mockBlockCache, TEST_PATH, 10 * block, 10)); // [10, 20) in flight
+        assertBusy(() -> verify(mockBlockCache).loadForPrefetch(TEST_PATH, 10 * block, 10));
+        assertTrue(worker.schedule(mockBlockCache, TEST_PATH, 0, 15)); // [0, 15)
+        assertBusy(() -> verify(mockBlockCache).loadForPrefetch(TEST_PATH, 0, 10));
+        release.countDown();
+    }
+
+    /**
+     * Tests trimming against several in-flight tasks, including one that is strictly inside the
+     * request until another task trims the request's start up to it.
+     */
+    public void testRequestOverlappingSeveralTasksLoadsOnlyTheRest() throws Exception {
+        worker = new QueuingWorker(100, executor);
+        final long block = 1L << CACHE_BLOCK_SIZE_POWER;
+        CountDownLatch release = blockLoadsAt(0, 8);
+
+        assertTrue(worker.schedule(mockBlockCache, TEST_PATH, 8 * block, 4)); // [8, 12)
+        assertBusy(() -> verify(mockBlockCache).loadForPrefetch(TEST_PATH, 8 * block, 4));
+        assertTrue(worker.schedule(mockBlockCache, TEST_PATH, 0, 10)); // [0, 8) after trim
+        assertBusy(() -> verify(mockBlockCache).loadForPrefetch(TEST_PATH, 0, 8));
+        assertTrue(worker.schedule(mockBlockCache, TEST_PATH, 3 * block, 17)); // [3, 20) -> [12, 20)
+        assertBusy(() -> verify(mockBlockCache).loadForPrefetch(TEST_PATH, 12 * block, 8));
+        release.countDown();
+    }
+
+    /**
+     * Tests that a request with an in-flight task strictly inside it is still loaded whole.
+     */
+    public void testRequestContainingAnInFlightTaskLoadsWhole() throws Exception {
+        worker = new QueuingWorker(100, executor);
+        final long block = 1L << CACHE_BLOCK_SIZE_POWER;
+        CountDownLatch release = blockLoadsAt(5);
+
+        assertTrue(worker.schedule(mockBlockCache, TEST_PATH, 5 * block, 2)); // [5, 7) in flight
+        assertBusy(() -> verify(mockBlockCache).loadForPrefetch(TEST_PATH, 5 * block, 2));
+        assertTrue(worker.schedule(mockBlockCache, TEST_PATH, 0, 20)); // [0, 20)
+        assertBusy(() -> verify(mockBlockCache).loadForPrefetch(TEST_PATH, 0, 20));
+        release.countDown();
     }
 }

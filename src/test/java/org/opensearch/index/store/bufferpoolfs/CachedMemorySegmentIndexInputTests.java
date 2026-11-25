@@ -5,6 +5,8 @@
 package org.opensearch.index.store.bufferpoolfs;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
@@ -1215,6 +1217,33 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
 
         // Verify readahead manager close was called
         verify(mockReadaheadManager, times(1)).close();
+    }
+
+    /**
+     * Tests that clones and slices report accesses to their own readahead context, not the
+     * master's: they read at independent positions.
+     */
+    public void testClonesAndSlicesGetTheirOwnReadaheadContext() throws IOException {
+        long fileLength = BLOCK_SIZE * 2;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
+        setupOneBlock(block0);
+
+        ReadaheadContext cloneContext = mock(ReadaheadContext.class);
+        ReadaheadContext sliceContext = mock(ReadaheadContext.class);
+        when(mockReadaheadContext.newReaderContext()).thenReturn(cloneContext, sliceContext);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+        CachedMemorySegmentIndexInput clone = input.clone();
+        CachedMemorySegmentIndexInput slice = input.slice("test_slice", 0, BLOCK_SIZE);
+        clearInvocations(mockReadaheadContext);
+
+        clone.readByte();
+        slice.readByte();
+
+        verify(cloneContext, times(1)).onAccess(eq(0L), anyBoolean());
+        verify(sliceContext, times(1)).onAccess(eq(0L), anyBoolean());
+        verify(mockReadaheadContext, never()).onAccess(anyLong(), anyBoolean());
+        input.close();
     }
 
     /**

@@ -44,7 +44,9 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
         BlockCache<AutoCloseable> cache = (BlockCache<AutoCloseable>) mock(BlockCache.class);
         mockBlockCache = cache;
         mockSignalCallback = mock(Runnable.class);
-        config = WindowedReadAheadConfig.defaultConfig();
+        // Trigger on the first miss, so these tests exercise scheduling without first building up
+        // a sequential run. testDefaultConfigWaitsForSequentialRun covers the default.
+        config = WindowedReadAheadConfig.of(4, 32, 16, 0);
 
         // Default: worker accepts all schedules and is not paused
         when(mockWorker.schedule(any(), any(Path.class), anyLong(), anyLong())).thenReturn(true);
@@ -365,8 +367,18 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
         assertNotNull(context);
 
         // Should handle large offsets
-        context.onAccess(largeFileSize - CACHE_BLOCK_SIZE, false);
+        context.onAccess(largeFileSize - 8L * CACHE_BLOCK_SIZE, false);
         assertTrue(context.hasQueuedWork());
+    }
+
+    /**
+     * Tests that reading the last block prefetches nothing: there is nothing after it.
+     */
+    public void testLastBlockQueuesNothing() {
+        context = createContext(FILE_SIZE);
+        context.onAccess(FILE_SIZE - CACHE_BLOCK_SIZE, false);
+        assertFalse(context.hasQueuedWork());
+        verify(mockSignalCallback, never()).run();
     }
 
     /**
@@ -400,21 +412,38 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     }
 
     /**
-     * Tests processQueue keeps wake flag if more work remains.
+     * Tests that processQueue reopens the wake gate after scheduling, so later accesses can
+     * wake the worker again. It used to stay closed while any backlog remained, which stopped
+     * readahead for the rest of the file.
      */
-    public void testWakeFlagKeptWhenWorkRemains() {
-        context = createContext(FILE_SIZE);
+    public void testWakeGateReopensAfterSchedule() {
+        AtomicInteger wakeCount = new AtomicInteger(0);
+        context = WindowedReadAheadContext.build(TEST_PATH, FILE_SIZE, mockWorker, mockBlockCache, config, wakeCount::incrementAndGet);
 
-        // Queue lots of work (more than MAX_BLOCKS_PER_SUBMISSION = 64)
-        context.onAccess(0, false);
-        for (int i = 0; i < 100; i++) {
-            context.onAccess(i * CACHE_BLOCK_SIZE, false);
+        for (int i = 0; i < 10; i++) {
+            context.onAccess((long) i * CACHE_BLOCK_SIZE, false);
         }
+        assertEquals("Gate holds until the worker runs", 1, wakeCount.get());
 
-        // Process once (should only process up to 64 blocks)
-        context.processQueue();
+        assertTrue(context.processQueue());
+        context.onAccess(10L * CACHE_BLOCK_SIZE, false);
+        assertEquals("Gate reopened after processQueue", 2, wakeCount.get());
+    }
 
-        // Should still have work queued
-        assertTrue("Should have remaining work after partial processing", context.hasQueuedWork());
+    /**
+     * Tests that with the default config readahead waits for a read followed by two adjacent
+     * blocks, so random point reads do not prefetch.
+     */
+    public void testDefaultConfigWaitsForSequentialRun() {
+        context = createContext(FILE_SIZE, WindowedReadAheadConfig.defaultConfig());
+
+        context.onAccess(10L * CACHE_BLOCK_SIZE, false);
+        context.onAccess(11L * CACHE_BLOCK_SIZE, false);
+        assertFalse("A block and the next one are not a scan yet", context.hasQueuedWork());
+        verify(mockSignalCallback, never()).run();
+
+        context.onAccess(12L * CACHE_BLOCK_SIZE, false);
+        assertTrue("Third adjacent block starts readahead", context.hasQueuedWork());
+        verify(mockSignalCallback, times(1)).run();
     }
 }
