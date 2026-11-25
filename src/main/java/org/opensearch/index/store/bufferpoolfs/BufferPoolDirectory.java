@@ -156,10 +156,6 @@ public class BufferPoolDirectory extends FSDirectory {
     @Override
     public IndexOutput createOutput(String name, IOContext context) throws IOException {
         try {
-            if (name.contains("segments_") || name.endsWith(".si")) {
-                return super.createOutput(name, context);
-            }
-
             ensureOpen();
             Path path = directory.resolve(name);
             OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
@@ -182,10 +178,6 @@ public class BufferPoolDirectory extends FSDirectory {
 
     @Override
     public IndexOutput createTempOutput(String prefix, String suffix, IOContext context) throws IOException {
-        if (prefix.contains("segments_") || prefix.endsWith(".si")) {
-            return super.createTempOutput(prefix, suffix, context);
-        }
-
         ensureOpen();
         String name = getTempFileName(prefix, suffix, nextTempFileCounter.getAndIncrement());
         Path path = directory.resolve(name);
