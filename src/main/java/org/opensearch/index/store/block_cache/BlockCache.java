@@ -23,6 +23,25 @@ import java.util.Map;
 public interface BlockCache<T> {
 
     /**
+     * Callback invoked when a block is evicted from the cache.
+     * Used to notify L1 caches (RadixBlockTable) so they can clear stale entries.
+     */
+    @FunctionalInterface
+    interface EvictionListener {
+        void onEviction(Path path, long blockOffset);
+    }
+
+    /**
+     * Registers a listener that is notified when blocks are evicted from this cache.
+     * The listener is called before the evicted value is closed.
+     *
+     * @param listener the eviction listener
+     */
+    default void setEvictionListener(EvictionListener listener) {
+        // no-op by default; implementations that support eviction notification override this
+    }
+
+    /**
      * Returns the block if cached, or null if absent.
      *
      * @param key the cache key identifying the block

@@ -104,7 +104,8 @@ public class BufferPoolDirectoryTests extends OpenSearchTestCase {
             loader,
             worker,
             encryptionMetadataCache,
-            poolResources.getFileChannelCache()
+            poolResources.getFileChannelCache(),
+            new RadixBlockTableRegistry()
         );
     }
 

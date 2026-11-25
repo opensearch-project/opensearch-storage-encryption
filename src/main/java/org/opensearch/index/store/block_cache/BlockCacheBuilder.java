@@ -6,6 +6,7 @@ package org.opensearch.index.store.block_cache;
 
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -82,6 +83,10 @@ public final class BlockCacheBuilder {
                 new ThreadContext(org.opensearch.common.settings.Settings.EMPTY)
             );
 
+        // Shared reference for L1 eviction notification. The removal listener lambda
+        // reads from this reference; CaffeineBlockCache sets it via setEvictionListener().
+        AtomicReference<BlockCache.EvictionListener> evictionListenerRef = new AtomicReference<>();
+
         Cache<BlockCacheKey, BlockCacheValue<T>> cache = Caffeine
             .newBuilder()
             .initialCapacity(initialCapacity)
@@ -89,6 +94,17 @@ public final class BlockCacheBuilder {
             .maximumSize(maxBlocks)
             .removalListener((BlockCacheKey key, BlockCacheValue<T> value, RemovalCause cause) -> {
                 if (value != null) {
+                    // Notify L1 eviction listener before closing the segment.
+                    // This clears the stale L1 pointer so future reads see a clean miss.
+                    BlockCache.EvictionListener listener = evictionListenerRef.get();
+                    if (listener != null && key instanceof FileBlockCacheKey fbk) {
+                        try {
+                            listener.onEviction(fbk.filePath(), fbk.fileOffset());
+                        } catch (Exception e) {
+                            LOGGER.debug("L1 eviction notification failed for {}", key, e);
+                        }
+                    }
+
                     removalExec.execute(() -> {
                         try {
                             value.close();
@@ -103,7 +119,7 @@ public final class BlockCacheBuilder {
         // Loader is null here because this creates a shared cache instance.
         // Per-directory caches will wrap this cache with their own loaders
         // that provide directory-specific decryption keys.
-        CaffeineBlockCache<T, V> caffeineBlockCache = new CaffeineBlockCache<>(cache, null, maxBlocks);
+        CaffeineBlockCache<T, V> caffeineBlockCache = new CaffeineBlockCache<>(cache, null, maxBlocks, evictionListenerRef);
         return new CacheWithExecutor<>(caffeineBlockCache, removalExec);
     }
 }
